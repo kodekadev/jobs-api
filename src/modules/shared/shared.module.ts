@@ -1,17 +1,11 @@
-/* eslint-disable prettier/prettier */
-import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
-import { StatusApiController } from './infrastructure/controllers/status-api.controller';
+import { Module, Global } from '@nestjs/common';
+import { BigQueryService } from './infrastructure/services/bigquery.service';
+import { GcsService } from './infrastructure/services/gcs.service';
+import { EmailService } from './infrastructure/services/email.service';
+
+@Global()
 @Module({
-  imports: [],
-  controllers: [ StatusApiController],
-  providers: [
-
-  ],
-  exports: [],
+  providers: [BigQueryService, GcsService, EmailService],
+  exports: [BigQueryService, GcsService, EmailService],
 })
-
-export class SharedModule implements NestModule {
-  configure(consumer: MiddlewareConsumer) {
-    //consumer.apply(TokenAuthMiddleware).forRoutes(LogController);
-  }
-}
+export class SharedModule {}

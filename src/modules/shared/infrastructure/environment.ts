@@ -1,26 +1,19 @@
 import * as dotenv from 'dotenv';
+dotenv.config();
 
-class Environment {
-  public static getInstance(): Environment {
-    return this._instance;
-  }
+const env = {
+  port: parseInt(process.env.PORT || '8080'),
+  gcpProjectId: process.env.GCP_PROJECT_ID || 'jobs-425301',
+  bigqueryDataset: process.env.BIGQUERY_DATASET || 'DWH',
+  jwtSecret: process.env.JWT_SECRET || 'jobs_secret_key',
+  resendApiKey: process.env.RESEND_API_KEY || '',
+  flowApiKey: process.env.FLOW_API_KEY || '',
+  flowSecretKey: process.env.FLOW_SECRET_KEY || '',
+  flowBaseUrl: process.env.FLOW_BASE_URL || 'https://www.flow.cl/api',
+  frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3000',
+  fromEmail: process.env.FROM_EMAIL || 'Jobs <contacto@ko-deka.com>',
+  gcsBucketImages: process.env.GCS_BUCKET_IMAGES || 'jobs-profile-images',
+  gcsBucketCv: process.env.GCS_BUCKET_CV || 'jobs-profile-cv',
+};
 
-  private static _instance: Environment = new Environment();
-  public port: number;
-  public env: string;
-  public gcpProjectId: string;
-  public googleApplicationCredentials: string;
-  public bigquery_dataset: string;
-
-  constructor() {
-    dotenv.config();
-    this.port = Number(process.env.PORT) || 3000;
-    this.gcpProjectId = process.env.GCP_PROJECT_ID ;
-    this.googleApplicationCredentials = process.env.GOOGLE_APPLICATION_CREDENTIALS || '';
-    this.bigquery_dataset = process.env.BIGQUERY_DATASET || '';    
-    this.env = process.env.NODE_ENV;
-  }
-}
-
-const environment = Environment.getInstance();
-export default environment;
+export default env;
