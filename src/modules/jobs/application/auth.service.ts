@@ -2,7 +2,6 @@ import { Injectable, UnauthorizedException, BadRequestException } from '@nestjs/
 import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
 import * as crypto from 'crypto';
-import { v4 as uuidv4 } from 'uuid';
 import { BigQueryService } from '../../shared/infrastructure/services/bigquery.service';
 import { EmailService } from '../../shared/infrastructure/services/email.service';
 import env from '../../shared/infrastructure/environment';
@@ -78,7 +77,7 @@ export class AuthService {
 
     if (existing.length) return this.buildResponse(existing[0]);
 
-    const id = uuidv4();
+    const id = crypto.randomUUID();
     await this.bq.query(`
       INSERT INTO ${this.bq.t('USUARIOS')}
         (ID_USUARIO, NOMBRE, EMAIL, CELULAR, PASSWORD, TERMINOS, ASIGNADO_LKD, FECHA_REGISTRO)
