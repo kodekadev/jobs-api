@@ -4,10 +4,9 @@ import env from '../environment';
 
 @Injectable()
 export class EmailService {
-  private readonly resend: Resend;
-
-  constructor() {
-    this.resend = new Resend(env.resendApiKey);
+  private get resend(): Resend {
+    if (!env.resendApiKey) throw new Error('RESEND_API_KEY no configurado');
+    return new Resend(env.resendApiKey);
   }
 
   async send(to: string, subject: string, html: string): Promise<void> {
