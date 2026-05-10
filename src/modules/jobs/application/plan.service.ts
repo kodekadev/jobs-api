@@ -30,9 +30,9 @@ export class PlanService {
       USING (SELECT @id AS ID_USUARIO) S
       ON T.ID_USUARIO = S.ID_USUARIO
       WHEN MATCHED THEN
-        UPDATE SET PLAN = @plan, ESTADO = 'ACTIVO', FECHA_INICIO = @now, METODO_PAGO = 'APP'
+        UPDATE SET PLAN = @plan, ESTADO = 'ACTIVO', FECHA_INICIO = @now, MEDIO_PAGO = 'APP'
       WHEN NOT MATCHED THEN
-        INSERT (ID_USUARIO, PLAN, ESTADO, FECHA_INICIO, METODO_PAGO)
+        INSERT (ID_USUARIO, PLAN, ESTADO, FECHA_INICIO, MEDIO_PAGO)
         VALUES (@id, @plan, 'ACTIVO', @now, 'APP')
     `, { id: userId, plan, now });
 
