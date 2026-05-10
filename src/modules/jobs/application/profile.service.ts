@@ -15,10 +15,10 @@ export class ProfileService {
       SELECT
         u.ID_USUARIO, u.NOMBRE, u.EMAIL, u.CELULAR,
         ic.PROFESION, ic.EXPERIENCIA, ic.FOTO_URL, ic.CV_URL,
-        COALESCE(pa.ACTIVO, FALSE) as AUTO_ACTIVO
+        COALESCE(pa.activo, 0) as AUTO_ACTIVO
       FROM ${this.bq.t('USUARIOS')} u
       LEFT JOIN ${this.bq.t('INFO_CLIENTE')} ic ON u.ID_USUARIO = ic.ID_USUARIO
-      LEFT JOIN ${this.bq.t('POSTULACIONES_AUTO')} pa ON u.ID_USUARIO = pa.ID_USUARIO
+      LEFT JOIN ${this.bq.t('POSTULACIONES_AUTO')} pa ON LOWER(u.ID_USUARIO) = LOWER(pa.id_usuario)
       WHERE u.ID_USUARIO = @id
       LIMIT 1
     `, { id: userId });
@@ -108,18 +108,70 @@ export class ProfileService {
 
   async toggleAutoPostulaciones(userId: string, activo: boolean) {
     const now = new Date().toISOString();
+    const activoInt = activo ? 1 : 0;
 
     await this.bq.query(`
       MERGE ${this.bq.t('POSTULACIONES_AUTO')} T
-      USING (SELECT @id AS ID_USUARIO, @activo AS ACTIVO) S
-      ON T.ID_USUARIO = S.ID_USUARIO
+      USING (SELECT @id AS id_usuario, @activo AS activo) S
+      ON T.id_usuario = S.id_usuario
       WHEN MATCHED THEN
-        UPDATE SET ACTIVO = S.ACTIVO, FECHA_ACTUALIZACION = @now
+        UPDATE SET activo = S.activo, fecha_actualizacion = @now
       WHEN NOT MATCHED THEN
-        INSERT (ID_USUARIO, ACTIVO, FECHA_REGISTRO, FECHA_ACTUALIZACION)
-        VALUES (S.ID_USUARIO, S.ACTIVO, @now, @now)
-    `, { id: userId, activo, now });
+        INSERT (id_usuario, activo, fecha_creacion, fecha_actualizacion)
+        VALUES (S.id_usuario, S.activo, @now, @now)
+    `, { id: userId, activo: activoInt, now });
+
+    if (activo) {
+      this.triggerAutoJob(userId).catch((e) =>
+        console.error('trigger auto job error:', e.message),
+      );
+    }
 
     return { success: true, activo };
+  }
+
+  private async triggerAutoJob(userId: string): Promise<void> {
+    const project = env.gcpProjectId;
+    const region  = env.gcpRegion;
+    const job     = env.autoJobName;
+
+    // Obtener token desde metadata server (disponible en Cloud Run)
+    const tokenRes = await fetch(
+      'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token',
+      { headers: { 'Metadata-Flavor': 'Google' } },
+    ).catch(() => null);
+
+    if (!tokenRes?.ok) {
+      console.warn('No se pudo obtener token de metadata server (¿estás en local?)');
+      return;
+    }
+
+    const { access_token } = await tokenRes.json();
+
+    const res = await fetch(
+      `https://run.googleapis.com/v2/projects/${project}/locations/${region}/jobs/${job}:run`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          overrides: {
+            containerOverrides: [{
+              env: [{ name: 'SINGLE_USER_ID', value: userId }],
+            }],
+            taskCount: 1,
+          },
+        }),
+      },
+    );
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Cloud Run Job trigger ${res.status}: ${err.slice(0, 200)}`);
+    }
+
+    console.log(`✓ Auto-postulaciones disparado para usuario ${userId}`);
   }
 }
