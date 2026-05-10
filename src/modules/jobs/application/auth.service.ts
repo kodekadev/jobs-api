@@ -27,7 +27,7 @@ export class AuthService {
         pf.CV_URL as PF_CV_URL,
         pf.EXPERIENCIA as PF_EXPERIENCIA,
         pf.PRETENSION_GENERAL,
-        COALESCE(pa.ACTIVO, FALSE) as AUTO_ACTIVO,
+        COALESCE(pa.ACTIVO, 0) as AUTO_ACTIVO,
         COALESCE(pc.PLAN, 'FREE') as PLAN,
         pc.ESTADO as PLAN_ESTADO
       FROM ${this.bq.t('USUARIOS')} u
@@ -62,7 +62,7 @@ export class AuthService {
         ic.PROFESION, ic.EXPERIENCIA, ic.FOTO_URL, ic.CV_URL as INFO_CV_URL,
         pf.CARGOS, pf.UBICACIONES, pf.RESUMEN, pf.CV_URL as PF_CV_URL,
         pf.EXPERIENCIA as PF_EXPERIENCIA, pf.PRETENSION_GENERAL,
-        COALESCE(pa.ACTIVO, FALSE) as AUTO_ACTIVO,
+        COALESCE(pa.ACTIVO, 0) as AUTO_ACTIVO,
         COALESCE(pc.PLAN, 'FREE') as PLAN,
         pc.ESTADO as PLAN_ESTADO
       FROM ${this.bq.t('USUARIOS')} u
