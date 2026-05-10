@@ -11,6 +11,7 @@ const env = {
   flowSecretKey: process.env.FLOW_SECRET_KEY || '',
   flowBaseUrl: process.env.FLOW_BASE_URL || 'https://www.flow.cl/api',
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3000',
+  backendUrl: process.env.BACKEND_URL || 'http://localhost:8080',
   fromEmail: process.env.FROM_EMAIL || 'Jobs <contacto@ko-deka.com>',
   gcsBucketImages: process.env.GCS_BUCKET_IMAGES || 'jobs-profile-images',
   gcsBucketCv: process.env.GCS_BUCKET_CV || 'jobs-profile-cv',
