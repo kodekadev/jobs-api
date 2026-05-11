@@ -27,15 +27,8 @@ export class ProfileService {
 
     const p = rows[0];
 
-    // Generate signed URLs for private files
-    if (p.FOTO_URL) {
-      const fileName = this.gcs.extractFileName(p.FOTO_URL);
-      if (fileName) {
-        const signed = await this.gcs.getSignedUrl(env.gcsBucketImages, fileName).catch(() => p.FOTO_URL);
-        if (signed) p.FOTO_URL = signed;
-      }
-    }
-
+    // FOTO_URL: bucket is public — raw URL works directly in browser
+    // CV_URL: private bucket — generate signed URL for download
     if (p.CV_URL) {
       const fileName = this.gcs.extractFileName(p.CV_URL);
       if (fileName) {
