@@ -177,11 +177,15 @@ export class AuthService {
     `, { id: user.ID_USUARIO, token: hashed, expires });
 
     const link = `${env.frontendUrl}/reset-password?token=${rawToken}`;
-    await this.email.send(
-      emailNorm,
-      'Recupera tu contraseña — Jobs',
-      this.email.resetPasswordHtml(user.NOMBRE, link),
-    );
+    try {
+      await this.email.send(
+        emailNorm,
+        'Recupera tu contraseña — Jobs',
+        this.email.resetPasswordHtml(user.NOMBRE, link),
+      );
+    } catch (e: any) {
+      console.error('[forgotPassword] Email error for', emailNorm, ':', e.message);
+    }
 
     return { success: true };
   }
@@ -301,21 +305,10 @@ export class AuthService {
         INSERT INTO ${this.bq.t('PLAN_CONTRATADO')}
           (ID_USUARIO, PLAN, FECHA_INICIO, FECHA_FIN, ESTADO, MEDIO_PAGO)
         VALUES
-          (@id, 'PRO', CURRENT_DATE(), DATE_ADD(CURRENT_DATE(), INTERVAL 14 DAY), 'TRIAL', 'TRIAL')
+          (@id, 'PRO', CURRENT_TIMESTAMP(), TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 14 DAY), 'TRIAL', 'TRIAL')
       `, { id: userId });
     } catch (e: any) {
       console.error(`[insertTrialPlan] Error for user ${userId}:`, e.message);
-      // Try minimal insert in case some columns don't exist yet
-      try {
-        await this.bq.query(`
-          INSERT INTO ${this.bq.t('PLAN_CONTRATADO')}
-            (ID_USUARIO, PLAN, FECHA_FIN, ESTADO)
-          VALUES
-            (@id, 'PRO', DATE_ADD(CURRENT_DATE(), INTERVAL 14 DAY), 'TRIAL')
-        `, { id: userId });
-      } catch (e2: any) {
-        console.error(`[insertTrialPlan] Minimal insert also failed for ${userId}:`, e2.message);
-      }
     }
   }
 

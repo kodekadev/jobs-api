@@ -10,7 +10,11 @@ export class EmailService {
   }
 
   async send(to: string, subject: string, html: string): Promise<void> {
-    await this.resend.emails.send({ from: env.fromEmail, to, subject, html });
+    const { error } = await this.resend.emails.send({ from: env.fromEmail, to, subject, html });
+    if (error) {
+      console.error('[EmailService] Resend error:', JSON.stringify(error));
+      throw new Error(error.message || 'Error enviando email');
+    }
   }
 
   resetPasswordHtml(nombre: string, link: string): string {

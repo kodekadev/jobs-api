@@ -39,22 +39,24 @@ export class PostulaFacilService {
       prof: body.profesion,
       resumen: body.resumen,
       cv: body.cv_url,
-      cargos: JSON.stringify(body.cargos),
+      cargos: body.cargos,
       exp: body.experiencia,
-      ubic: JSON.stringify(body.ubicaciones),
+      ubic: body.ubicaciones,
       pretension: body.pretension_general,
     });
 
-    // Send confirmation email once per user
+    // Send confirmation email once per user (track via correo_guardar_info flag)
     const sent = await this.bq.query<any>(`
-      SELECT ID FROM ${this.bq.t('CORREOS_ENVIADOS')}
-      WHERE ID_USUARIO = @id AND TIPO = 'postula_facil' LIMIT 1
+      SELECT correo_guardar_info FROM ${this.bq.t('CORREOS_ENVIADOS')}
+      WHERE id_usuario = @id LIMIT 1
     `, { id: body.id_usuario }).catch(() => []);
 
-    if (!sent.length) {
+    const alreadySent = sent.length && sent[0].correo_guardar_info;
+
+    if (!alreadySent) {
       const user = await this.bq.query<any>(`
         SELECT NOMBRE, EMAIL FROM ${this.bq.t('USUARIOS')} WHERE ID_USUARIO = @id LIMIT 1
-      `, { id: body.id_usuario });
+      `, { id: body.id_usuario }).catch(() => []);
 
       if (user.length) {
         await this.email.send(
@@ -64,8 +66,11 @@ export class PostulaFacilService {
         ).catch(() => null);
 
         await this.bq.query(`
-          INSERT INTO ${this.bq.t('CORREOS_ENVIADOS')} (ID_USUARIO, TIPO, FECHA)
-          VALUES (@id, 'postula_facil', CURRENT_TIMESTAMP())
+          MERGE ${this.bq.t('CORREOS_ENVIADOS')} T
+          USING (SELECT @id AS id_usuario) S ON T.id_usuario = S.id_usuario
+          WHEN MATCHED THEN UPDATE SET correo_guardar_info = 1
+          WHEN NOT MATCHED THEN INSERT (id_usuario, correo_bienvenida, correo_guardar_info)
+          VALUES (@id, 0, 1)
         `, { id: body.id_usuario }).catch(() => null);
       }
     }
