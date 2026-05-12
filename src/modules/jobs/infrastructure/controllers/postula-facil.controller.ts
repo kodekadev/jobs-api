@@ -1,7 +1,9 @@
-import { Controller, Get, Post, Param, Body, HttpCode } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, HttpCode, UseGuards } from '@nestjs/common';
 import { PostulaFacilService } from '../../application/postula-facil.service';
+import { JwtAuthGuard } from '../../../shared/infrastructure/guards/jwt-auth.guard';
 
 @Controller('postula-facil')
+@UseGuards(JwtAuthGuard)
 export class PostulaFacilController {
   constructor(private readonly service: PostulaFacilService) {}
 

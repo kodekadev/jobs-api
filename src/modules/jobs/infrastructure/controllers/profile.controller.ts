@@ -1,11 +1,13 @@
 import {
   Controller, Get, Post, Param, Body, UseInterceptors,
-  UploadedFile, HttpCode,
+  UploadedFile, HttpCode, UseGuards,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ProfileService } from '../../application/profile.service';
+import { JwtAuthGuard } from '../../../shared/infrastructure/guards/jwt-auth.guard';
 
 @Controller('profile')
+@UseGuards(JwtAuthGuard)
 export class ProfileController {
   constructor(private readonly profileService: ProfileService) {}
 

@@ -103,12 +103,7 @@ export class AuthService {
         (@id, @nombre, @email, NULL, NULL, 1, 0, CURRENT_TIMESTAMP())
     `, { id, nombre, email: emailNorm });
 
-    await this.bq.query(`
-      INSERT INTO ${this.bq.t('PLAN_CONTRATADO')}
-        (ID_USUARIO, PLAN, FECHA_INICIO, FECHA_FIN, ESTADO, MEDIO_PAGO)
-      VALUES
-        (@id, 'PRO', CURRENT_DATE(), DATE_ADD(CURRENT_DATE(), INTERVAL 14 DAY), 'TRIAL', 'TRIAL')
-    `, { id });
+    await this.insertTrialPlan(id);
 
     const newUser = { ID_USUARIO: id, NOMBRE: nombre, EMAIL: emailNorm, PLAN: 'PRO', PLAN_ESTADO: 'TRIAL', AUTO_ACTIVO: false };
     return this.buildResponse(newUser);
@@ -150,12 +145,7 @@ export class AuthService {
         (@id, @nombre, @email, @celular, @password, @terminos, 0, CURRENT_TIMESTAMP())
     `, { id, nombre: body.nombre, email: emailNorm, celular: body.celular, password: hash, terminos: body.terminos ? 1 : 0 });
 
-    await this.bq.query(`
-      INSERT INTO ${this.bq.t('PLAN_CONTRATADO')}
-        (ID_USUARIO, PLAN, FECHA_INICIO, FECHA_FIN, ESTADO, MEDIO_PAGO)
-      VALUES
-        (@id, 'PRO', CURRENT_DATE(), DATE_ADD(CURRENT_DATE(), INTERVAL 14 DAY), 'TRIAL', 'TRIAL')
-    `, { id });
+    await this.insertTrialPlan(id);
 
     return { success: true };
   }
@@ -303,6 +293,30 @@ export class AuthService {
         activo: Boolean(u.AUTO_ACTIVO),
       },
     };
+  }
+
+  private async insertTrialPlan(userId: string): Promise<void> {
+    try {
+      await this.bq.query(`
+        INSERT INTO ${this.bq.t('PLAN_CONTRATADO')}
+          (ID_USUARIO, PLAN, FECHA_INICIO, FECHA_FIN, ESTADO, MEDIO_PAGO)
+        VALUES
+          (@id, 'PRO', CURRENT_DATE(), DATE_ADD(CURRENT_DATE(), INTERVAL 14 DAY), 'TRIAL', 'TRIAL')
+      `, { id: userId });
+    } catch (e: any) {
+      console.error(`[insertTrialPlan] Error for user ${userId}:`, e.message);
+      // Try minimal insert in case some columns don't exist yet
+      try {
+        await this.bq.query(`
+          INSERT INTO ${this.bq.t('PLAN_CONTRATADO')}
+            (ID_USUARIO, PLAN, FECHA_FIN, ESTADO)
+          VALUES
+            (@id, 'PRO', DATE_ADD(CURRENT_DATE(), INTERVAL 14 DAY), 'TRIAL')
+        `, { id: userId });
+      } catch (e2: any) {
+        console.error(`[insertTrialPlan] Minimal insert also failed for ${userId}:`, e2.message);
+      }
+    }
   }
 
   private parseJson(val: any): any[] {
