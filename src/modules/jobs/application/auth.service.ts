@@ -34,8 +34,17 @@ export class AuthService {
       LEFT JOIN ${this.bq.t('INFO_CLIENTE')} ic ON u.ID_USUARIO = ic.ID_USUARIO
       LEFT JOIN ${this.bq.t('POSTULA_FACIL')} pf ON u.ID_USUARIO = pf.ID_USUARIO
       LEFT JOIN ${this.bq.t('POSTULACIONES_AUTO')} pa ON u.ID_USUARIO = pa.ID_USUARIO
-      LEFT JOIN ${this.bq.t('PLAN_CONTRATADO')} pc
-        ON u.ID_USUARIO = pc.ID_USUARIO AND pc.ESTADO = 'ACTIVO'
+      LEFT JOIN (
+        SELECT ID_USUARIO, PLAN, ESTADO, FECHA_FIN FROM (
+          SELECT ID_USUARIO, PLAN, ESTADO, FECHA_FIN,
+            ROW_NUMBER() OVER (
+              PARTITION BY ID_USUARIO
+              ORDER BY CASE UPPER(ESTADO) WHEN 'ACTIVO' THEN 1 ELSE 2 END, FECHA_FIN DESC
+            ) as rn
+          FROM ${this.bq.t('PLAN_CONTRATADO')}
+          WHERE UPPER(ESTADO) IN ('ACTIVO', 'TRIAL') AND DATE(FECHA_FIN) >= CURRENT_DATE()
+        ) WHERE rn = 1
+      ) pc ON u.ID_USUARIO = pc.ID_USUARIO
       WHERE LOWER(u.EMAIL) = @email
       LIMIT 1
     `, { email: emailNorm });
@@ -69,8 +78,17 @@ export class AuthService {
       LEFT JOIN ${this.bq.t('INFO_CLIENTE')} ic ON u.ID_USUARIO = ic.ID_USUARIO
       LEFT JOIN ${this.bq.t('POSTULA_FACIL')} pf ON u.ID_USUARIO = pf.ID_USUARIO
       LEFT JOIN ${this.bq.t('POSTULACIONES_AUTO')} pa ON u.ID_USUARIO = pa.ID_USUARIO
-      LEFT JOIN ${this.bq.t('PLAN_CONTRATADO')} pc
-        ON u.ID_USUARIO = pc.ID_USUARIO AND pc.ESTADO = 'ACTIVO'
+      LEFT JOIN (
+        SELECT ID_USUARIO, PLAN, ESTADO, FECHA_FIN FROM (
+          SELECT ID_USUARIO, PLAN, ESTADO, FECHA_FIN,
+            ROW_NUMBER() OVER (
+              PARTITION BY ID_USUARIO
+              ORDER BY CASE UPPER(ESTADO) WHEN 'ACTIVO' THEN 1 ELSE 2 END, FECHA_FIN DESC
+            ) as rn
+          FROM ${this.bq.t('PLAN_CONTRATADO')}
+          WHERE UPPER(ESTADO) IN ('ACTIVO', 'TRIAL') AND DATE(FECHA_FIN) >= CURRENT_DATE()
+        ) WHERE rn = 1
+      ) pc ON u.ID_USUARIO = pc.ID_USUARIO
       WHERE LOWER(u.EMAIL) = @email
       LIMIT 1
     `, { email: emailNorm });
@@ -85,7 +103,14 @@ export class AuthService {
         (@id, @nombre, @email, NULL, NULL, 1, 0, CURRENT_TIMESTAMP())
     `, { id, nombre, email: emailNorm });
 
-    const newUser = { ID_USUARIO: id, NOMBRE: nombre, EMAIL: emailNorm, PLAN: 'FREE', AUTO_ACTIVO: false };
+    await this.bq.query(`
+      INSERT INTO ${this.bq.t('PLAN_CONTRATADO')}
+        (ID_USUARIO, PLAN, FECHA_INICIO, FECHA_FIN, ESTADO, MEDIO_PAGO)
+      VALUES
+        (@id, 'PRO', CURRENT_DATE(), DATE_ADD(CURRENT_DATE(), INTERVAL 14 DAY), 'TRIAL', 'TRIAL')
+    `, { id });
+
+    const newUser = { ID_USUARIO: id, NOMBRE: nombre, EMAIL: emailNorm, PLAN: 'PRO', PLAN_ESTADO: 'TRIAL', AUTO_ACTIVO: false };
     return this.buildResponse(newUser);
   }
 
@@ -125,6 +150,13 @@ export class AuthService {
         (@id, @nombre, @email, @celular, @password, @terminos, 0, CURRENT_TIMESTAMP())
     `, { id, nombre: body.nombre, email: emailNorm, celular: body.celular, password: hash, terminos: body.terminos ? 1 : 0 });
 
+    await this.bq.query(`
+      INSERT INTO ${this.bq.t('PLAN_CONTRATADO')}
+        (ID_USUARIO, PLAN, FECHA_INICIO, FECHA_FIN, ESTADO, MEDIO_PAGO)
+      VALUES
+        (@id, 'PRO', CURRENT_DATE(), DATE_ADD(CURRENT_DATE(), INTERVAL 14 DAY), 'TRIAL', 'TRIAL')
+    `, { id });
+
     return { success: true };
   }
 
@@ -159,6 +191,30 @@ export class AuthService {
       emailNorm,
       'Recupera tu contraseña — Jobs',
       this.email.resetPasswordHtml(user.NOMBRE, link),
+    );
+
+    return { success: true };
+  }
+
+  // ─── CHANGE PASSWORD (from inside the app) ────────────────────────────────
+  async changePassword(userId: string, currentPassword: string, newPassword: string) {
+    const passRegex = /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d@$!%*?&]{6,30}$/;
+    if (!passRegex.test(newPassword)) throw new BadRequestException('Contraseña inválida (6-30 chars, letras y números)');
+
+    const rows = await this.bq.query<any>(
+      `SELECT PASSWORD FROM ${this.bq.t('USUARIOS')} WHERE ID_USUARIO = @id LIMIT 1`,
+      { id: userId },
+    );
+    if (!rows.length) throw new UnauthorizedException('Usuario no encontrado');
+    if (!rows[0].PASSWORD) throw new BadRequestException('Esta cuenta usa Google — no tiene contraseña propia');
+
+    const ok = await bcrypt.compare(currentPassword, rows[0].PASSWORD);
+    if (!ok) throw new UnauthorizedException('Contraseña actual incorrecta');
+
+    const hash = await bcrypt.hash(newPassword, 10);
+    await this.bq.query(
+      `UPDATE ${this.bq.t('USUARIOS')} SET PASSWORD = @pass WHERE ID_USUARIO = @id`,
+      { pass: hash, id: userId },
     );
 
     return { success: true };
@@ -211,6 +267,11 @@ export class AuthService {
       u.PF_EXPERIENCIA && ubicaciones.length && u.PRETENSION_GENERAL
     );
 
+    const planEstado = u.PLAN_ESTADO || u.ESTADO || 'FREE';
+    const trialDias = (planEstado === 'TRIAL' && u.FECHA_FIN)
+      ? Math.max(0, Math.ceil((new Date(u.FECHA_FIN).getTime() - Date.now()) / 86400000))
+      : null;
+
     return {
       token,
       usuario: {
@@ -219,6 +280,8 @@ export class AuthService {
         email: u.EMAIL,
         celular: u.CELULAR || '',
         plan: u.PLAN || 'FREE',
+        plan_estado: planEstado,
+        trial_dias_restantes: trialDias,
         asignado_lkd: u.ASIGNADO_LKD || false,
       },
       perfil: {

@@ -42,4 +42,10 @@ export class AuthController {
   resetPassword(@Body() body: { token: string; password: string }) {
     return this.authService.resetPassword(body.token, body.password);
   }
+
+  @Post('change-password')
+  @HttpCode(200)
+  changePassword(@Body() body: { id: string; currentPassword: string; newPassword: string }) {
+    return this.authService.changePassword(body.id, body.currentPassword, body.newPassword);
+  }
 }
