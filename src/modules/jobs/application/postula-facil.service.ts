@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { BigQueryService } from '../../shared/infrastructure/services/bigquery.service';
 import { EmailService } from '../../shared/infrastructure/services/email.service';
+import env from '../../shared/infrastructure/environment';
 
 @Injectable()
 export class PostulaFacilService {
@@ -19,6 +20,12 @@ export class PostulaFacilService {
     experiencia: string;
     ubicaciones: string[];
     pretension_general: string;
+    rut?: string;
+    fecha_nacimiento?: string;
+    empresa?: string;
+    anio_inicio?: string;
+    actualmente_trabajando?: boolean;
+    anio_fin?: string;
   }) {
     await this.bq.query(`
       MERGE ${this.bq.t('POSTULA_FACIL')} T
@@ -28,11 +35,17 @@ export class PostulaFacilService {
         PLAN = @plan, PROFESION = @prof, RESUMEN = @resumen,
         CV_URL = @cv, CARGOS = @cargos, EXPERIENCIA = @exp,
         UBICACIONES = @ubic, PRETENSION_GENERAL = @pretension,
+        RUT = COALESCE(NULLIF(@rut, ''), T.RUT),
+        FECHA_NACIMIENTO = COALESCE(NULLIF(@fn, ''), T.FECHA_NACIMIENTO),
+        EMPRESA = COALESCE(NULLIF(@empresa, ''), T.EMPRESA),
+        ANIO_INICIO = IF(@anio_inicio != '', SAFE_CAST(@anio_inicio AS INT64), T.ANIO_INICIO),
+        ACTUALMENTE_TRABAJANDO = @actualmente,
+        ANIO_FIN = IF(@actualmente, NULL, SAFE_CAST(NULLIF(@anio_fin, '') AS INT64)),
         FECHA_ACTUALIZACION = CURRENT_TIMESTAMP()
       WHEN NOT MATCHED THEN INSERT
-        (ID_USUARIO, PLAN, PROFESION, RESUMEN, CV_URL, CARGOS, EXPERIENCIA, UBICACIONES, PRETENSION_GENERAL, FECHA_ACTUALIZACION)
+        (ID_USUARIO, PLAN, PROFESION, RESUMEN, CV_URL, CARGOS, EXPERIENCIA, UBICACIONES, PRETENSION_GENERAL, RUT, FECHA_NACIMIENTO, EMPRESA, ANIO_INICIO, ACTUALMENTE_TRABAJANDO, ANIO_FIN, FECHA_ACTUALIZACION)
       VALUES
-        (@id, @plan, @prof, @resumen, @cv, @cargos, @exp, @ubic, @pretension, CURRENT_TIMESTAMP())
+        (@id, @plan, @prof, @resumen, @cv, @cargos, @exp, @ubic, @pretension, @rut, @fn, NULLIF(@empresa, ''), SAFE_CAST(NULLIF(@anio_inicio, '') AS INT64), @actualmente, IF(@actualmente, NULL, SAFE_CAST(NULLIF(@anio_fin, '') AS INT64)), CURRENT_TIMESTAMP())
     `, {
       id: body.id_usuario,
       plan: body.plan,
@@ -43,6 +56,12 @@ export class PostulaFacilService {
       exp: body.experiencia,
       ubic: body.ubicaciones,
       pretension: body.pretension_general,
+      rut: body.rut || '',
+      fn: body.fecha_nacimiento || '',
+      empresa: body.empresa || '',
+      anio_inicio: body.anio_inicio || '',
+      actualmente: body.actualmente_trabajando ?? true,
+      anio_fin: body.anio_fin || '',
     });
 
     // Send confirmation email once per user (track via correo_guardar_info flag)
@@ -75,7 +94,50 @@ export class PostulaFacilService {
       }
     }
 
+    // Disparar registro en portales en segundo plano (fire-and-forget)
+    this.triggerRegisterJob(body.id_usuario).catch((e) =>
+      console.error('[postula-facil] register job error:', e.message),
+    );
+
     return { success: true };
+  }
+
+  private async triggerRegisterJob(userId: string): Promise<void> {
+    const project = env.gcpProjectId;
+    const region  = env.gcpRegion;
+    const job     = env.autoJobName;
+
+    const tokenRes = await fetch(
+      'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token',
+      { headers: { 'Metadata-Flavor': 'Google' } },
+    ).catch(() => null);
+
+    if (!tokenRes?.ok) return; // local — no hacer nada
+
+    const { access_token } = await tokenRes.json();
+
+    const res = await fetch(
+      `https://run.googleapis.com/v2/projects/${project}/locations/${region}/jobs/${job}:run`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          overrides: {
+            containerOverrides: [{
+              args: ['python', 'register.py'],
+              env: [{ name: 'SINGLE_USER_ID', value: userId }],
+            }],
+            taskCount: 1,
+          },
+        }),
+      },
+    );
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`register job ${res.status}: ${err.slice(0, 200)}`);
+    }
+    console.log(`[postula-facil] register job disparado para ${userId}`);
   }
 
   async get(userId: string) {
@@ -95,6 +157,12 @@ export class PostulaFacilService {
       experiencia: r.EXPERIENCIA || '',
       ubicaciones: this.parseJson(r.UBICACIONES),
       pretension_general: r.PRETENSION_GENERAL || '',
+      rut: r.RUT || '',
+      fecha_nacimiento: r.FECHA_NACIMIENTO || '',
+      empresa: r.EMPRESA || '',
+      anio_inicio: r.ANIO_INICIO ? String(r.ANIO_INICIO) : '',
+      actualmente_trabajando: r.ACTUALMENTE_TRABAJANDO ?? true,
+      anio_fin: r.ANIO_FIN ? String(r.ANIO_FIN) : '',
     };
   }
 

@@ -21,7 +21,7 @@ export class AuthService {
       SELECT
         u.ID_USUARIO, u.NOMBRE, u.EMAIL, u.CELULAR, u.ASIGNADO_LKD,
         u.FECHA_REGISTRO, u.PASSWORD,
-        ic.PROFESION, ic.EXPERIENCIA,
+        pf.PROFESION, ic.EXPERIENCIA,
         ic.FOTO_URL, ic.CV_URL as INFO_CV_URL,
         pf.CARGOS, pf.UBICACIONES, pf.RESUMEN,
         pf.CV_URL as PF_CV_URL,
@@ -68,7 +68,7 @@ export class AuthService {
     const existing = await this.bq.query<any>(`
       SELECT
         u.ID_USUARIO, u.NOMBRE, u.EMAIL, u.CELULAR, u.ASIGNADO_LKD, u.FECHA_REGISTRO,
-        ic.PROFESION, ic.EXPERIENCIA, ic.FOTO_URL, ic.CV_URL as INFO_CV_URL,
+        pf.PROFESION, ic.EXPERIENCIA, ic.FOTO_URL, ic.CV_URL as INFO_CV_URL,
         pf.CARGOS, pf.UBICACIONES, pf.RESUMEN, pf.CV_URL as PF_CV_URL,
         pf.EXPERIENCIA as PF_EXPERIENCIA, pf.PRETENSION_GENERAL,
         COALESCE(pa.ACTIVO, 0) as AUTO_ACTIVO,
