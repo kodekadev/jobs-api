@@ -26,6 +26,11 @@ export class PostulaFacilService {
     anio_inicio?: string;
     actualmente_trabajando?: boolean;
     anio_fin?: string;
+    nivel_educativo?: string;
+    institucion?: string;
+    carrera?: string;
+    situacion_estudios?: string;
+    anio_inicio_estudios?: string;
   }) {
     await this.bq.query(`
       MERGE ${this.bq.t('POSTULA_FACIL')} T
@@ -41,11 +46,16 @@ export class PostulaFacilService {
         ANIO_INICIO = IF(@anio_inicio != '', SAFE_CAST(@anio_inicio AS INT64), T.ANIO_INICIO),
         ACTUALMENTE_TRABAJANDO = @actualmente,
         ANIO_FIN = IF(@actualmente, NULL, SAFE_CAST(NULLIF(@anio_fin, '') AS INT64)),
+        NIVEL_EDUCATIVO = COALESCE(NULLIF(@nivel_educativo, ''), T.NIVEL_EDUCATIVO),
+        INSTITUCION = COALESCE(NULLIF(@institucion, ''), T.INSTITUCION),
+        CARRERA = COALESCE(NULLIF(@carrera, ''), T.CARRERA),
+        SITUACION_ESTUDIOS = COALESCE(NULLIF(@situacion_estudios, ''), T.SITUACION_ESTUDIOS),
+        ANIO_INICIO_ESTUDIOS = IF(@anio_inicio_estudios != '', SAFE_CAST(@anio_inicio_estudios AS INT64), T.ANIO_INICIO_ESTUDIOS),
         FECHA_ACTUALIZACION = CURRENT_TIMESTAMP()
       WHEN NOT MATCHED THEN INSERT
-        (ID_USUARIO, PLAN, PROFESION, RESUMEN, CV_URL, CARGOS, EXPERIENCIA, UBICACIONES, PRETENSION_GENERAL, RUT, FECHA_NACIMIENTO, EMPRESA, ANIO_INICIO, ACTUALMENTE_TRABAJANDO, ANIO_FIN, FECHA_ACTUALIZACION)
+        (ID_USUARIO, PLAN, PROFESION, RESUMEN, CV_URL, CARGOS, EXPERIENCIA, UBICACIONES, PRETENSION_GENERAL, RUT, FECHA_NACIMIENTO, EMPRESA, ANIO_INICIO, ACTUALMENTE_TRABAJANDO, ANIO_FIN, NIVEL_EDUCATIVO, INSTITUCION, CARRERA, SITUACION_ESTUDIOS, ANIO_INICIO_ESTUDIOS, FECHA_ACTUALIZACION)
       VALUES
-        (@id, @plan, @prof, @resumen, @cv, @cargos, @exp, @ubic, @pretension, @rut, @fn, NULLIF(@empresa, ''), SAFE_CAST(NULLIF(@anio_inicio, '') AS INT64), @actualmente, IF(@actualmente, NULL, SAFE_CAST(NULLIF(@anio_fin, '') AS INT64)), CURRENT_TIMESTAMP())
+        (@id, @plan, @prof, @resumen, @cv, @cargos, @exp, @ubic, @pretension, @rut, @fn, NULLIF(@empresa, ''), SAFE_CAST(NULLIF(@anio_inicio, '') AS INT64), @actualmente, IF(@actualmente, NULL, SAFE_CAST(NULLIF(@anio_fin, '') AS INT64)), NULLIF(@nivel_educativo, ''), NULLIF(@institucion, ''), NULLIF(@carrera, ''), NULLIF(@situacion_estudios, ''), SAFE_CAST(NULLIF(@anio_inicio_estudios, '') AS INT64), CURRENT_TIMESTAMP())
     `, {
       id: body.id_usuario,
       plan: body.plan,
@@ -62,6 +72,11 @@ export class PostulaFacilService {
       anio_inicio: body.anio_inicio || '',
       actualmente: body.actualmente_trabajando ?? true,
       anio_fin: body.anio_fin || '',
+      nivel_educativo: body.nivel_educativo || '',
+      institucion: body.institucion || '',
+      carrera: body.carrera || '',
+      situacion_estudios: body.situacion_estudios || '',
+      anio_inicio_estudios: body.anio_inicio_estudios || '',
     });
 
     // Send confirmation email once per user (track via correo_guardar_info flag)
@@ -163,6 +178,11 @@ export class PostulaFacilService {
       anio_inicio: r.ANIO_INICIO ? String(r.ANIO_INICIO) : '',
       actualmente_trabajando: r.ACTUALMENTE_TRABAJANDO ?? true,
       anio_fin: r.ANIO_FIN ? String(r.ANIO_FIN) : '',
+      nivel_educativo: r.NIVEL_EDUCATIVO || '',
+      institucion: r.INSTITUCION || '',
+      carrera: r.CARRERA || '',
+      situacion_estudios: r.SITUACION_ESTUDIOS || '',
+      anio_inicio_estudios: r.ANIO_INICIO_ESTUDIOS ? String(r.ANIO_INICIO_ESTUDIOS) : '',
     };
   }
 

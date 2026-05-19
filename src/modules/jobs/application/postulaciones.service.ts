@@ -15,7 +15,7 @@ export class PostulacionesService {
 
     const rows = await this.bq.query<any>(`
       SELECT
-        CARGO, TITULO_EMPLEO, FECHA_POSTULACION
+        CARGO, TITULO_EMPLEO, EMPRESA, DESCRIPCION, LINK, FECHA_POSTULACION
       FROM ${this.bq.t('EMPLEOS')}
       WHERE ID_USUARIO = @id
       ORDER BY FECHA_POSTULACION DESC
@@ -32,7 +32,10 @@ export class PostulacionesService {
       if (!grouped[cargo]) grouped[cargo] = [];
 
       grouped[cargo].push({
-        empresa: r.TITULO_EMPLEO || '',
+        titulo: r.TITULO_EMPLEO || '',
+        empresa: r.EMPRESA || '',
+        descripcion: r.DESCRIPCION || '',
+        link: r.LINK || '',
         fecha: r.FECHA_POSTULACION,
         estado: 'Enviada',
         tiempo: this.relTime(r.FECHA_POSTULACION),
