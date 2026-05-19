@@ -45,6 +45,40 @@ export class PostulacionesService {
     return { postulaciones: grouped, total: rows.length };
   }
 
+  async getNotificaciones(userId: string) {
+    const rows = await this.bq.query<any>(`
+      SELECT id, titulo, empresa, link, portal, leida, fecha
+      FROM ${this.bq.t('NOTIFICACIONES')}
+      WHERE id_usuario = @id
+      ORDER BY fecha DESC
+      LIMIT 50
+    `, { id: userId });
+
+    const noLeidas = rows.filter((r) => !r.leida).length;
+    return {
+      notificaciones: rows.map((r) => ({
+        id: r.id,
+        titulo: r.titulo || '',
+        empresa: r.empresa || '',
+        link: r.link || '',
+        portal: r.portal || '',
+        leida: r.leida ?? false,
+        fecha: r.fecha,
+        tiempo: this.relTime(r.fecha),
+      })),
+      no_leidas: noLeidas,
+    };
+  }
+
+  async marcarLeidas(userId: string) {
+    await this.bq.query(`
+      UPDATE ${this.bq.t('NOTIFICACIONES')}
+      SET leida = TRUE
+      WHERE id_usuario = @id AND leida = FALSE
+    `, { id: userId });
+    return { ok: true };
+  }
+
   private relTime(fecha: any): string {
     if (!fecha) return '';
     const d = new Date(fecha.value ?? fecha);
