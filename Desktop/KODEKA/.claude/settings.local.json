@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\bastian\\\\Desktop\\\\KODEKA\" -Force)",
+      "Bash(Select-Object Name, Mode)"
+    ]
+  }
+}
