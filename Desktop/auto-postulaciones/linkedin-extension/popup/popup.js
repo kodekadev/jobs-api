@@ -37,6 +37,19 @@ $("toggleAutopilot").addEventListener("change", e => {
   chrome.storage.sync.set({ autopilot: e.target.checked });
 });
 
+// Iniciar autopilot en la página actual
+$("btnRunAutopilot").addEventListener("click", async () => {
+  const btn = $("btnRunAutopilot");
+  btn.textContent = "Iniciando...";
+  btn.disabled = true;
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  chrome.tabs.sendMessage(tab.id, { type: "RUN_AUTOPILOT" });
+  setTimeout(() => {
+    btn.textContent = "▶ Iniciar Autopilot en esta página";
+    btn.disabled = false;
+  }, 3000);
+});
+
 // Aplicar al empleo actual
 $("btnApplyNow").addEventListener("click", async () => {
   $("btnApplyNow").textContent = "Aplicando...";

@@ -161,6 +161,16 @@
       showBadge(`PostulAI: Postulado a ${company || "empleo"}`, "#27ae60");
       console.log("[PostulAI] Postulación enviada:", title, company);
 
+      // Cerrar el modal de éxito — LinkedIn muestra botón "Hecho" o X
+      await sleep(800);
+      const successClose = [...document.querySelectorAll("button")].find(b => {
+        const t = b.textContent.trim().toLowerCase();
+        return t === "hecho" || t === "done" || t === "listo";
+      }) || document.querySelector(
+        "button[aria-label='Cerrar'], button[aria-label='Close'], button[aria-label='Dismiss']"
+      );
+      if (successClose) { successClose.click(); await sleep(500); }
+
     } else if (result === "review") {
       showBadge("PostulAI: Listo para enviar — revisa y confirma", "#f39c12");
     } else {
@@ -201,10 +211,12 @@
     }
 
     // Selector estable igual al script RPA en Python
-    const rows = Array.from(document.querySelectorAll("li[data-occludable-job-id]"));
-    console.log("[PostulAI] Tarjetas encontradas:", rows.length);
+    // Guardar solo los IDs — no referencias DOM que se vuelven stale tras navegación
+    const jobIds = Array.from(document.querySelectorAll("li[data-occludable-job-id]"))
+      .map(r => r.getAttribute("data-occludable-job-id")).filter(Boolean);
+    console.log("[PostulAI] Tarjetas encontradas:", jobIds.length);
 
-    if (!rows.length) {
+    if (!jobIds.length) {
       // Fallback: links directos
       const links = Array.from(document.querySelectorAll('a[href*="/jobs/view/"], a[href*="currentJobId="]'))
         .filter((a, i, arr) => arr.findIndex(b => b.href === a.href) === i);
@@ -218,10 +230,9 @@
       return;
     }
 
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      const jobId = row.getAttribute("data-occludable-job-id");
-      console.log(`[PostulAI] Empleo ${i+1}/${rows.length} — ID: ${jobId}`);
+    for (let i = 0; i < jobIds.length; i++) {
+      const jobId = jobIds[i];
+      console.log(`[PostulAI] Empleo ${i+1}/${jobIds.length} — ID: ${jobId}`);
 
       if (isAlreadyApplied(jobId)) {
         console.log("[PostulAI] Ya aplicado, saltando");
@@ -236,6 +247,27 @@
         if (closeBtn) { closeBtn.click(); await sleep(500); }
       } catch(_) {}
 
+      // Re-queryar el row desde el DOM actual (puede haber cambiado tras navegación)
+      let row = document.querySelector(`li[data-occludable-job-id="${jobId}"]`);
+      if (!row) {
+        // Intentar scrollear la lista para traer la tarjeta al DOM
+        const list = document.querySelector("#main ul[class*='scaffold-layout__list'], #main ul");
+        if (list) {
+          for (let s = 0; s < 8; s++) {
+            list.scrollTop += 300;
+            await sleep(300);
+            row = document.querySelector(`li[data-occludable-job-id="${jobId}"]`);
+            if (row) break;
+          }
+        }
+      }
+      if (!row) {
+        console.log(`[PostulAI] Tarjeta ${jobId} no encontrada, saltando`);
+        continue;
+      }
+
+      row.scrollIntoView({ block: "center" });
+      await sleep(300);
       row.click();
       await sleep(2000); // Esperar a que cargue el panel derecho
 
@@ -262,39 +294,22 @@
     showBadge("PostulAI: Ciclo completado", "#27ae60");
   }
 
-  // ── observer: detecta cambios de URL (SPA navigation) ───────────────────────
-
-  let lastUrl = location.href;
-  let debounce = null;
-
-  const observer = new MutationObserver(() => {
-    if (location.href === lastUrl) return;
-    lastUrl = location.href;
-    clearTimeout(debounce);
-    debounce = setTimeout(async () => {
-      if (!cfg.autopilot) return;
-      await sleep(2000);
-      await applyToCurrentJob();
-    }, 1000);
-  });
-
-  observer.observe(document.body, { childList: true, subtree: true });
-
   // ── mensajes desde el popup ──────────────────────────────────────────────────
+  // El autopilot SOLO corre cuando el usuario lo inicia desde el popup (RUN_AUTOPILOT)
+  // No se auto-inicia al cargar la página para que el usuario pueda navegar libremente
+
+  let autopilotRunning = false;
 
   chrome.runtime.onMessage.addListener(async (msg) => {
-    if (msg.type === "APPLY_NOW")    await applyToCurrentJob();
-    if (msg.type === "RUN_AUTOPILOT") await runAutopilot();
+    if (msg.type === "APPLY_NOW") await applyToCurrentJob();
+    if (msg.type === "RUN_AUTOPILOT") {
+      if (autopilotRunning) return;
+      autopilotRunning = true;
+      await runAutopilot();
+      autopilotRunning = false;
+    }
   });
 
-  // ── inicio ───────────────────────────────────────────────────────────────────
-
-  if (cfg.autopilot) {
-    console.log("[PostulAI] Autopilot activo, esperando 3s para iniciar...");
-    await sleep(3000);
-    await runAutopilot();
-  } else {
-    console.log("[PostulAI] Modo manual activo (autopilot desactivado)");
-  }
+  console.log("[PostulAI] Listo — usa el popup para iniciar el autopilot en esta página");
 
 })();

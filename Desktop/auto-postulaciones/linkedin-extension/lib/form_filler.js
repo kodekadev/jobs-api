@@ -1,17 +1,123 @@
 /**
  * form_filler.js — Lógica de llenado del wizard Easy Apply de LinkedIn.
- *
- * Respuestas:
- *   1. Estático para campos comunes (nombre, teléfono, salario, años exp.) — rápido, sin API
- *   2. Claude vía background.js para preguntas desconocidas del empleador
+ * Lógica basada directamente en JOBS_LKD.py (Selenium RPA).
  */
 
 const LIFormFiller = (() => {
 
-  // ── utilidades DOM ──────────────────────────────────────────────────────────
-
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-  function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+  function rand(a, b) { return Math.floor(Math.random() * (b - a + 1)) + a; }
+  function qAll(sel, root = document) { return [...(root || document).querySelectorAll(sel)]; }
+
+  // ── label del campo ──────────────────────────────────────────────────────────
+
+  function labelText(el) {
+    const id = el.id;
+    if (id) {
+      const lbl = document.querySelector(`label[for="${id}"]`);
+      if (lbl) return lbl.textContent.trim();
+    }
+    const wrap = el.closest(".fb-form-element, .jobs-easy-apply-form-element, .artdeco-text-input--container");
+    if (wrap) {
+      const lbl = wrap.querySelector("label, legend, .fb-form-element__label");
+      if (lbl) return lbl.textContent.trim();
+    }
+    return el.placeholder || el.name || el.id || "";
+  }
+
+  // ── normalizar texto (igual a Python) ───────────────────────────────────────
+
+  function normalizar(texto) {
+    return texto
+      .toUpperCase()
+      .replace(/[?¿]/g, "")
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "");
+  }
+
+  // ── respuesta estática (portado de NORMALIZADOR.py) ─────────────────────────
+
+  function responderEstatico(pregunta, profile) {
+    const p = normalizar(pregunta);
+    const exp  = String(profile.experiencia || "3").replace(/\s*años?/i, "").trim();
+    const sueldo = String(profile.pretension_general || "1500000").replace(/[^\d]/g, "") || "1500000";
+    const cel    = profile.celular || "";
+    const ciudad = "Santiago";
+    const carrera = profile.carrera || profile.profesion || "";
+    const resumen = profile.resumen || "";
+    const nombre  = (profile.nombre || "").split(" ")[0] || "";
+    const apellido = (profile.nombre || "").split(" ").slice(1).join(" ") || "";
+
+    if (p.includes("ANO") || p.includes("AÑO") || p.includes("EXPERIENCIA") ||
+        p.includes("HOW MANY") || p.includes("YEARS"))
+      return { value: p.includes("LIDERAZGO") ? String(Math.max(0, parseInt(exp) - 1)) : exp, matched: true };
+
+    if (p.includes("PRETENSION") || p.includes("SUELDO") || p.includes("RENTA") ||
+        p.includes("SALARIO") || p.includes("BRUTO") || p.includes("LIQUID") ||
+        p.includes("EXPECTATIVA") || p.includes("SALARIAL") || p.includes("REMUNERACION"))
+      return { value: sueldo, matched: true };
+
+    if (p.includes("TELEFONO") || p.includes("CELULAR") || p.includes("PHONE") ||
+        p.includes("MOVIL") || p.includes("NUMERO") || p.includes("INDICA NUMER"))
+      return { value: cel, matched: true };
+
+    if (p.includes("CITY") || p.includes("CIUDAD") || p.includes("UBICACI"))
+      return { value: ciudad, matched: true };
+
+    if (p.includes("LICENCIA") || p.includes("CONDUCIR"))
+      return { value: "B", matched: true };
+
+    if (p.includes("DISPONIBILIDAD") || p.includes("CUANTAS SEMANAS"))
+      return { value: "2 semanas", matched: true };
+
+    if (p.includes("FORMACION") || p.includes("TITULO") || p.includes("CARRERA") ||
+        p.includes("ESTUDIOS"))
+      return { value: carrera, matched: true };
+
+    if (p.includes("CARTA") || p.includes("COVER") || p.includes("PRESENTACION") ||
+        p.includes("RESUMEN") || p.includes("ACERCA"))
+      return { value: resumen, matched: true };
+
+    if (p.includes("DISCAPACIDAD") || p.includes("REQUIERES AJUSTE"))
+      return { value: "No", matched: true };
+
+    if (p.includes("NIVEL") || p.includes("NIVEL DE"))
+      return { value: "Avanzado", matched: true };
+
+    if (p.includes("FIRST NAME") || p.includes("PRIMER NOMBRE") || p.includes("NOMBRE"))
+      return { value: nombre, matched: true };
+
+    if (p.includes("LAST NAME") || p.includes("APELLIDO"))
+      return { value: apellido, matched: true };
+
+    if (p.includes("PAIS") || p.includes("COUNTRY") || p.includes("PAÍS"))
+      return { value: "Chile", matched: true };
+
+    return { value: "Si", matched: false };
+  }
+
+  // ── Claude para preguntas desconocidas ───────────────────────────────────────
+
+  async function responderConClaude(pregunta, profile) {
+    return new Promise(resolve => {
+      try {
+        chrome.runtime.sendMessage({ type: "ASK_AI", pregunta, perfil: profile }, res => {
+          if (chrome.runtime.lastError || !res?.respuesta) resolve(null);
+          else resolve(res.respuesta);
+        });
+      } catch { resolve(null); }
+    });
+  }
+
+  async function responder(pregunta, profile) {
+    if (!pregunta) return null;
+    const { value, matched } = responderEstatico(pregunta, profile);
+    if (matched) return value;
+    const ai = await responderConClaude(pregunta, profile);
+    return ai || value;
+  }
+
+  // ── typing humano ────────────────────────────────────────────────────────────
 
   async function humanType(el, text) {
     el.focus();
@@ -21,437 +127,256 @@ const LIFormFiller = (() => {
       el.value += ch;
       el.dispatchEvent(new Event("input",  { bubbles: true }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
-      await sleep(rand(40, 120));
+      await sleep(rand(30, 80));
     }
+    el.dispatchEvent(new Event("blur", { bubbles: true }));
   }
 
-  function q(selector, root = document)    { return root.querySelector(selector); }
-  function qAll(selector, root = document) { return [...root.querySelectorAll(selector)]; }
-
-  function labelText(el) {
-    const id = el.id;
-    if (id) {
-      const lbl = document.querySelector(`label[for="${id}"]`);
-      if (lbl) return lbl.textContent.trim();
-    }
-    const wrap = el.closest(".artdeco-text-input--container, .fb-form-element, .jobs-easy-apply-form-element");
-    if (wrap) {
-      const lbl = wrap.querySelector("label, legend, .fb-form-element__label");
-      if (lbl) return lbl.textContent.trim();
-    }
-    return el.placeholder || el.name || el.id || "";
-  }
-
-  // ── NORMALIZADOR estático (portado de NORMALIZADOR.py) ─────────────────────
-  // Retorna { value, matched } — matched=false indica que no se reconoció
-
-  function normalizarTexto(texto) {
-    return texto
-      .toUpperCase()
-      .replace(/[?¿]/g, "")
-      .normalize("NFD")
-      .replace(/[̀-ͯ]/g, "");
-  }
-
-  function responderEstatico(pregunta, profile) {
-    const p = normalizarTexto(pregunta);
-    const e = String(profile.experiencia || "3").replace(/\s*años?/i, "").trim();
-    const d = String(profile.pretension_general || "");
-    const t = profile.carrera || profile.profesion || "";
-    const cel = profile.celular || "";
-    const cv  = profile.resumen || "";
-    const nombre   = (profile.nombre || "").split(" ")[0] || "";
-    const apellido = (profile.nombre || "").split(" ").slice(1).join(" ") || "";
-
-    if (p.includes("ANOS DE EXPERIENCIA") || p.includes("AÑO") || p.includes("ANO") ||
-        p.includes("HOW MANY") || p.includes("EXPERIENCIA") || p.includes("LIDERAZGO")) {
-      const val = p.includes("LIDERAZGO") ? String(Math.max(0, parseInt(e) - 1)) : e;
-      return { value: val, matched: true };
-    }
-    if (p.includes("CITY") || p.includes("CIUDAD") || p.includes("UBICACI"))
-      return { value: "Santiago", matched: true };
-    if (p.includes("LICENCIA") || p.includes("CONDUCIR"))
-      return { value: "B", matched: true };
-    if (p.includes("TELEFONO") || p.includes("CELULAR") || p.includes("NUMERO") ||
-        p.includes("PHONE") || p.includes("INDICA NUMER"))
-      return { value: cel, matched: true };
-    if (p.includes("DISPONIBILIDAD") || p.includes("CUANTAS SEMANAS"))
-      return { value: "2 semanas", matched: true };
-    if (p.includes("FORMACION") || p.includes("TITULO") || p.includes("CARRERA"))
-      return { value: t, matched: true };
-    if (p.includes("CARTA") || p.includes("COVER LETTER") || p.includes("PRESENTACION"))
-      return { value: cv, matched: true };
-    if (p.includes("PRETENSION") || p.includes("SUELDO") || p.includes("RENTA") ||
-        p.includes("SALARIO") || p.includes("BRUTO") || p.includes("LIQUID") ||
-        p.includes("EXPECTATIVA") || p.includes("SALARIAL"))
-      return { value: d, matched: true };
-    if (p.includes("DISCAPACIDAD") || p.includes("REQUIERES AJUSTE"))
-      return { value: "No", matched: true };
-    if (p.includes("NIVEL"))   return { value: "Avanzado", matched: true };
-    if (p.includes("FIRST NAME") || p.includes("PRIMER NOMBRE")) return { value: nombre, matched: true };
-    if (p.includes("LAST NAME") || p.includes("APELLIDO"))        return { value: apellido, matched: true };
-
-    return { value: "Sí", matched: false };
-  }
-
-  // ── Claude vía background (para preguntas no reconocidas) ──────────────────
-
-  async function responderConClaude(pregunta, profile) {
-    return new Promise((resolve) => {
-      try {
-        chrome.runtime.sendMessage(
-          { type: "ASK_AI", pregunta, perfil: profile },
-          (res) => {
-            if (chrome.runtime.lastError || !res?.respuesta) {
-              resolve(null);
-            } else {
-              resolve(res.respuesta);
-            }
-          }
-        );
-      } catch (_) {
-        resolve(null);
-      }
-    });
-  }
-
-  async function responder(pregunta, profile) {
-    if (!pregunta) return null;
-    const { value, matched } = responderEstatico(pregunta, profile);
-    if (matched) return value;
-    // Pregunta no reconocida → Claude
-    const aiRespuesta = await responderConClaude(pregunta, profile);
-    return aiRespuesta || value; // fallback al "Sí" si Claude falla
-  }
-
-  // ── combobox / typeahead (LinkedIn usa estos para País, Ciudad, etc.) ─────────
-  // Estructura típica:
-  //   <input role="combobox" aria-autocomplete="list" ...>
-  //   <div role="listbox"> <div role="option">...</div> </div>
-  //   o bien <ul role="listbox"> <li role="option">...</li> </ul>
+  // ── combobox / typeahead ─────────────────────────────────────────────────────
 
   async function fillCombobox(input, valor) {
     if (!valor) return;
     input.focus();
     input.click();
-    // Limpiar y escribir
     input.value = "";
     input.dispatchEvent(new Event("input", { bubbles: true }));
-    await sleep(300);
+    await sleep(200);
     for (const ch of String(valor)) {
       input.value += ch;
-      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("input",  { bubbles: true }));
       input.dispatchEvent(new Event("change", { bubbles: true }));
-      await sleep(rand(50, 130));
+      await sleep(rand(40, 100));
     }
-    // Esperar a que aparezca el dropdown (listbox)
     for (let i = 0; i < 8; i++) {
       await sleep(400);
-      const listbox =
-        document.querySelector('[role="listbox"]') ||
-        document.querySelector('ul[class*="typeahead"]') ||
-        document.querySelector('div[class*="autocomplete-results"]');
+      const listbox = document.querySelector('[role="listbox"], ul[class*="typeahead"], div[class*="autocomplete"]');
       if (!listbox) continue;
-
-      // Seleccionar la primera opción visible que coincida con el valor
-      const opciones = [...listbox.querySelectorAll('[role="option"], li, div[data-value]')]
-        .filter(el => el.offsetParent);
-
+      const opciones = [...listbox.querySelectorAll('[role="option"], li')].filter(el => el.getBoundingClientRect().width);
       if (!opciones.length) continue;
-
-      // Buscar opción que contenga el valor (case-insensitive)
-      const match = opciones.find(o =>
-        o.textContent.trim().toLowerCase().includes(valor.toLowerCase())
-      ) || opciones[0]; // si no hay match exacto, tomar la primera
-
+      const match = opciones.find(o => o.textContent.trim().toLowerCase().includes(valor.toLowerCase())) || opciones[0];
       match.click();
-      await sleep(400);
+      await sleep(300);
       return;
     }
-    // Si no apareció listbox: simular Enter como fallback
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
   }
 
-  async function fillComboboxes(modal, profile) {
-    for (const input of qAll('input[role="combobox"]', modal)) {
-      if (!input.getBoundingClientRect().width) continue;
-      if (input.value && input.value.trim()) continue; // ya tiene valor
-
-      const label = labelText(input);
-      if (!label) continue;
-
-      const val = await responder(label, profile);
-      if (val) await fillCombobox(input, val);
-    }
-  }
-
-  // ── selección del resume ya cargado ─────────────────────────────────────────
+  // ── seleccionar CV existente ─────────────────────────────────────────────────
 
   async function selectExistingResume(modal) {
-    const resumeCards = qAll(
-      ".jobs-document-upload-redesign-card__container, " +
-      "[data-test-document-upload-list-item], " +
-      "input[type='radio'][name*='resume'], " +
-      ".document-upload-list-item",
+    const cards = qAll(
+      ".jobs-document-upload-redesign-card__container, [data-test-document-upload-list-item], " +
+      "input[type='radio'][name*='resume'], .document-upload-list-item",
       modal
     );
-    if (resumeCards.length > 0) {
-      const target = resumeCards[resumeCards.length - 1];
-      if (target.tagName === "INPUT") target.click();
-      else {
-        const radio = target.querySelector("input[type='radio']");
-        if (radio) radio.click();
-        else target.click();
-      }
-      await sleep(500);
-      return true;
-    }
-    return false;
+    if (!cards.length) return;
+    const target = cards[cards.length - 1];
+    if (target.tagName === "INPUT") target.click();
+    else { const r = target.querySelector("input[type='radio']"); if (r) r.click(); else target.click(); }
+    await sleep(400);
   }
 
-  // ── llenado de texto / textarea ──────────────────────────────────────────────
+  // ── llenado de secciones (igual a Python: detecta por outerHTML) ─────────────
+  // Python itera div[*] del formulario y chequea el outerHTML para saber el tipo
 
-  async function fillInputs(modal, profile) {
-    for (const input of qAll("input, textarea", modal)) {
+  async function fillSection(section, profile) {
+    const html = section.outerHTML || "";
+
+    // Fieldset → radio buttons: click primer label (Python: xp2 label click)
+    if (html.includes("<fieldset")) {
+      const labels = qAll("input[type='radio']", section);
+      if (labels.length && !labels.some(r => r.checked)) {
+        labels[0].click();
+        await sleep(300);
+      }
+      return;
+    }
+
+    // Select (Python: select_by_value "Yes" → "Professional")
+    if (html.includes("<select")) {
+      const select = section.querySelector("select");
+      if (!select || !select.getBoundingClientRect().width) return;
+      const label = labelText(select);
+      const p = normalizar(label);
+      let chosen = null;
+
+      if (p.includes("EXPERIENCIA") || p.includes("ANO") || p.includes("AÑO")) {
+        const yrs = parseInt(profile.experiencia || "3");
+        chosen = [...select.options].find(o => {
+          const nums = (o.text.match(/\d+/g) || []).map(Number);
+          return nums.length === 1 ? nums[0] === yrs : nums.length === 2 ? yrs >= nums[0] && yrs <= nums[1] : false;
+        });
+      }
+      if (!chosen && (p.includes("NIVEL") || p.includes("EDUCATION") || p.includes("TITULO")))
+        chosen = [...select.options].find(o => /universit|bachelor|licenci/i.test(o.text));
+      if (!chosen && (p.includes("COUNTRY") || p.includes("PAIS")))
+        chosen = [...select.options].find(o => /chile/i.test(o.text));
+      if (!chosen && (p.includes("RELOCAT") || p.includes("DISPONIB")))
+        chosen = [...select.options].find(o => /yes|si|sí|open|dispon/i.test(o.text));
+      // Python fallback: select_by_value "Yes"
+      if (!chosen) chosen = [...select.options].find(o => /^(yes|si|sí)$/i.test(o.text.trim()));
+      // Python fallback 2: "Professional"
+      if (!chosen) chosen = [...select.options].find(o => /professional/i.test(o.text));
+      if (!chosen && select.options.length > 1) chosen = select.options[1]; // primera opción no-vacía
+
+      if (chosen) {
+        select.value = chosen.value;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        await sleep(300);
+      }
+      return;
+    }
+
+    // Combobox typeahead
+    const combobox = section.querySelector("input[role='combobox']");
+    if (combobox && combobox.getBoundingClientRect().width && !combobox.value.trim()) {
+      const label = labelText(combobox);
+      if (label) {
+        const val = await responder(label, profile);
+        if (val) await fillCombobox(combobox, val);
+      }
+      return;
+    }
+
+    // Input / Textarea (Python: send_keys respuesta)
+    if (html.includes("<input") || html.includes("<textarea")) {
+      for (const el of qAll("input:not([type='hidden']):not([type='file']):not([type='radio']):not([type='checkbox']), textarea", section)) {
+        if (!el.getBoundingClientRect().width) continue;
+        if (el.getAttribute("role") === "combobox") continue;
+        if (el.value && el.value.trim()) continue;
+        const label = labelText(el);
+        if (!label) continue;
+        let val = await responder(label, profile);
+        if (!val) continue;
+        if (el.type === "number") val = val.replace(/[^\d]/g, "") || val;
+        await humanType(el, val);
+      }
+    }
+  }
+
+  // ── llenar todos los campos del paso actual ──────────────────────────────────
+
+  async function fillCurrentStep(modal, profile) {
+    await selectExistingResume(modal);
+
+    // Obtener secciones del formulario (Python: /form/div/div/div[*])
+    const form = modal.querySelector("form");
+    if (form) {
+      const sections = qAll(":scope > div > div > div", form);
+      if (sections.length) {
+        for (const section of sections) {
+          await fillSection(section, profile);
+        }
+        return;
+      }
+    }
+
+    // Fallback: llenar campo por campo directamente
+    for (const combobox of qAll("input[role='combobox']", modal)) {
+      if (!combobox.getBoundingClientRect().width || combobox.value.trim()) continue;
+      const label = labelText(combobox);
+      if (label) { const val = await responder(label, profile); if (val) await fillCombobox(combobox, val); }
+    }
+    for (const input of qAll("input:not([type='hidden']):not([type='file']):not([type='radio']):not([type='checkbox']), textarea", modal)) {
       if (!input.getBoundingClientRect().width) continue;
-      const type = input.type?.toLowerCase();
-      if (type === "file" || type === "radio" || type === "checkbox" || type === "hidden") continue;
-      // Los combobox se manejan en fillComboboxes()
       if (input.getAttribute("role") === "combobox") continue;
       if (input.value && input.value.trim()) continue;
-
       const label = labelText(input);
       if (!label) continue;
-
-      const val = await responder(label, profile);
-      if (val) await humanType(input, val);
+      let val = await responder(label, profile);
+      if (!val) continue;
+      if (input.type === "number") val = val.replace(/[^\d]/g, "") || val;
+      await humanType(input, val);
     }
-  }
-
-  // ── selects ──────────────────────────────────────────────────────────────────
-
-  async function fillSelects(modal, profile) {
     for (const select of qAll("select", modal)) {
       if (!select.getBoundingClientRect().width) continue;
-      const label = labelText(select);
-      await fillSelect(select, label, profile);
+      await fillSection(select.closest("div") || select.parentElement, profile);
+    }
+    for (const fieldset of qAll("fieldset", modal)) {
+      await fillSection(fieldset.closest("div") || fieldset.parentElement, profile);
     }
   }
 
-  async function fillSelect(select, label, profile) {
-    const p = normalizarTexto(label);
-    let chosen = null;
+  // ── buscar botón habilitado por aria-label ───────────────────────────────────
 
-    if (p.includes("EXPERIENCIA") || p.includes("ANO") || p.includes("AÑO")) {
-      const yrs = parseInt(profile.experiencia || "3");
-      chosen = [...select.options].find(o => {
-        const nums = (o.text.match(/\d+/g) || []).map(Number);
-        return nums.length === 1 ? nums[0] === yrs
-          : nums.length === 2 ? yrs >= nums[0] && yrs <= nums[1]
-          : false;
-      });
-    }
-    if (!chosen && (p.includes("NIVEL") || p.includes("EDUCATION") || p.includes("TITULO"))) {
-      chosen = [...select.options].find(o => /universit|bachelor|licenci/i.test(o.text));
-    }
-    if (!chosen && (p.includes("RELOCAT") || p.includes("REUBIC") || p.includes("DISPONIB"))) {
-      chosen = [...select.options].find(o => /yes|si|sí|open|dispon/i.test(o.text));
-    }
-    if (!chosen && (p.includes("COUNTRY") || p.includes("PAIS") || p.includes("PAÍS"))) {
-      chosen = [...select.options].find(o => /chile/i.test(o.text));
-    }
-    // Para selects de sí/no simples: elegir "Yes/Sí"
-    if (!chosen) {
-      const opts = [...select.options];
-      if (opts.length <= 3) {
-        chosen = opts.find(o => /^(yes|si|sí|y)$/i.test(o.text.trim())) ||
-                 opts.find(o => /yes|si|sí/i.test(o.text));
-      }
-    }
-
-    if (chosen) {
-      select.value = chosen.value;
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-      await sleep(300);
-    }
-  }
-
-  // ── radio buttons ────────────────────────────────────────────────────────────
-
-  async function fillRadios(modal, profile) {
-    for (const fs of qAll("fieldset", modal)) {
-      const legend = (fs.querySelector("legend, span[class*='label']")?.textContent || "").trim();
-      const radios = qAll("input[type='radio']", fs);
-      if (!radios.length) continue;
-
-      const res = await responder(legend, profile);
-      let targetPattern = null;
-      if (!res || res === "Sí" || res.toLowerCase() === "si" || res.toLowerCase() === "yes") {
-        targetPattern = /yes|si|sí/i;
-      } else if (res.toLowerCase() === "no") {
-        targetPattern = /^no$/i;
-      } else {
-        // Respuesta específica → buscar en las opciones
-        const target = radios.find(r => {
-          const lbl = r.closest("label") || document.querySelector(`label[for="${r.id}"]`);
-          return lbl?.textContent.trim().toLowerCase() === res.toLowerCase() ||
-                 r.value.toLowerCase() === res.toLowerCase();
-        });
-        if (target && !target.checked) { target.click(); await sleep(300); }
-        continue;
-      }
-
-      const target = radios.find(r =>
-        targetPattern.test(r.value) ||
-        targetPattern.test((r.closest("label") || document.querySelector(`label[for="${r.id}"]`))?.textContent.trim() || "")
-      );
-      if (target && !target.checked) { target.click(); await sleep(300); }
-    }
-  }
-
-  // ── botón de avance ───────────────────────────────────────────────────────────
-
-  // Espera hasta que el botón exista y esté habilitado (igual a WebDriverWait de Selenium)
-  async function waitForClickable(selector, timeoutMs = 6000) {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      const btn = document.querySelector(selector);
+  function findBtn(...ariaLabels) {
+    for (const label of ariaLabels.flat()) {
+      const btn = document.querySelector(`button[aria-label='${label}']`);
       if (btn && !btn.disabled && btn.getAttribute("aria-disabled") !== "true") return btn;
-      await sleep(300);
     }
     return null;
   }
 
-  async function clickNext() {
-    const NEXT_LABELS = [
-      'Ir al siguiente paso', 'Continue to next step', 'Continuar al siguiente paso',
-      'Review your application', 'Revisar tu solicitud', 'Revisar',
-    ];
-    const SKIP_TEXTS = ["back","atrás","atras","cancel","cancelar","descartar"];
+  // ── buscar botón habilitado por texto visible ────────────────────────────────
 
-    // Chequea todos los selectores en paralelo cada 300ms (no 6s por cada uno)
-    const start = Date.now();
-    while (Date.now() - start < 6000) {
-      for (const label of NEXT_LABELS) {
-        const btn = document.querySelector(`button[aria-label='${label}']`);
-        if (btn && !btn.disabled && btn.getAttribute("aria-disabled") !== "true") {
-          btn.click(); await sleep(1500); return "next";
-        }
-      }
-      // Fallback: cualquier botón visible con texto de avance
-      for (const btn of qAll("button")) {
-        if (btn.disabled || btn.getAttribute("aria-disabled") === "true") continue;
-        if (!btn.getBoundingClientRect().width) continue;
-        const txt = btn.textContent.trim().toLowerCase();
-        if (SKIP_TEXTS.includes(txt)) continue;
-        if (txt === "revisar" || txt === "review" || txt === "siguiente" ||
-            txt === "next" || txt === "continuar" ||
-            txt.startsWith("revisar") || txt.startsWith("siguiente") || txt.startsWith("continuar")) {
-          btn.click(); await sleep(1500); return "next";
-        }
-      }
-      await sleep(300);
-    }
-    return null;
-  }
-
-  async function clickSubmit() {
-    const SUBMIT_SELECTORS = [
-      "button[aria-label='Enviar solicitud']",
-      "button[aria-label='Submit application']",
-      "button[aria-label='Submit']",
-      "button[aria-label='Enviar']",
-    ];
-    for (const sel of SUBMIT_SELECTORS) {
-      const btn = await waitForClickable(sel, 4000);
-      if (btn) { btn.click(); await sleep(2000); return true; }
-    }
-    // Fallback texto
-    for (const btn of qAll("button.artdeco-button--primary")) {
+  function findBtnByText(...texts) {
+    for (const btn of document.querySelectorAll("button")) {
       if (btn.disabled || btn.getAttribute("aria-disabled") === "true") continue;
+      if (!btn.getBoundingClientRect().width) continue;
       const txt = btn.textContent.trim().toLowerCase();
-      if (txt.includes("enviar") || txt.includes("submit")) {
-        btn.click(); await sleep(2000); return true;
-      }
+      if (texts.flat().some(t => txt === t || txt.startsWith(t))) return btn;
     }
-    return false;
+    return null;
   }
 
-  // ── pantalla de revisión / éxito ──────────────────────────────────────────────
+  // ── esperar modal ────────────────────────────────────────────────────────────
 
-  function isReviewScreen(modal) {
-    // Solo es pantalla de revisión si hay un botón real de ENVIAR — no confundir
-    // con el botón "Revisar" (aria-label='Revisar tu solicitud') que navega al paso anterior
-    return !!q(
-      "button[aria-label='Submit application'], button[aria-label='Enviar solicitud'], " +
-      "button[aria-label='Submit'], button[aria-label='Enviar']",
-      modal
-    );
-  }
-
-  function isSuccessScreen() {
-    const html = document.body.innerHTML.toLowerCase();
-    return (
-      html.includes("application submitted") ||
-      html.includes("solicitud enviada") ||
-      html.includes("your application was sent") ||
-      html.includes("applied")
-    );
-  }
-
-  // ── API pública ───────────────────────────────────────────────────────────────
-
-  async function fill(profile) {
-    // Esperar a que aparezca el modal (cualquier dialog de LinkedIn)
-    let modal = null;
+  async function waitForModal() {
     for (let i = 0; i < 10; i++) {
-      modal = document.querySelector(
-        ".jobs-easy-apply-modal, [data-test-modal-id='easy-apply-modal'], " +
-        "div[role='dialog'][aria-label*='apply'], div[role='dialog'][aria-label*='Apply'], " +
-        "div[role='dialog'][aria-label*='olicitud'], div[role='dialog'][aria-label*='olicitar'], " +
-        "div[role='dialog'][aria-label*='Aplicar']"
-      ) || document.querySelector("div[role='dialog']");
-      if (modal) break;
+      const m = document.querySelector("div[role='dialog']");
+      if (m) return m;
       await sleep(500);
     }
+    return null;
+  }
+
+  // ── API pública: fill() ──────────────────────────────────────────────────────
+  // Replica el while (vla=='Siguiente')|(vla=='Revisar') del script Python
+
+  async function fill(profile) {
+    const modal = await waitForModal();
     if (!modal) { console.warn("[PostulAI] Modal no encontrado"); return false; }
 
-    const MAX_STEPS = 12;
+    const SUBMIT_LABELS = ["Enviar solicitud", "Submit application", "Submit", "Enviar"];
+    const NEXT_LABELS   = ["Ir al siguiente paso", "Continue to next step", "Continuar al siguiente paso"];
+
+    const MAX_STEPS = 15;
 
     for (let step = 0; step < MAX_STEPS; step++) {
       await sleep(800);
-      if (isSuccessScreen()) return true;
 
-      // Llenar todos los tipos de campo
-      await selectExistingResume(modal);
-      await fillComboboxes(modal, profile);
-      await fillInputs(modal, profile);
-      await fillSelects(modal, profile);
-      await fillRadios(modal, profile);
-
-      await sleep(500); // Dar tiempo a validaciones de LinkedIn
-
-      // ¿Pantalla de revisión? → enviar
-      if (isReviewScreen(modal)) {
-        if (profile._autopilot) return await clickSubmit();
-        return "review";
-      }
-
-      // ¿Botón de enviar directo?
-      const submitBtn = document.querySelector(
-        "button[aria-label='Enviar solicitud'], button[aria-label='Submit application'], button[aria-label='Enviar']"
-      );
-      if (submitBtn && !submitBtn.disabled && submitBtn.getAttribute("aria-disabled") !== "true") {
+      // ¿Botón de enviar? → fin del formulario (Python: click "Enviar" tras el while)
+      const submitBtn = findBtn(SUBMIT_LABELS);
+      if (submitBtn) {
+        console.log("[PostulAI] Pantalla de envío — enviando...");
         if (profile._autopilot) { submitBtn.click(); await sleep(2000); return true; }
         return "review";
       }
 
-      // Avanzar al siguiente paso
-      const result = await clickNext();
-      if (!result) {
-        console.warn("[PostulAI] clickNext() no encontró botón habilitado en paso", step + 1);
-        break;
+      // Llenar campos del paso actual (Python: for j, x in enumerate(n))
+      await fillCurrentStep(modal, profile);
+      await sleep(600);
+
+      // Intentar avanzar: "Ir al siguiente paso" primero (Python: aria-label)
+      const nextBtn = findBtn(NEXT_LABELS);
+      if (nextBtn) {
+        console.log(`[PostulAI] Paso ${step + 1} — avanzando...`);
+        nextBtn.click();
+        await sleep(1500);
+        continue;
       }
+
+      // Fallback: botón "Revisar" (Python: //button[contains(., 'Revisar')])
+      const revisarBtn = findBtnByText("revisar", "review");
+      if (revisarBtn) {
+        console.log(`[PostulAI] Paso ${step + 1} — revisando...`);
+        revisarBtn.click();
+        await sleep(1500);
+        continue;
+      }
+
+      console.warn(`[PostulAI] Paso ${step + 1}: sin botón de avance`);
+      return false;
     }
 
     return false;
