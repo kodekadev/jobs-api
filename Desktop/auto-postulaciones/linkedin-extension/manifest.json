@@ -1,0 +1,52 @@
+{
+  "manifest_version": 3,
+  "name": "PostulAI — LinkedIn Auto Apply",
+  "version": "1.0.0",
+  "description": "Postula automáticamente a empleos de LinkedIn Easy Apply usando tu perfil de PostulAI.",
+
+  "permissions": ["storage", "alarms", "tabs", "notifications"],
+  "host_permissions": [
+    "https://*.linkedin.com/*",
+    "https://api.postulai.cl/*",
+    "http://localhost:*/*"
+  ],
+
+  "externally_connectable": {
+    "matches": [
+      "https://*.postulai.cl/*",
+      "http://localhost:*/*"
+    ]
+  },
+
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["https://www.linkedin.com/jobs/*"],
+      "js": ["lib/form_filler.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16":  "icons/icon16.png",
+      "48":  "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+
+  "icons": {
+    "16":  "icons/icon16.png",
+    "48":  "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
