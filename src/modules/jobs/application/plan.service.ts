@@ -23,18 +23,18 @@ export class PlanService {
   }
 
   async savePlan(userId: string, plan: string) {
-    const now = new Date().toISOString();
-
     await this.bq.query(`
       MERGE ${this.bq.t('PLAN_CONTRATADO')} T
       USING (SELECT @id AS ID_USUARIO) S
       ON T.ID_USUARIO = S.ID_USUARIO
       WHEN MATCHED THEN
-        UPDATE SET PLAN = @plan, ESTADO = 'ACTIVO', FECHA_INICIO = @now, MEDIO_PAGO = 'APP'
+        UPDATE SET PLAN = @plan, ESTADO = 'ACTIVO', FECHA_INICIO = CURRENT_TIMESTAMP(),
+          FECHA_FIN = TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 30 DAY), MEDIO_PAGO = 'APP'
       WHEN NOT MATCHED THEN
-        INSERT (ID_USUARIO, PLAN, ESTADO, FECHA_INICIO, MEDIO_PAGO)
-        VALUES (@id, @plan, 'ACTIVO', @now, 'APP')
-    `, { id: userId, plan, now });
+        INSERT (ID_USUARIO, PLAN, ESTADO, FECHA_INICIO, FECHA_FIN, MEDIO_PAGO)
+        VALUES (@id, @plan, 'ACTIVO', CURRENT_TIMESTAMP(),
+          TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 30 DAY), 'APP')
+    `, { id: userId, plan });
 
     return { success: true };
   }
@@ -46,16 +46,16 @@ export class PlanService {
 
     const orderId = `jobs-${userId}-${Date.now()}`;
     const urlConfirmation = `${env.backendUrl}/api/plan/notificacion`;
-    const urlReturn = `${env.frontendUrl}/pago/retorno`;
+    // Flow redirige al usuario con POST: el route handler del front lo convierte en GET
+    const urlReturn = `${env.frontendUrl}/api/pago/retorno`;
 
     const params: Record<string, string> = {
       apiKey: env.flowApiKey,
       amount: String(amount),
+      commerceOrder: orderId,
       currency: 'CLP',
       email: userEmail,
-      merchantId: env.flowApiKey,
-      orderId,
-      subject: `Plan ${plan} — Jobs`,
+      subject: `Plan ${plan} — PostulAI`,
       urlConfirmation,
       urlReturn,
     };
@@ -71,7 +71,7 @@ export class PlanService {
     });
 
     const data: any = await res.json();
-    if (!data.token) throw new Error('Error creando pago Flow');
+    if (!data.token) throw new Error(`Error creando pago Flow: ${data.message || JSON.stringify(data)}`);
 
     // Store pending payment
     await this.bq.query(`
@@ -94,12 +94,14 @@ export class PlanService {
   async getReturnStatus(token: string) {
     const status = await this.getFlowStatus(token);
 
+    let plan: string | null = null;
     if (status?.status === 2) {
-      await this.confirmPayment(token);
+      plan = await this.confirmPayment(token);
     }
 
     return {
       paid: status?.status === 2,
+      plan,
       flowOrder: status?.flowOrder,
       amount: status?.amount,
     };
@@ -118,19 +120,21 @@ export class PlanService {
     return res.json() as any;
   }
 
-  private async confirmPayment(token: string) {
+  private async confirmPayment(token: string): Promise<string | null> {
     const rows = await this.bq.query<any>(`
       SELECT ID_USUARIO, PLAN FROM ${this.bq.t('PAGOS_PENDIENTES')}
       WHERE TOKEN = @token LIMIT 1
     `, { token }).catch(() => []);
 
-    if (!rows.length) return;
+    if (!rows.length) return null;
 
     await this.savePlan(rows[0].ID_USUARIO, rows[0].PLAN);
 
     await this.bq.query(`
       DELETE FROM ${this.bq.t('PAGOS_PENDIENTES')} WHERE TOKEN = @token
     `, { token }).catch(() => null);
+
+    return rows[0].PLAN;
   }
 
   private sign(params: Record<string, string>): string {

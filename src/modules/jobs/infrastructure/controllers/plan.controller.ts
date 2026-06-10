@@ -28,8 +28,8 @@ export class PlanController {
 
   @Post('notificacion')
   @HttpCode(200)
-  notification(@Query('token') token: string) {
-    return this.planService.handleNotification(token);
+  notification(@Body('token') bodyToken: string, @Query('token') queryToken: string) {
+    return this.planService.handleNotification(bodyToken || queryToken);
   }
 
   @Get('retorno/:token')
