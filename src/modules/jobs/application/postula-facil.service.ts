@@ -62,9 +62,9 @@ export class PostulaFacilService {
       prof: body.profesion,
       resumen: body.resumen,
       cv: body.cv_url,
-      cargos: body.cargos,
+      cargos: JSON.stringify(body.cargos),
       exp: body.experiencia,
-      ubic: body.ubicaciones,
+      ubic: JSON.stringify(body.ubicaciones),
       pretension: body.pretension_general,
       rut: body.rut || '',
       fn: body.fecha_nacimiento || '',
@@ -118,41 +118,63 @@ export class PostulaFacilService {
   }
 
   private async triggerRegisterJob(userId: string): Promise<void> {
-    const project = env.gcpProjectId;
-    const region  = env.gcpRegion;
-    const job     = env.autoJobName;
-
+    // --- Intento 1: GCP Cloud Run (producción) ---
     const tokenRes = await fetch(
       'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token',
       { headers: { 'Metadata-Flavor': 'Google' } },
     ).catch(() => null);
 
-    if (!tokenRes?.ok) return; // local — no hacer nada
+    if (tokenRes?.ok) {
+      const { access_token } = await tokenRes.json();
+      const project = env.gcpProjectId;
+      const region  = env.gcpRegion;
+      const job     = env.autoJobName;
 
-    const { access_token } = await tokenRes.json();
+      const res = await fetch(
+        `https://run.googleapis.com/v2/projects/${project}/locations/${region}/jobs/${job}:run`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            overrides: {
+              containerOverrides: [{
+                args: ['python', 'register.py'],
+                env: [{ name: 'SINGLE_USER_ID', value: userId }],
+              }],
+              taskCount: 1,
+            },
+          }),
+        },
+      );
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(`Cloud Run register job ${res.status}: ${err.slice(0, 200)}`);
+      }
+      console.log(`[postula-facil] Cloud Run job disparado para ${userId}`);
+      return;
+    }
 
-    const res = await fetch(
-      `https://run.googleapis.com/v2/projects/${project}/locations/${region}/jobs/${job}:run`,
-      {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          overrides: {
-            containerOverrides: [{
-              args: ['python', 'register.py'],
-              env: [{ name: 'SINGLE_USER_ID', value: userId }],
-            }],
-            taskCount: 1,
-          },
-        }),
-      },
-    );
+    // --- Intento 2: Jenkins local (desarrollo) ---
+    const { jenkinsUrl, jenkinsJob, jenkinsUser, jenkinsToken } = env;
+    if (!jenkinsUser || !jenkinsToken) {
+      console.warn('[postula-facil] Sin credenciales Jenkins — saltando trigger local');
+      return;
+    }
+
+    const basicAuth = Buffer.from(`${jenkinsUser}:${jenkinsToken}`).toString('base64');
+    const params = new URLSearchParams({ SINGLE_USER_ID: userId });
+    const url = `${jenkinsUrl}/job/${jenkinsJob}/buildWithParameters?${params}`;
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Basic ${basicAuth}` },
+    });
 
     if (!res.ok) {
       const err = await res.text();
-      throw new Error(`register job ${res.status}: ${err.slice(0, 200)}`);
+      throw new Error(`Jenkins trigger ${res.status}: ${err.slice(0, 200)}`);
     }
-    console.log(`[postula-facil] register job disparado para ${userId}`);
+    console.log(`[postula-facil] Jenkins job disparado para ${userId}`);
   }
 
   async get(userId: string) {

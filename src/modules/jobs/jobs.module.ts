@@ -4,14 +4,18 @@ import { ProfileService } from './application/profile.service';
 import { PostulaFacilService } from './application/postula-facil.service';
 import { PostulacionesService } from './application/postulaciones.service';
 import { PlanService } from './application/plan.service';
+import { ApplicationsService } from './application/applications.service';
+import { IndeedService } from './application/indeed.service';
 import { AuthController } from './infrastructure/controllers/auth.controller';
 import { ProfileController } from './infrastructure/controllers/profile.controller';
 import { PostulaFacilController } from './infrastructure/controllers/postula-facil.controller';
 import { PostulacionesController } from './infrastructure/controllers/postulaciones.controller';
 import { PlanController } from './infrastructure/controllers/plan.controller';
+import { ApplicationsController } from './infrastructure/controllers/applications.controller';
+import { IndeedController } from './infrastructure/controllers/indeed.controller';
 
 @Module({
-  providers: [AuthService, ProfileService, PostulaFacilService, PostulacionesService, PlanService],
-  controllers: [AuthController, ProfileController, PostulaFacilController, PostulacionesController, PlanController],
+  providers: [AuthService, ProfileService, PostulaFacilService, PostulacionesService, PlanService, ApplicationsService, IndeedService],
+  controllers: [AuthController, ProfileController, PostulaFacilController, PostulacionesController, PlanController, ApplicationsController, IndeedController],
 })
 export class JobsModule {}

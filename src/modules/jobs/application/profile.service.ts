@@ -14,10 +14,13 @@ export class ProfileService {
     const rows = await this.bq.query<any>(`
       SELECT
         u.ID_USUARIO, u.NOMBRE, u.EMAIL, u.CELULAR,
-        ic.PROFESION, ic.EXPERIENCIA, ic.FOTO_URL, ic.CV_URL,
+        ic.PROFESION, ic.EXPERIENCIA as IC_EXPERIENCIA, ic.FOTO_URL, ic.CV_URL as IC_CV_URL,
+        pf.CARGOS, pf.UBICACIONES, pf.RESUMEN, pf.CV_URL as PF_CV_URL,
+        pf.EXPERIENCIA as PF_EXPERIENCIA, pf.PRETENSION_GENERAL,
         COALESCE(pa.activo, 0) as AUTO_ACTIVO
       FROM ${this.bq.t('USUARIOS')} u
       LEFT JOIN ${this.bq.t('INFO_CLIENTE')} ic ON u.ID_USUARIO = ic.ID_USUARIO
+      LEFT JOIN ${this.bq.t('POSTULA_FACIL')} pf ON u.ID_USUARIO = pf.ID_USUARIO
       LEFT JOIN ${this.bq.t('POSTULACIONES_AUTO')} pa ON LOWER(u.ID_USUARIO) = LOWER(pa.id_usuario)
       WHERE u.ID_USUARIO = @id
       LIMIT 1
@@ -27,17 +30,50 @@ export class ProfileService {
 
     const p = rows[0];
 
-    // FOTO_URL: bucket is public — raw URL works directly in browser
-    // CV_URL: private bucket — generate signed URL for download
-    if (p.CV_URL) {
-      const fileName = this.gcs.extractFileName(p.CV_URL);
+    // CV_URL: private bucket — generate signed URL
+    let cvUrl = p.PF_CV_URL || p.IC_CV_URL || '';
+    if (cvUrl) {
+      const fileName = this.gcs.extractFileName(cvUrl);
       if (fileName) {
-        const signed = await this.gcs.getSignedUrl(env.gcsBucketCv, fileName).catch(() => p.CV_URL);
-        if (signed) p.CV_URL = signed;
+        cvUrl = await this.gcs.getSignedUrl(env.gcsBucketCv, fileName).catch(() => cvUrl);
       }
     }
 
-    return p;
+    const parseJson = (val: any): any[] => {
+      if (!val) return [];
+      if (Array.isArray(val)) return val;
+      try { return JSON.parse(val); } catch { return []; }
+    };
+
+    const cargos     = parseJson(p.CARGOS);
+    const ubicaciones = parseJson(p.UBICACIONES);
+
+    // Retorna el mismo formato normalizado que login (sin token)
+    return {
+      usuario: {
+        id:      p.ID_USUARIO,
+        nombre:  p.NOMBRE   || '',
+        email:   p.EMAIL    || '',
+        celular: p.CELULAR  || '',
+      },
+      perfil: {
+        profesion:   p.PROFESION      || '',
+        experiencia: p.IC_EXPERIENCIA || '',
+        foto_url:    p.FOTO_URL       || '',
+        cv_url:      p.IC_CV_URL      || '',
+      },
+      postula_facil: {
+        cargos,
+        ubicaciones,
+        resumen:            p.RESUMEN            || '',
+        cv_url:             cvUrl,
+        experiencia:        p.PF_EXPERIENCIA     || '',
+        pretension_general: p.PRETENSION_GENERAL || '',
+      },
+      postulaciones_auto: {
+        activo: Boolean(p.AUTO_ACTIVO),
+      },
+    };
   }
 
   async updateProfile(userId: string, profesion: string, experiencia: string) {

@@ -5,9 +5,23 @@ import env from './modules/shared/infrastructure/environment';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
+  const allowedOrigins: (string | RegExp)[] = [
+    env.frontendUrl,
+    'http://localhost:3000',
+    /\.run\.app$/,
+    /\.vercel\.app$/,
+    /^chrome-extension:\/\//,
+  ];
+
   app.enableCors({
-    origin: [env.frontendUrl, 'http://localhost:3000', /\.run\.app$/, /\.vercel\.app$/],
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      const ok = allowedOrigins.some(o =>
+        typeof o === 'string' ? o === origin : o.test(origin),
+      );
+      callback(null, ok);
+    },
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
     credentials: true,
   });
 
