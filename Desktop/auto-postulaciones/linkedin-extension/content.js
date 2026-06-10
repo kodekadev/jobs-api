@@ -98,6 +98,24 @@
     return null;
   }
 
+  // ── cerrar cualquier modal abierto ──────────────────────────────────────────
+
+  async function dismissAnyModal() {
+    try {
+      const dismiss = document.querySelector(
+        "button[aria-label='Descartar'], button[aria-label='Dismiss'], button[aria-label='Close'], button[aria-label='Cerrar']"
+      );
+      if (dismiss) {
+        dismiss.click();
+        await sleep(800);
+        const confirm = [...document.querySelectorAll("button")].find(b =>
+          b.textContent.trim() === "Descartar"
+        );
+        if (confirm) { confirm.click(); await sleep(500); }
+      }
+    } catch(_) {}
+  }
+
   // ── lógica de postulación ────────────────────────────────────────────────────
 
   function isAlreadyApplied(jobId) {
@@ -176,19 +194,7 @@
     } else {
       showBadge("PostulAI: No se pudo completar la postulacion", "#e74c3c");
       console.warn("[PostulAI] fill() retornó:", result);
-      // Cerrar modal Easy Apply
-      const dismiss = document.querySelector(
-        "button[aria-label='Descartar'], button[aria-label='Dismiss'], button[aria-label='Close']"
-      );
-      if (dismiss) {
-        dismiss.click();
-        await sleep(800);
-        // LinkedIn muestra "¿Guardar solicitud?" — confirmar descarte
-        const confirmDiscard = [...document.querySelectorAll("button")].find(b =>
-          b.textContent.trim() === "Descartar"
-        );
-        if (confirmDiscard) { confirmDiscard.click(); await sleep(500); }
-      }
+      await dismissAnyModal();
     }
   }
 
@@ -286,8 +292,15 @@
         continue;
       }
 
-      await applyToCurrentJob(jobId);
-      await sleep(rand(3000, 6000));
+      try {
+        await applyToCurrentJob(jobId);
+      } catch(err) {
+        console.warn(`[PostulAI] Error en empleo ${jobId}:`, err?.message || err);
+        // Asegurar que no quede modal abierto
+        await dismissAnyModal();
+      }
+
+      await sleep(rand(2000, 4000));
     }
 
     console.log("[PostulAI] Autopilot: ciclo completado");
