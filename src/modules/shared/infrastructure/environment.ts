@@ -21,6 +21,7 @@ const env = {
   fromEmail: process.env.FROM_EMAIL || 'Jobs <contacto@ko-deka.com>',
   gcsBucketImages: process.env.GCS_BUCKET_IMAGES || 'jobs-profile-images',
   gcsBucketCv: process.env.GCS_BUCKET_CV || 'jobs-profile-cv',
+  anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
 };
 
 export default env;
