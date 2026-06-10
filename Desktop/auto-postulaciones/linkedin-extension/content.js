@@ -1,26 +1,19 @@
 /**
  * content.js — Script principal inyectado en linkedin.com/jobs/*
- *
- * Modos de operación:
- *   - MANUAL   : el usuario hace click en Easy Apply y la extensión llena el formulario
- *   - AUTOPILOT: la extensión busca empleos en la página y aplica automáticamente
- *
- * Flujo:
- *   1. Carga el perfil del usuario desde chrome.storage (lo pone background.js)
- *   2. Observa el DOM para detectar el botón Easy Apply
- *   3. Cuando aparece el modal, llama a LIFormFiller.fill(profile)
- *   4. Reporta la postulación al background para guardar en PostulAI
  */
 
 (async () => {
-
-  // ── config ──────────────────────────────────────────────────────────────────
 
   const cfg = await new Promise(r =>
     chrome.storage.sync.get(["enabled", "autopilot", "userId"], r)
   );
 
-  if (!cfg.enabled || !cfg.userId) return; // extensión desactivada o sin cuenta
+  console.log("[PostulAI] Content script iniciado", { enabled: cfg.enabled, userId: cfg.userId, autopilot: cfg.autopilot });
+
+  if (!cfg.enabled || !cfg.userId) {
+    console.warn("[PostulAI] Detenido: extensión desactivada o sin userId");
+    return;
+  }
 
   const profile = await new Promise(r =>
     chrome.storage.local.get(["profile"], d => r(d.profile))
@@ -31,17 +24,18 @@
     return;
   }
 
+  console.log("[PostulAI] Perfil cargado:", profile.nombre);
   profile._autopilot = !!cfg.autopilot;
 
-  // IDs ya aplicados (evitar duplicados). Se cargan desde backend (URLs) + sesión actual (jobIds)
   const _storedIds = await new Promise(r => chrome.storage.local.get(["appliedIds"], d =>
     r(d.appliedIds || [])
   ));
-  const appliedThisSession = new Set(_storedIds); // contiene URLs del backend
+  const appliedThisSession = new Set(_storedIds);
 
-  // ── utilidades ──────────────────────────────────────────────────────────────
+  // ── utilidades ───────────────────────────────────────────────────────────────
 
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+  function rand(a, b) { return Math.floor(Math.random() * (b - a)) + a; }
 
   function getJobId() {
     const m = location.search.match(/currentJobId=(\d+)/) ||
@@ -79,40 +73,51 @@
     badge._t = setTimeout(() => { badge.style.opacity = "0"; }, 4000);
   }
 
+  // ── detectar botón Easy Apply visible en el panel derecho ───────────────────
+
+  function isVisible(btn) {
+    if (!btn || btn.disabled) return false;
+    const r = btn.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
+
+  function findEasyApplyButton() {
+    // Solo retorna botones que explícitamente digan "Solicitud sencilla" o "Easy Apply"
+    // Ignora "Solicitar ↗" (externo) aunque tenga la misma clase
+    for (const btn of document.querySelectorAll("button")) {
+      if (!isVisible(btn)) continue;
+      const aria = (btn.getAttribute("aria-label") || "").toLowerCase();
+      const txt  = btn.textContent.trim().toLowerCase();
+      if (aria.includes("solicitud sencilla") || aria.includes("easy apply") ||
+          aria.includes("aplicar fácilmente") ||
+          txt.includes("solicitud sencilla") || txt.includes("easy apply") ||
+          txt.includes("aplicar fácilmente")) {
+        return btn;
+      }
+    }
+    return null;
+  }
+
   // ── lógica de postulación ────────────────────────────────────────────────────
 
-  function isAlreadyApplied() {
-    const jobId   = getJobId();
-    const currUrl = location.href;
-    // Chequear por jobId (sesión actual) o por URL exacta/parcial (backend)
-    if (jobId && appliedThisSession.has(jobId)) return true;
+  function isAlreadyApplied(jobId) {
+    if (!jobId) return false;
+    if (appliedThisSession.has(jobId)) return true;
     for (const entry of appliedThisSession) {
-      if (entry.includes(jobId) || currUrl.includes(entry.replace(/^https?:\/\/[^/]+/, ''))) {
-        return true;
-      }
+      if (String(entry).includes(jobId)) return true;
     }
     return false;
   }
 
-  async function applyToCurrentJob() {
-    const jobId = getJobId();
-    if (!jobId || isAlreadyApplied()) return;
+  async function applyToCurrentJob(overrideJobId) {
+    const jobId = overrideJobId || getJobId();
+    if (!jobId || isAlreadyApplied(jobId)) return;
 
-    // Buscar botón Easy Apply
-    const applyBtn = document.querySelector(
-      "button.jobs-apply-button, " +
-      "button[aria-label*='Easy Apply'], button[aria-label*='Aplicar fácilmente'], " +
-      ".jobs-apply-button--top-card button"
-    );
-
-    if (!applyBtn || applyBtn.disabled) return;
-
-    // Verificar que sea Easy Apply (no redirija a sitio externo)
-    const btnText = applyBtn.textContent.toLowerCase();
-    const isEasyApply = btnText.includes("easy apply") ||
-                        btnText.includes("aplicar fácilmente") ||
-                        applyBtn.closest("[data-is-easy-apply='true']");
-    if (!isEasyApply) return;
+    const applyBtn = findEasyApplyButton();
+    if (!applyBtn) {
+      console.log("[PostulAI] No hay botón Easy Apply visible");
+      return;
+    }
 
     showBadge("PostulAI: Abriendo Easy Apply...");
     applyBtn.click();
@@ -123,7 +128,8 @@
     for (let i = 0; i < 10; i++) {
       modal = document.querySelector(
         ".jobs-easy-apply-modal, [data-test-modal-id='easy-apply-modal'], " +
-        "div[role='dialog'][aria-label*='pply']"
+        "div[role='dialog'][aria-label*='pply'], div[role='dialog'][aria-label*='olicitud'], " +
+        "div[role='dialog'][aria-label*='Aplicar']"
       );
       if (modal) break;
       await sleep(500);
@@ -131,64 +137,130 @@
 
     if (!modal) {
       showBadge("PostulAI: Modal no apareció", "#e74c3c");
+      console.warn("[PostulAI] Modal no encontrado tras 5s");
       return;
     }
 
     showBadge("PostulAI: Llenando formulario...");
+    console.log("[PostulAI] Modal encontrado, llenando...");
 
     const result = await LIFormFiller.fill(profile);
 
     if (result === true) {
       const { title, company } = getJobMeta();
-      // Guardar tanto el jobId como la URL para deduplicación robusta
       appliedThisSession.add(jobId);
       appliedThisSession.add(location.href);
       chrome.storage.local.set({ appliedIds: [...appliedThisSession] });
 
-      // Inferir cargo del perfil (primer cargo configurado)
       const cargo = profile.cargos?.[0] || '';
-
-      // Reportar al background (que lo manda al backend)
       chrome.runtime.sendMessage({
         type: "APPLICATION_SUBMITTED",
         payload: { jobId, title, company, url: location.href, cargo },
       });
 
       showBadge(`PostulAI: Postulado a ${company || "empleo"}`, "#27ae60");
+      console.log("[PostulAI] Postulación enviada:", title, company);
 
     } else if (result === "review") {
       showBadge("PostulAI: Listo para enviar — revisa y confirma", "#f39c12");
     } else {
       showBadge("PostulAI: No se pudo completar la postulacion", "#e74c3c");
+      console.warn("[PostulAI] fill() retornó:", result);
+      // Cerrar modal Easy Apply
+      const dismiss = document.querySelector(
+        "button[aria-label='Descartar'], button[aria-label='Dismiss'], button[aria-label='Close']"
+      );
+      if (dismiss) {
+        dismiss.click();
+        await sleep(800);
+        // LinkedIn muestra "¿Guardar solicitud?" — confirmar descarte
+        const confirmDiscard = [...document.querySelectorAll("button")].find(b =>
+          b.textContent.trim() === "Descartar"
+        );
+        if (confirmDiscard) { confirmDiscard.click(); await sleep(500); }
+      }
     }
   }
 
   // ── modo AUTOPILOT ───────────────────────────────────────────────────────────
-  // Recorre las tarjetas de empleos en la lista y aplica a cada una
 
   async function runAutopilot() {
-    const jobCards = document.querySelectorAll(
-      ".scaffold-layout__list-container .job-card-container, " +
-      ".jobs-search-results-list li.ember-view, " +
-      ".jobs-search__results-list li"
+    console.log("[PostulAI] Autopilot: iniciando búsqueda de empleos...");
+
+    // Hacer scroll de la lista para forzar lazy loading (igual que el script RPA)
+    const jobList = document.querySelector(
+      "#main ul[class*='scaffold-layout__list'], #main ul, .scaffold-layout__list-container"
     );
-
-    for (const card of jobCards) {
-      // Solo tarjetas con indicador Easy Apply
-      const hasEasyApply = card.textContent.includes("Easy Apply") ||
-                           card.textContent.includes("Aplicar fácilmente");
-      if (!hasEasyApply) continue;
-
-      // Click en la tarjeta para cargar el detalle en el panel derecho
-      card.querySelector("a, .job-card-list__title")?.click();
-      await sleep(2500);
-
-      await applyToCurrentJob();
-      await sleep(rand(3000, 6000)); // pausa humana entre postulaciones
+    if (jobList) {
+      for (let i = 0; i < 5; i++) {
+        jobList.scrollTop += 600;
+        await sleep(500);
+      }
+      jobList.scrollTop = 0;
+      await sleep(1000);
     }
-  }
 
-  function rand(a, b) { return Math.floor(Math.random() * (b - a)) + a; }
+    // Selector estable igual al script RPA en Python
+    const rows = Array.from(document.querySelectorAll("li[data-occludable-job-id]"));
+    console.log("[PostulAI] Tarjetas encontradas:", rows.length);
+
+    if (!rows.length) {
+      // Fallback: links directos
+      const links = Array.from(document.querySelectorAll('a[href*="/jobs/view/"], a[href*="currentJobId="]'))
+        .filter((a, i, arr) => arr.findIndex(b => b.href === a.href) === i);
+      console.log("[PostulAI] Fallback — links encontrados:", links.length);
+      for (const link of links) {
+        link.click();
+        await sleep(2500);
+        await applyToCurrentJob();
+        await sleep(rand(3000, 6000));
+      }
+      return;
+    }
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const jobId = row.getAttribute("data-occludable-job-id");
+      console.log(`[PostulAI] Empleo ${i+1}/${rows.length} — ID: ${jobId}`);
+
+      if (isAlreadyApplied(jobId)) {
+        console.log("[PostulAI] Ya aplicado, saltando");
+        continue;
+      }
+
+      // Cerrar modal premium si quedó abierto del empleo anterior
+      try {
+        const closeBtn = document.querySelector(
+          "button[aria-label='Cerrar'], button[aria-label='Close'], button[aria-label='Descartar']"
+        );
+        if (closeBtn) { closeBtn.click(); await sleep(500); }
+      } catch(_) {}
+
+      row.click();
+      await sleep(2000); // Esperar a que cargue el panel derecho
+
+      // Verificar que haya límite diario
+      const errorDiv = document.querySelector("div.artdeco-inline-feedback--error");
+      if (errorDiv && errorDiv.textContent.includes("límite")) {
+        console.warn("[PostulAI] Límite diario alcanzado");
+        showBadge("PostulAI: Límite diario de LinkedIn alcanzado", "#e74c3c");
+        break;
+      }
+
+      // Verificar que tenga botón de Solicitud sencilla
+      const applyBtn = findEasyApplyButton();
+      if (!applyBtn) {
+        console.log("[PostulAI] Sin botón Easy Apply, saltando");
+        continue;
+      }
+
+      await applyToCurrentJob(jobId);
+      await sleep(rand(3000, 6000));
+    }
+
+    console.log("[PostulAI] Autopilot: ciclo completado");
+    showBadge("PostulAI: Ciclo completado", "#27ae60");
+  }
 
   // ── observer: detecta cambios de URL (SPA navigation) ───────────────────────
 
@@ -208,22 +280,21 @@
 
   observer.observe(document.body, { childList: true, subtree: true });
 
-  // ── inicio ───────────────────────────────────────────────────────────────────
+  // ── mensajes desde el popup ──────────────────────────────────────────────────
 
-  // Escuchar mensajes del popup (ej: "aplica ahora" button)
   chrome.runtime.onMessage.addListener(async (msg) => {
-    if (msg.type === "APPLY_NOW") {
-      await applyToCurrentJob();
-    }
-    if (msg.type === "RUN_AUTOPILOT") {
-      await runAutopilot();
-    }
+    if (msg.type === "APPLY_NOW")    await applyToCurrentJob();
+    if (msg.type === "RUN_AUTOPILOT") await runAutopilot();
   });
 
-  // En modo autopilot, correr al cargar la página
+  // ── inicio ───────────────────────────────────────────────────────────────────
+
   if (cfg.autopilot) {
+    console.log("[PostulAI] Autopilot activo, esperando 3s para iniciar...");
     await sleep(3000);
     await runAutopilot();
+  } else {
+    console.log("[PostulAI] Modo manual activo (autopilot desactivado)");
   }
 
 })();

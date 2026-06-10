@@ -29,6 +29,16 @@
       "matches": ["https://www.linkedin.com/jobs/*"],
       "js": ["lib/form_filler.js", "content.js"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://*.postulai.cl/*",
+        "https://jobs-web-ten.vercel.app/*",
+        "https://jobs-web-994947687832.us-central1.run.app/*",
+        "http://localhost:*/*"
+      ],
+      "js": ["inject.js"],
+      "run_at": "document_idle"
     }
   ],
 

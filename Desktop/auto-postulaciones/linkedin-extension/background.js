@@ -27,16 +27,24 @@ async function syncProfile() {
     if (!r.ok) return;
     const data = await r.json();
     // Normalizar: la API devuelve { usuario, perfil, postula_facil, ... }
+    const pf = data.postula_facil || {};
     const profile = {
-      id:          data.usuario?.id       || userId,
-      nombre:      data.usuario?.nombre   || '',
-      email:       data.usuario?.email    || '',
-      celular:     data.usuario?.celular  || '',
-      profesion:   data.perfil?.profesion || '',
-      cv_url:      data.postula_facil?.cv_url || data.perfil?.cv_url || '',
-      cargos:      data.postula_facil?.cargos      || [],
-      experiencia: data.postula_facil?.experiencia || '',
-      resumen:     data.postula_facil?.resumen      || '',
+      id:                    data.usuario?.id       || userId,
+      nombre:                data.usuario?.nombre   || '',
+      email:                 data.usuario?.email    || '',
+      celular:               data.usuario?.celular  || '',
+      profesion:             data.perfil?.profesion || '',
+      cv_url:                pf.cv_url || data.perfil?.cv_url || '',
+      cargos:                pf.cargos      || [],
+      experiencia:           pf.experiencia || '',
+      resumen:               pf.resumen     || '',
+      pretension_general:    pf.pretension_general || '',
+      carrera:               pf.carrera     || '',
+      nivel_educativo:       pf.nivel_educativo || '',
+      institucion:           pf.institucion || '',
+      actualmente_trabajando: pf.actualmente_trabajando ?? true,
+      rut:                   pf.rut         || '',
+      fecha_nacimiento:      pf.fecha_nacimiento || '',
     };
     await chrome.storage.local.set({ profile });
     console.log("[PostulAI] Perfil sincronizado:", profile.nombre);
@@ -77,6 +85,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === "GET_STATS") {
     getStats().then(stats => sendResponse(stats));
+    return true;
+  }
+  if (msg.type === "ASK_AI") {
+    responderPreguntaConClaude(msg.pregunta, msg.perfil)
+      .then(respuesta => sendResponse({ respuesta }))
+      .catch(() => sendResponse({ respuesta: null }));
     return true;
   }
 });
@@ -179,6 +193,26 @@ function getConfig() {
   return new Promise(r =>
     chrome.storage.sync.get(["apiUrl", "apiToken", "userId"], r)
   );
+}
+
+async function responderPreguntaConClaude(pregunta, perfil) {
+  const { apiUrl, apiToken } = await getConfig();
+  if (!apiUrl || !apiToken) return null;
+  try {
+    const r = await fetch(`${apiUrl}/api/ai/responder-pregunta`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ pregunta, perfil }),
+    });
+    if (!r.ok) return null;
+    const data = await r.json();
+    return data.respuesta || null;
+  } catch (_) {
+    return null;
+  }
 }
 
 // ── arranque ──────────────────────────────────────────────────────────────────
