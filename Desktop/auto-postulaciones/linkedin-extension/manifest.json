@@ -14,6 +14,8 @@
   "externally_connectable": {
     "matches": [
       "https://*.postulai.cl/*",
+      "https://jobs-web-994947687832.us-central1.run.app/*",
+      "https://jobs-web-ten.vercel.app/*",
       "http://localhost:*/*"
     ]
   },
