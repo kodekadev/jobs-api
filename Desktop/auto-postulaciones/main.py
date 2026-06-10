@@ -114,7 +114,7 @@ def process_user(user: dict) -> dict:
 
     # ── 0. Cuentas y sesión (Playwright principal, Selenium fallback) ──────────
     portal_creds: dict[str, dict | None] = {}
-    for portal in ["trabajando"]:
+    for portal in ["chiletrabajos", "trabajando"]:
         portal_creds[portal] = get_or_create_account(user, portal)
 
     tbj_creds = portal_creds.get("trabajando")
@@ -127,6 +127,13 @@ def process_user(user: dict) -> dict:
         if not tbj_page:
             # Fallback a Selenium si no hay cookies
             tbj_driver = get_trabajando_session(uid, tbj_creds["email"], tbj_creds["password"])
+
+    # Sesión ChileTrabajos (Selenium) — postular logueado en vez de como invitado
+    cht_creds  = portal_creds.get("chiletrabajos")
+    cht_driver = None
+    if cht_creds:
+        from chiletrabajos.login import get_session as get_cht_session
+        cht_driver = get_cht_session(uid, cht_creds["email"], cht_creds["password"])
 
     # ── 1. Descubrir empleos ────────────────────────────────────────────────
     all_jobs = []
@@ -192,6 +199,7 @@ def process_user(user: dict) -> dict:
                     credentials=portal_creds.get(fuente),
                     trabajando_driver=tbj_driver if fuente == "trabajando" else None,
                     trabajando_page=tbj_page if fuente == "trabajando" else None,
+                    chiletrabajos_driver=cht_driver if fuente == "chiletrabajos" else None,
                 )
                 if result:
                     postulado = True
@@ -224,6 +232,11 @@ def process_user(user: dict) -> dict:
 
     finally:
         close_trabajando_session(uid)
+        if cht_driver:
+            try:
+                cht_driver.quit()
+            except Exception:
+                pass
 
     # ── 4. Guardar en BigQuery ───────────────────────────────────────────────
     bq.save_jobs(rows_to_save)

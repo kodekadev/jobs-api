@@ -526,7 +526,8 @@ def _answer_common_questions(page, user: dict) -> None:
 # ─── FUNCIÓN PRINCIPAL ────────────────────────────────────────────────────────
 
 def apply_via_form(user: dict, job: dict, credentials: dict | None = None,
-                   trabajando_driver=None, trabajando_page=None) -> "dict | bool":
+                   trabajando_driver=None, trabajando_page=None,
+                   chiletrabajos_driver=None) -> "dict | bool":
     """
     Intenta postular al empleo usando el formulario del portal.
     Para Trabajando.cl usa Playwright (page) si está disponible, Selenium como fallback.
@@ -556,7 +557,12 @@ def apply_via_form(user: dict, job: dict, credentials: dict | None = None,
             ok = apply_computrabajo(user, url)
 
         elif "chiletrabajos" in url or fuente == "chiletrabajos":
-            ok = apply_chiletrabajos(user, url)
+            if chiletrabajos_driver:
+                from chiletrabajos.postular import _postular_empleo
+                ok = _postular_empleo(chiletrabajos_driver, url, user, job.get("titulo", ""))
+            else:
+                # Sin cuenta: postulación como invitado
+                ok = apply_chiletrabajos(user, url)
 
         else:
             return False

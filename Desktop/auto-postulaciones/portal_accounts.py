@@ -3289,6 +3289,14 @@ def get_or_create_account(user: dict, portal: str) -> dict | None:
         print(f"  -> Creando cuenta en Trabajando.cl para {nombre} {apellido} ({portal_email})")
         ok = crear_cuenta_trabajando(nombre, apellido, celular, portal_email, clave)
 
+    elif portal == "chiletrabajos":
+        # El módulo genera email/clave y guarda en CUENTAS_PORTALES por sí mismo
+        from chiletrabajos.crear_cuenta import crear_cuenta_chiletrabajos
+        ok = crear_cuenta_chiletrabajos(uid, user)
+        if ok:
+            return bq.get_portal_account(uid, portal)
+        return None
+
     elif portal == "indeed":
         # Indeed requiere email real (OTP de verificación) — delegamos al módulo
         from indeed.crear_cuenta import crear_cuenta_indeed

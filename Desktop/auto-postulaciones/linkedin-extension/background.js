@@ -84,6 +84,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 // ── mensajes externos (desde la web de PostulAI via externally_connectable) ───
 
 chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
+  if (msg.type === "GET_STATS") {
+    // Permite a la web detectar la extensión y mostrar stats en el dashboard
+    getStats().then(stats => sendResponse({ ok: true, ...stats }));
+    return true;
+  }
+
   if (msg.type === "POSTULAI_LOGIN") {
     // El frontend envía el perfil y token al hacer login
     const { profile, apiUrl, apiToken, userId } = msg.payload || {};
