@@ -1,22 +1,23 @@
 {
   "manifest_version": 3,
   "name": "PostulAI — LinkedIn Auto Apply",
-  "version": "1.0.0",
+  "version": "1.2.1",
   "description": "Postula automáticamente a empleos de LinkedIn Easy Apply usando tu perfil de PostulAI.",
 
   "permissions": ["storage", "alarms", "tabs", "notifications"],
   "host_permissions": [
     "https://*.linkedin.com/*",
     "https://api.postulai.cl/*",
-    "http://localhost:*/*"
+    "https://*.run.app/*"
   ],
 
   "externally_connectable": {
     "matches": [
       "https://*.postulai.cl/*",
+      "https://*.aplicai.cl/*",
+      "https://aplicai.cl/*",
       "https://jobs-web-994947687832.us-central1.run.app/*",
-      "https://jobs-web-ten.vercel.app/*",
-      "http://localhost:*/*"
+      "https://jobs-web-ten.vercel.app/*"
     ]
   },
 
@@ -33,9 +34,10 @@
     {
       "matches": [
         "https://*.postulai.cl/*",
+        "https://*.aplicai.cl/*",
+        "https://aplicai.cl/*",
         "https://jobs-web-ten.vercel.app/*",
-        "https://jobs-web-994947687832.us-central1.run.app/*",
-        "http://localhost:*/*"
+        "https://jobs-web-994947687832.us-central1.run.app/*"
       ],
       "js": ["inject.js"],
       "run_at": "document_idle"
