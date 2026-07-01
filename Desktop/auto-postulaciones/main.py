@@ -32,7 +32,7 @@ MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "3"))
 
 # Límites por plan
 PLAN_LIMITS: dict[str, dict] = {
-    "FREE":    {"jobs_per_cargo": 15,  "max_ubicaciones": 1, "max_postulaciones_dia": 10, "max_email": 5},
+    "FREE":    {"jobs_per_cargo": 25,  "max_ubicaciones": 1, "max_postulaciones_dia": 10, "max_email": 5},
     "PRO":     {"jobs_per_cargo": 50,  "max_ubicaciones": 3, "max_postulaciones_dia": 25, "max_email": 15},
     "PREMIUM": {"jobs_per_cargo": 100, "max_ubicaciones": 5, "max_postulaciones_dia": 50, "max_email": 25},
     "TRIAL":   {"jobs_per_cargo": 50,  "max_ubicaciones": 3, "max_postulaciones_dia": 25, "max_email": 15},
@@ -86,7 +86,8 @@ def _validar_perfil(user: dict) -> list[str]:
     """Retorna lista de nombres de campos faltantes. Vacía = perfil completo."""
     faltantes = []
     for campo, label in CAMPOS_REQUERIDOS.items():
-        val = user.get(campo)
+        # BigQuery devuelve claves en mayúsculas; soportar ambos casos
+        val = user.get(campo) or user.get(campo.upper())
         if not val:
             faltantes.append(label)
         elif campo in ("cargos", "ubicaciones"):
@@ -135,11 +136,16 @@ def process_user(user: dict) -> dict:
         from chiletrabajos.login import get_session as get_cht_session
         cht_driver = get_cht_session(uid, cht_creds["email"], cht_creds["password"])
 
+    # Cookies LinkedIn (guardadas por sesión manual previa)
+    linkedin_cookies = bq.get_portal_cookies(uid, "linkedin") or []
+    if linkedin_cookies:
+        print(f"  -> LinkedIn: {len(linkedin_cookies)} cookies de sesión disponibles")
+
     # ── 1. Descubrir empleos ────────────────────────────────────────────────
     all_jobs = []
     for cargo in cargos:
         for ubicacion in ubicaciones[:limits["max_ubicaciones"]]:
-            jobs = find_jobs(cargo, ubicacion, n=limits["jobs_per_cargo"], trabajando_driver=tbj_driver)
+            jobs = find_jobs(cargo, ubicacion, n=limits["jobs_per_cargo"], trabajando_driver=tbj_driver, chiletrabajos_driver=cht_driver)
             for j in jobs:
                 j["_cargo"] = cargo
             all_jobs.extend(jobs)
@@ -163,72 +169,160 @@ def process_user(user: dict) -> dict:
     new_jobs = filter_jobs(user, new_jobs)
     print(f"[{nombre}] {len(new_jobs)} empleos tras filtro de relevancia")
 
+    # Mezclar para distribuir equitativamente entre portales (no dejar ChileTrabajos siempre al final)
+    random.shuffle(new_jobs)
+
     # ── 3. Postular ─────────────────────────────────────────────────────────
     applied_jobs: list[dict] = []
     rows_to_save: list[dict] = []
     now_iso = datetime.now(timezone.utc).isoformat()
 
-    email_count = 0
-    form_count  = 0
-    max_dia     = limits["max_postulaciones_dia"]
+    max_dia = limits["max_postulaciones_dia"]
+
+    # Cuota por canal: dividir el límite diario equitativamente entre los 3 canales
+    # Canal email  → empleos de LinkedIn/Indeed (descripciones completas, a veces traen email de contacto)
+    # Canal form   → trabajando.cl y chiletrabajos.cl (formulario web)
+    _num_canales = 3
+    _cuota_base  = max_dia // _num_canales
+    _extra       = max_dia  % _num_canales
+    channel_limits = {
+        "email":         _cuota_base + (1 if _extra > 0 else 0),
+        "trabajando":    _cuota_base + (1 if _extra > 1 else 0),
+        "chiletrabajos": _cuota_base,
+    }
+    channel_counts: dict[str, int] = {k: 0 for k in channel_limits}
+    print(f"[{nombre}] Cuotas por canal: " + " | ".join(f"{k.capitalize()}: {v}" for k, v in channel_limits.items()))
+
+    email_count   = 0
+    form_count    = 0
+    portal_counts: dict[str, int] = {}
+
+    def _save_aplicacion(job: dict, fuente: str, empresa: str = "", descripcion: str = "") -> None:
+        """Guarda postulación en BigQuery y envía notificación."""
+        bq.save_notificacion(
+            user_id=uid,
+            titulo=job.get("titulo", ""),
+            empresa=empresa,
+            link=job.get("link", ""),
+            portal=fuente,
+        )
+        job_id = job.get("id") or job.get("link") or str(uuid.uuid4())
+        rows_to_save.append({
+            "id_empleo":         job_id[:1024],
+            "id_usuario":        uid,
+            "titulo_empleo":     job.get("titulo", "")[:500],
+            "cargo":             job.get("_cargo", "")[:200],
+            "Fecha_Postulacion": now_iso,
+            "empresa":           empresa[:500],
+            "descripcion":       descripcion[:5000],
+            "link":              (job.get("link") or "")[:1024],
+            "portal":            fuente[:100],
+        })
+
+    def _check_selenium_driver(driver, label: str):
+        """Devuelve el driver si está vivo, None si la sesión murió.
+        Intenta recuperar 'no such window' cambiando de handle antes de declararlo muerto."""
+        if driver is None:
+            return None
+        try:
+            _ = driver.current_url
+            return driver
+        except Exception as e:
+            err = str(e).lower()
+            if "no such window" in err:
+                # Chrome cerró la pestaña activa pero la sesión puede seguir viva
+                try:
+                    handles = driver.window_handles
+                    if handles:
+                        driver.switch_to.window(handles[-1])
+                        print(f"  ! [{label}] Ventana cerrada — cambiado a handle {handles[-1][:8]}")
+                        return driver
+                except Exception:
+                    pass
+            print(f"  ! [{label}] Sesión Selenium muerta ({err[:60]}) — canal deshabilitado")
+            return None
+
+    def _check_playwright_page(page, label: str):
+        """Devuelve la page si está viva, None si crasheó."""
+        if page is None:
+            return None
+        try:
+            _ = page.url
+            return page
+        except Exception as e:
+            print(f"  ! [{label}] Página Playwright muerta ({str(e)[:60]}) — canal deshabilitado")
+            return None
+
     try:
         for job in new_jobs:
-            total_aplicado = email_count + form_count
+            total_aplicado = sum(channel_counts.values())
             if total_aplicado >= max_dia:
-                print(f"[{nombre}] Límite diario alcanzado ({max_dia} postulaciones) — plan {plan}")
+                print(f"[{nombre}] Límite diario alcanzado ({max_dia}) — plan {plan}")
                 break
 
-            postulado = False
+            fuente = job.get("fuente", "").lower()
 
-            # 1. Intentar postulación por email (rápido, sin browser)
-            if email_count < limits["max_email"]:
+            # ── Canal Email: empleos LinkedIn/Indeed con email de contacto ──────
+            # Hard cap: no saturar de emails. Si este canal no rinde (pocos emails),
+            # los slots libres los absorben automáticamente los canales form.
+            if fuente in ("linkedin", "indeed"):
+                if channel_counts["email"] >= channel_limits["email"]:
+                    continue
                 contact_email = extract_email(job.get("descripcion", ""))
-                if contact_email:
-                    ok = send_application(user, job, contact_email)
-                    if ok:
-                        postulado = True
-                        applied_jobs.append(job)
-                        email_count += 1
-                        print(f"  ✓ Email → {contact_email} ({job['titulo'][:50]})")
+                if not contact_email:
+                    continue
+                ok = send_application(user, job, contact_email)
+                if ok:
+                    applied_jobs.append(job)
+                    email_count += 1
+                    channel_counts["email"] += 1
+                    portal_counts["email"] = portal_counts.get("email", 0) + 1
+                    _save_aplicacion(job, "email", job.get("empresa", ""), job.get("descripcion", ""))
+                    print(f"  OK Email -> {contact_email} ({job['titulo'][:50]})")
 
-            # 2. Si no se pudo por email → formulario del portal
-            if not postulado:
-                fuente = job.get("fuente", "").lower()
+            # ── Canal Form: trabajando.cl y chiletrabajos.cl ─────────────────
+            # Cuota suave por canal: si uno cae (browser muerto, sin empleos),
+            # el otro absorbe los slots restantes hasta completar max_dia.
+            elif fuente in ("trabajando", "chiletrabajos"):
+                canal = fuente
+
+                # ── Health check: detectar sesión Selenium/Playwright muerta ──
+                if fuente == "chiletrabajos":
+                    cht_driver = _check_selenium_driver(cht_driver, "cht")
+                    if cht_driver is None:
+                        continue  # canal cht muerto, próxima iteración puede ser tbj
+                elif fuente == "trabajando":
+                    tbj_page   = _check_playwright_page(tbj_page, "tbj-pw")
+                    if tbj_page is None and tbj_driver is not None:
+                        tbj_driver = _check_selenium_driver(tbj_driver, "tbj-sel")
+                    if tbj_page is None and tbj_driver is None:
+                        continue  # canal tbj completamente muerto
+
+                # Cuota suave: respetar límite propio, pero permitir overflow si
+                # otros canales dejaron slots libres sin usar
+                cuota_propia = channel_limits.get(canal, _cuota_base)
+                if channel_counts[canal] >= cuota_propia:
+                    slots_email_libres = max(0, channel_limits["email"] - channel_counts["email"])
+                    if slots_email_libres <= 0:
+                        continue  # email también cubierto, no hay slots que absorber
+
                 result = apply_via_form(
                     user, job,
                     credentials=portal_creds.get(fuente),
                     trabajando_driver=tbj_driver if fuente == "trabajando" else None,
-                    trabajando_page=tbj_page if fuente == "trabajando" else None,
+                    trabajando_page=tbj_page   if fuente == "trabajando" else None,
                     chiletrabajos_driver=cht_driver if fuente == "chiletrabajos" else None,
+                    linkedin_cookies=None,
                 )
                 if result:
-                    postulado = True
                     applied_jobs.append(job)
                     form_count += 1
+                    channel_counts[canal] += 1
+                    portal_counts[fuente] = portal_counts.get(fuente, 0) + 1
 
-                    job_empresa = (result.get("empresa") if isinstance(result, dict) else None) or job.get("empresa", "")
+                    job_empresa     = (result.get("empresa")     if isinstance(result, dict) else None) or job.get("empresa", "")
                     job_descripcion = (result.get("descripcion") if isinstance(result, dict) else None) or job.get("descripcion", "")
-
-                    bq.save_notificacion(
-                        user_id=uid,
-                        titulo=job.get("titulo", ""),
-                        empresa=job_empresa,
-                        link=job.get("link", ""),
-                        portal=fuente,
-                    )
-
-                    job_id = job.get("id") or job.get("link") or str(uuid.uuid4())
-                    rows_to_save.append({
-                        "id_empleo":         job_id[:1024],
-                        "id_usuario":        uid,
-                        "titulo_empleo":     job.get("titulo", "")[:500],
-                        "cargo":             job.get("_cargo", "")[:200],
-                        "Fecha_Postulacion": now_iso,
-                        "empresa":           job_empresa[:500],
-                        "descripcion":       job_descripcion[:5000],
-                        "link":              (job.get("link") or "")[:1024],
-                        "portal":            fuente[:100],
-                    })
+                    _save_aplicacion(job, fuente, job_empresa, job_descripcion)
 
     finally:
         close_trabajando_session(uid)
@@ -240,7 +334,8 @@ def process_user(user: dict) -> dict:
 
     # ── 4. Guardar en BigQuery ───────────────────────────────────────────────
     bq.save_jobs(rows_to_save)
-    print(f"[{nombre}] Guardados {len(rows_to_save)} en BigQuery | Email: {email_count} | Formulario: {form_count}")
+    canal_str = " | ".join(f"{k.capitalize()} {channel_counts[k]}/{channel_limits[k]}" for k in ("email", "trabajando", "chiletrabajos"))
+    print(f"[{nombre}] Guardados {len(rows_to_save)} en BigQuery | {canal_str}")
 
     # ── 5. Notificar al usuario ─────────────────────────────────────────────
     send_summary(user, new_jobs, applied_jobs)
@@ -261,7 +356,9 @@ def process_user(user: dict) -> dict:
         if len(applied_jobs) > 30:
             lineas.append(f"... y {len(applied_jobs) - 30} más")
         lineas.append(f"{'─' * 30}")
-        lineas.append(f"Email: {email_count} | Formulario: {form_count} | Límite plan: {max_dia}/día")
+        portal_detail = " | ".join(f"{p.capitalize()}: {c}" for p, c in sorted(portal_counts.items()))
+        cuotas_str = " | ".join(f"{k.capitalize()} {channel_counts[k]}/{channel_limits[k]}" for k in ("email", "trabajando", "chiletrabajos"))
+        lineas.append(f"Canales: {cuotas_str} | Límite: {max_dia}/día")
         telegram("\n".join(lineas))
     else:
         telegram(
@@ -271,7 +368,7 @@ def process_user(user: dict) -> dict:
         )
 
     return {"user": nombre, "found": len(new_jobs), "applied": email_count + form_count,
-            "email": email_count, "form": form_count}
+            "email": email_count, "form": form_count, "portales": portal_counts}
 
 
 def main():
@@ -323,12 +420,20 @@ def main():
     total_email   = sum(r.get("email",0) for r in results)
     total_form    = sum(r.get("form", 0)  for r in results)
 
+    # Aggregate per-portal counts
+    all_portals: dict[str, int] = {}
+    for r in results:
+        for p, c in r.get("portales", {}).items():
+            all_portals[p] = all_portals.get(p, 0) + c
+
     print(f"\n{'─'*50}")
     print(f"✅ Proceso terminado en {elapsed}s")
     print(f"   Usuarios procesados  : {len(results)}")
     print(f"   Empleos descubiertos : {total_found}")
     print(f"   Postulaciones email  : {total_email}")
     print(f"   Postulaciones form   : {total_form}")
+    for portal, cnt in sorted(all_portals.items()):
+        print(f"     └─ {portal.capitalize():<20}: {cnt}")
     print(f"   Total postulaciones  : {total_email + total_form}")
     print(f"{'─'*50}")
 

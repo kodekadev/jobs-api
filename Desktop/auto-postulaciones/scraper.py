@@ -9,6 +9,7 @@ Portales soportados:
   - Computrabajo.cl (HTTP directo)
 """
 
+import json as _json
 import re
 import time
 import random
@@ -90,6 +91,7 @@ def _scrape_jobspy(cargo: str, ubicacion: str, n: int) -> list[dict]:
                     "empresa":     str(row.get("company", "")).strip(),
                     "descripcion": str(row.get("description", "")).strip(),
                     "link":        str(row.get("job_url", "")).strip(),
+                    "direct_url":  str(row.get("job_url_direct", "")).strip(),
                     "ubicacion":   str(row.get("location", "")).strip(),
                     "fuente":      str(row.get("site", "linkedin")).strip(),
                 })
@@ -105,7 +107,10 @@ def _scrape_trabajando(cargo: str, ubicacion: str, n: int, driver=None) -> list[
     """
     Trabajando.cl es una SPA Vue — el HTML estático no contiene empleos.
     Requiere un driver de Selenium ya logueado para renderizar los resultados.
-    Retorna lista vacía si no se provee driver.
+
+    Estrategia:
+      1. Leer respuestas XHR capturadas (window._net_responses) → datos API directos
+      2. Fallback: DOM scraping con scroll para infinite scroll
     """
     if driver is None:
         return []
@@ -120,60 +125,165 @@ def _scrape_trabajando(cargo: str, ubicacion: str, n: int, driver=None) -> list[
     url = f"https://www.trabajando.cl/trabajo-empleo/{cargo_enc}?ubicacion={ubicacion_enc}"
 
     try:
-        driver.get(url)
-        time.sleep(5)  # esperar renderizado Vue
-
-        wait = WebDriverWait(driver, 15)
-
-        # Contenedor principal de resultados
+        # Limpiar respuestas previas para no mezclar con login
         try:
-            tabla = wait.until(EC.presence_of_element_located((By.ID, "listadoOfertas")))
-            rows  = tabla.find_elements(By.CLASS_NAME, "result-box")
+            driver.execute_script("window._net_responses = []")
         except Exception:
-            # fallback: buscar links directos a empleos
-            rows = []
-            links = driver.find_elements(By.CSS_SELECTOR, "a[href*='/empleo/']")
-            seen = set()
-            for a in links[:n]:
-                href  = a.get_attribute("href") or ""
-                title = a.text.strip()
-                if href and href not in seen and title:
-                    seen.add(href)
-                    jobs.append({
-                        "id": href, "titulo": title, "empresa": "",
-                        "descripcion": "", "link": href,
-                        "ubicacion": ubicacion, "fuente": "trabajando",
-                    })
-            return jobs
+            pass
 
-        for row in rows[:n]:
+        driver.get(url)
+        time.sleep(5)  # esperar renderizado Vue inicial
+
+        # ── 1. API via fetch() desde el contexto del browser ──────────────────
+        # Descubrir endpoint real con performance.getEntries(), luego paginamos
+        try:
+            # Descubrir qué URLs de API llamó la página de búsqueda
+            api_urls = driver.execute_script("""
+                return window.performance.getEntriesByType('resource')
+                    .filter(function(e) {
+                        return (e.initiatorType === 'fetch' || e.initiatorType === 'xmlhttprequest')
+                            && (e.name.indexOf('api.trabajando') !== -1 || e.name.indexOf('trabajando.cl/api') !== -1)
+                            && e.name.indexOf('candidato') === -1
+                            && e.name.indexOf('postulacion') === -1
+                            && e.name.indexOf('estadistica') === -1
+                            && e.name.indexOf('configportal') === -1;
+                    })
+                    .map(function(e) { return e.name; });
+            """) or []
+
+            # Elegir la primera URL candidata como plantilla para paginación
+            search_url_base = None
+            for u in api_urls:
+                # Buscar endpoint con parámetros que indiquen búsqueda de empleos
+                if any(kw in u for kw in ["oferta", "busqueda", "search", "empleo", "cargo"]):
+                    search_url_base = u
+                    break
+            # Fallback: si no encontramos por keywords, usar la primera URL API
+            if not search_url_base and api_urls:
+                search_url_base = api_urls[0]
+                print(f"    [tbj-api] endpoints capturados: {[u[:70] for u in api_urls[:3]]}")
+
+            if search_url_base:
+                # Llamar al endpoint con paginación para obtener más resultados
+                api_jobs: list[dict] = []
+                for pagina in range(1, 4):  # páginas 1, 2, 3
+                    if len(api_jobs) >= n:
+                        break
+                    # Reemplazar o añadir parámetros de paginación
+                    page_url = re.sub(r"pagina=\d+", f"pagina={pagina}", search_url_base)
+                    if "pagina=" not in page_url:
+                        sep = "&" if "?" in page_url else "?"
+                        page_url += f"{sep}pagina={pagina}"
+                    # Aumentar cantidadResultados si aparece en la URL
+                    page_url = re.sub(r"cantidadResultados=\d+", f"cantidadResultados={n}", page_url)
+
+                    try:
+                        result = driver.execute_async_script("""
+                            var done = arguments[0];
+                            var url = arguments[1];
+                            fetch(url, {credentials: 'include'})
+                                .then(function(r) { return r.text(); })
+                                .then(function(t) { done({ok: true, text: t}); })
+                                .catch(function(e) { done({ok: false, err: String(e)}); });
+                        """, page_url)
+
+                        if not result or not result.get("ok"):
+                            break
+                        raw = result.get("text", "") or ""
+                        data = _json.loads(raw)
+                        ofertas = (
+                            data.get("ofertas") or
+                            (data.get("data") or {}).get("ofertas") or
+                            data.get("results") or
+                            data.get("items") or
+                            []
+                        )
+                        if not ofertas:
+                            break
+                        for o in ofertas:
+                            id_o   = o.get("idOferta") or o.get("id") or o.get("ofertaId")
+                            titulo = o.get("nombreCargo") or o.get("titulo") or o.get("cargo") or ""
+                            empr   = o.get("nombreEmpresa") or o.get("empresa") or ""
+                            url_o  = o.get("urlFicha") or o.get("url") or ""
+                            if not (id_o and titulo):
+                                continue
+                            if url_o and url_o.startswith("http"):
+                                link = url_o
+                            elif url_o:
+                                link = f"https://www.trabajando.cl{url_o}"
+                            else:
+                                link = f"https://www.trabajando.cl/trabajo-empleo/{cargo_enc}/trabajo/{id_o}-j"
+                            api_jobs.append({
+                                "id": link, "titulo": titulo, "empresa": empr,
+                                "descripcion": "", "link": link,
+                                "ubicacion": ubicacion, "fuente": "trabajando",
+                            })
+                    except Exception:
+                        break
+
+                if api_jobs:
+                    print(f"    [tbj-api] {len(api_jobs)} empleos via API ({len(api_urls)} endpoints)")
+                    return api_jobs[:n]
+            else:
+                print(f"    [tbj-api] sin endpoints — {len(api_urls)} resources capturados")
+        except Exception:
+            pass
+
+        # ── 2. Fallback: DOM scraping multi-página ────────────────────────────
+        def _extract_rows_from_dom() -> list[dict]:
             try:
-                # Link y título desde h2/h3 o primer <a>
-                try:
-                    a = row.find_element(By.CSS_SELECTOR, "h2 a, h3 a")
-                except Exception:
-                    a = row.find_element(By.CSS_SELECTOR, "a[href]")
-                link   = a.get_attribute("href") or ""
-                titulo = _clean(a.text)
-
-                # Empresa
-                try:
-                    empresa = _clean(row.find_element(By.CSS_SELECTOR, ".empresa, .company, [class*='empresa']").text)
-                except Exception:
-                    empresa = ""
-
-                if titulo and link:
-                    jobs.append({
-                        "id":          link,
-                        "titulo":      titulo,
-                        "empresa":     empresa,
-                        "descripcion": "",
-                        "link":        link,
-                        "ubicacion":   ubicacion,
-                        "fuente":      "trabajando",
-                    })
+                tabla2 = WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.ID, "listadoOfertas"))
+                )
             except Exception:
-                continue
+                return []
+            found = []
+            for row in tabla2.find_elements(By.CLASS_NAME, "result-box"):
+                try:
+                    try:
+                        a = row.find_element(By.CSS_SELECTOR, "h2 a, h3 a")
+                    except Exception:
+                        a = row.find_element(By.CSS_SELECTOR, "a[href]")
+                    link_r   = a.get_attribute("href") or ""
+                    titulo_r = _clean(a.text)
+                    try:
+                        empresa_r = _clean(row.find_element(By.CSS_SELECTOR, ".empresa, .company, [class*='empresa']").text)
+                    except Exception:
+                        empresa_r = ""
+                    if titulo_r and link_r:
+                        found.append({
+                            "id": link_r, "titulo": titulo_r, "empresa": empresa_r,
+                            "descripcion": "", "link": link_r,
+                            "ubicacion": ubicacion, "fuente": "trabajando",
+                        })
+                except Exception:
+                    continue
+            return found
+
+        seen_links: set = set()
+        # Page 1 is already loaded in the browser — just extract
+        for j in _extract_rows_from_dom():
+            if j["link"] not in seen_links:
+                seen_links.add(j["link"])
+                jobs.append(j)
+
+        # Pages 2+ — navigate then extract
+        for pagina in range(2, 4):
+            if len(jobs) >= n:
+                break
+            driver.get(f"{url}&pagina={pagina}")
+            time.sleep(3)
+            page_jobs = _extract_rows_from_dom()
+            if not page_jobs:
+                break
+            new_count = 0
+            for j in page_jobs:
+                if j["link"] not in seen_links:
+                    seen_links.add(j["link"])
+                    jobs.append(j)
+                    new_count += 1
+            if new_count == 0:
+                break
 
     except Exception as e:
         print(f"  [trabajando] Selenium error en scraping: {e}")
@@ -184,47 +294,96 @@ def _scrape_trabajando(cargo: str, ubicacion: str, n: int, driver=None) -> list[
 # ---------------------------------------------------------------------------
 # ChileTrabajos.cl — HTTP directo
 # ---------------------------------------------------------------------------
-def _scrape_chiletrabajos(cargo: str, ubicacion: str, n: int) -> list[dict]:
-    """
-    URL pública de búsqueda: https://www.chiletrabajos.cl/encuentra-un-empleo?trabajo={cargo}
-    """
-    jobs = []
-    cargo_enc = urllib.parse.quote_plus(cargo)
-    url = f"https://www.chiletrabajos.cl/encuentra-un-empleo?trabajo={cargo_enc}"
-    html = _get(url)
-    if not html:
-        return jobs
+def _scrape_chiletrabajos_selenium(driver, cargo: str, ubicacion: str, n: int) -> list[dict]:
+    """Scraper de ChileTrabajos usando el driver Selenium logueado (carga JS)."""
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
 
-    # Bloques de oferta
+    # Param name es "2" (no "trabajo") + hidden "f=2"
+    cargo_enc = urllib.parse.quote_plus(cargo)
+    url = f"https://www.chiletrabajos.cl/encuentra-un-empleo?2={cargo_enc}&f=2"
+    driver.get(url)
+
+    # Esperar que los resultados carguen (job-item con link /trabajo/)
+    try:
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, ".job-item a[href*='/trabajo/']"))
+        )
+    except Exception:
+        time.sleep(3)
+
+    html = driver.page_source
+    jobs = []
+
+    # Extraer bloques job-item del HTML renderizado
     blocks = re.findall(
         r'<div[^>]+class="[^"]*job[_-]?item[^"]*"[^>]*>(.*?)</div>\s*</div>',
         html, re.DOTALL
     )
-    for block in blocks[:n]:
-        titulo_m = re.search(r'<h[23][^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>([^<]+)</a>', block)
+
+    for block in blocks:
+        if len(jobs) >= n:
+            break
+        # Link principal al empleo (/trabajo/slug-NNNNN)
+        link_m = re.search(r'href="(https://www\.chiletrabajos\.cl/trabajo/[^"]+)"', block)
+        if not link_m:
+            continue
+        link = link_m.group(1)
+
+        # Título: buscar <a> que apunte al mismo link
+        titulo_m = re.search(
+            r'href="' + re.escape(link) + r'"[^>]*>([^<]{3,100})',
+            block
+        )
         if not titulo_m:
-            titulo_m = re.search(r'<a[^>]+href="(/oferta[^"]+)"[^>]*>([^<]{5,80})</a>', block)
-        if not titulo_m:
+            # Fallback: <strong> o primer <h>
+            titulo_m = re.search(r'<(?:strong|h[2-4])[^>]*>([^<]{3,100})</(?:strong|h[2-4])>', block)
+        titulo = _clean(titulo_m.group(1)) if titulo_m else ""
+        if not titulo or titulo.lower() in ("ver más", "ver mas", "postular"):
             continue
 
-        link_raw = titulo_m.group(1)
-        link     = link_raw if link_raw.startswith("http") else f"https://www.chiletrabajos.cl{link_raw}"
-        titulo   = _clean(titulo_m.group(2))
-
-        emp_m   = re.search(r'<span[^>]+class="[^"]*empresa[^"]*"[^>]*>([^<]+)', block)
+        # Empresa: span con clase empresa (no el link de ciudad)
+        emp_m = (
+            re.search(r'<span[^>]+class="[^"]*empresa[^"]*"[^>]*>([^<]+)', block)
+            or re.search(r'class="[^"]*company[^"]*"[^>]*>([^<]{3,60})', block)
+        )
         empresa = _clean(emp_m.group(1)) if emp_m else ""
+
+        # Descripción: párrafo con texto de la tarjeta
+        desc_m = re.search(r'<p[^>]*style="[^"]*break-all[^"]*"[^>]*>(.*?)</p>', block, re.DOTALL)
+        if not desc_m:
+            desc_m = re.search(r'<p[^>]*class="[^"]*descripcion[^"]*"[^>]*>(.*?)</p>', block, re.DOTALL)
+        descripcion = ""
+        if desc_m:
+            raw = re.sub(r'<[^>]+>', ' ', desc_m.group(1))
+            descripcion = _clean(raw)[:500]
 
         jobs.append({
             "id":          link,
             "titulo":      titulo,
             "empresa":     empresa,
-            "descripcion": "",
+            "descripcion": descripcion,
             "link":        link,
             "ubicacion":   ubicacion,
             "fuente":      "chiletrabajos",
         })
 
     return jobs
+
+
+def _scrape_chiletrabajos(cargo: str, ubicacion: str, n: int, driver=None) -> list[dict]:
+    """
+    Scraper de ChileTrabajos.
+    Si se pasa driver (Selenium logueado), se usa para cargar resultados con JS.
+    Sin driver, no funciona bien (resultados no cargados via JS).
+    """
+    if driver is not None:
+        return _scrape_chiletrabajos_selenium(driver, cargo, ubicacion, n)
+
+    # Sin driver: devolver lista vacía (ChileTrabajos requiere JS)
+    print("    [ChileTrabajos] Sin driver Selenium — omitiendo")
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -267,16 +426,19 @@ def _scrape_computrabajo(cargo: str, ubicacion: str, n: int) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Función principal — combina todos los portales
 # ---------------------------------------------------------------------------
-def find_jobs(cargo: str, ubicacion: str, n: int = 40, trabajando_driver=None) -> list[dict]:
+def find_jobs(cargo: str, ubicacion: str, n: int = 40, trabajando_driver=None, chiletrabajos_driver=None) -> list[dict]:
     """
     Busca empleos en todos los portales configurados.
-    trabajando_driver: Selenium driver ya logueado en trabajando.cl (requerido para ese portal).
+    trabajando_driver: Selenium driver logueado en trabajando.cl.
+    chiletrabajos_driver: Selenium driver logueado en chiletrabajos.cl.
     Retorna lista de dicts con: id, titulo, empresa, descripcion, link, ubicacion, fuente.
     """
     all_jobs: list[dict] = []
 
     scrapers = [
         ("Trabajando.cl", lambda: _scrape_trabajando(cargo, ubicacion, n, driver=trabajando_driver)),
+        ("ChileTrabajos",  lambda: _scrape_chiletrabajos(cargo, ubicacion, n, driver=chiletrabajos_driver)),
+        ("LinkedIn/Indeed", lambda: _scrape_jobspy(cargo, ubicacion, n)),
     ]
 
     for nombre, fn in scrapers:
@@ -297,13 +459,9 @@ def find_jobs(cargo: str, ubicacion: str, n: int = 40, trabajando_driver=None) -
         titulo = j.get("titulo", "").lower()
         if not titulo:
             continue
-        # jobspy ya filtra por cargo — solo aplicar filtro estricto a scrapers HTML
-        if j.get("fuente") in ("linkedin", "indeed"):
+        # Al menos una palabra del cargo debe aparecer en el título
+        if any(w in titulo for w in cargo_words if len(w) > 3):
             filtered.append(j)
-        else:
-            # Al menos una palabra del cargo debe aparecer en el título
-            if any(w in titulo for w in cargo_words if len(w) > 3):
-                filtered.append(j)
 
     discarded = len(all_jobs) - len(filtered)
     if discarded:
