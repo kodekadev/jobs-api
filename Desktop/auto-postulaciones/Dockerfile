@@ -18,5 +18,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN playwright install chromium --with-deps 2>/dev/null || true
 
 COPY *.py ./
+COPY chiletrabajos/ ./chiletrabajos/
+COPY trabajando/ ./trabajando/
+COPY indeed/ ./indeed/
 
 CMD ["python", "main.py"]

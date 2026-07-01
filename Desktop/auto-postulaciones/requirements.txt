@@ -1,6 +1,5 @@
 google-cloud-bigquery==3.25.0
 google-cloud-storage==2.18.2
-python-jobspy==1.1.80
 requests==2.32.3
 pandas==2.2.2
 selenium==4.21.0
