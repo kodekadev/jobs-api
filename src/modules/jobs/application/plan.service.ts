@@ -4,7 +4,7 @@ import { BigQueryService } from '../../shared/infrastructure/services/bigquery.s
 import env from '../../shared/infrastructure/environment';
 
 const PLAN_PRICES: Record<string, number> = {
-  PRO: 350,
+  PRO: 9990,
   PREMIUM: 19990,
 };
 
