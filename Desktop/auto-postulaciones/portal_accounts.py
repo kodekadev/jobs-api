@@ -288,7 +288,7 @@ def _make_driver():
 # ─── TRABAJANDO.CL ────────────────────────────────────────────────────────────
 
 def crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
-                             mail: str, clave: str) -> bool:
+                             mail: str, clave: str, uid: str | None = None) -> bool:
     """Crea cuenta en trabajando.cl con Selenium."""
     celular_limpio = _clean_phone(celular) or "912345678"
     driver = None
@@ -374,6 +374,12 @@ def crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
                            "mi curriculum", "completar perfil", "dashboard"]
         if any(s in content for s in success_signals) or "crea-tu-curriculum" not in current_url:
             print(f"  -> Registrado OK, URL: {current_url}")
+            if uid:
+                try:
+                    bq.save_portal_cookies(uid, "trabajando", driver.get_cookies())
+                    print(f"  -> Cookies Trabajando guardadas para {uid}")
+                except Exception as e:
+                    print(f"  -> Error guardando cookies: {e}")
             driver.quit()
             return True
 
@@ -1351,25 +1357,30 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
 
     wait = WebDriverWait(driver, 20)
     try:
-        # ── 1a. Bloquear el script real de reCAPTCHA ──────────────────────────
-        # Así la librería de Google nunca carga y no puede sobreescribir nuestro mock.
-        try:
-            driver.execute_cdp_cmd("Network.enable", {})
-            driver.execute_cdp_cmd("Network.setBlockedURLs", {"urls": [
-                "https://www.google.com/recaptcha/api.js*",
-                "https://www.google.com/recaptcha/api2/*",
-                "https://recaptcha.net/recaptcha/api.js*",
-                "https://recaptcha.net/recaptcha/api2/*",
-            ]})
-            print("  [captcha] recaptcha bloqueado via CDP")
-        except Exception as _ce:
-            print(f"  [captcha] Network.setBlockedURLs no disponible: {_ce}")
+        # ── 1a. Bloquear el script real de reCAPTCHA solo si tenemos 2captcha ──
+        # Sin TWOCAPTCHA_KEY, dejar que el reCAPTCHA real corra en el browser.
+        # reCAPTCHA v3 es basado en score — Selenium a veces pasa sin bloquear.
+        driver.execute_cdp_cmd("Network.enable", {})
+        if TWOCAPTCHA_KEY:
+            try:
+                driver.execute_cdp_cmd("Network.setBlockedURLs", {"urls": [
+                    "https://www.google.com/recaptcha/api.js*",
+                    "https://www.google.com/recaptcha/api2/*",
+                    "https://recaptcha.net/recaptcha/api.js*",
+                    "https://recaptcha.net/recaptcha/api2/*",
+                ]})
+                print("  [captcha] recaptcha bloqueado via CDP (2captcha activo)")
+            except Exception as _ce:
+                print(f"  [captcha] Network.setBlockedURLs no disponible: {_ce}")
 
-        # ── 1b. Mock completo de grecaptcha + interceptores de red ────────────
-        # addScriptToEvaluateOnNewDocument corre ANTES que cualquier JS de la página.
-        # Como el script real está bloqueado, nuestro mock es el único grecaptcha.
-        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-            "source": """
+        # ── 1b. Mock de grecaptcha solo cuando hay 2captcha (para inyectar token) ─
+        # Sin 2captcha: dejar que el grecaptcha real maneje el flujo.
+        if TWOCAPTCHA_KEY:
+            driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                "source": "window.__hasTwoCaptchaKey = true;"
+            })
+            driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                "source": """
                 // ── Mock de grecaptcha ─────────────────────────────────────────────
                 window.__ourToken = null;
                 window.__waiters  = [];
@@ -1383,9 +1394,9 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
                 var _mockGrecaptcha = {
                     ready: function(cb) { if (typeof cb === 'function') cb(); },
                     execute: function() {
+                        if (window.__ourToken) { return Promise.resolve(window.__ourToken); }
                         return new Promise(function(resolve) {
-                            if (window.__ourToken) { resolve(window.__ourToken); }
-                            else { window.__waiters.push(resolve); }
+                            window.__waiters.push(resolve);
                         });
                     },
                     getResponse: function() { return window.__ourToken || ''; },
@@ -1401,8 +1412,14 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
                     enumerable: true
                 });
 
-                // ── Interceptar fetch ──────────────────────────────────────────────
+            """
+            })
+
+        # Interceptores de red siempre activos (para diagnóstico del login)
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": """
                 window.__apiLog = [];
+                window.__xhrLog = [];
                 var _origFetch = window.fetch;
                 window.fetch = function() {
                     var url = String(arguments[0]);
@@ -1410,9 +1427,7 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
                     var reqBody = '';
                     try {
                         var b = opts.body;
-                        if (b) {
-                            reqBody = (typeof b === 'string' ? b : JSON.stringify(b)).slice(0, 400);
-                        }
+                        if (b) reqBody = (typeof b === 'string' ? b : JSON.stringify(b)).slice(0, 400);
                     } catch(e) {}
                     var prom = _origFetch.apply(this, arguments);
                     prom.then(function(r) {
@@ -1424,9 +1439,6 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
                     });
                     return prom;
                 };
-
-                // ── Interceptar XHR ────────────────────────────────────────────────
-                window.__xhrLog = [];
                 var _origXHROpen = XMLHttpRequest.prototype.open;
                 var _origXHRSend = XMLHttpRequest.prototype.send;
                 XMLHttpRequest.prototype.open = function(method, url) {
@@ -1438,9 +1450,7 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
                     var self = this;
                     var reqBody = '';
                     try {
-                        if (body) {
-                            reqBody = (typeof body === 'string' ? body : JSON.stringify(body)).slice(0, 400);
-                        }
+                        if (body) reqBody = (typeof body === 'string' ? body : JSON.stringify(body)).slice(0, 400);
                     } catch(e) {}
                     this.addEventListener('load', function() {
                         var resp = '';
@@ -1481,32 +1491,38 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
             except Exception:
                 pass
 
-        # ── 4. Llenar email y password (carácter por carácter, estilo humano) ───
+        # ── 4. Llenar email y password ────────────────────────────────────────
         import random as _rnd
+        # Vue re-renderiza el input al escribir carácter por carácter con ActionChains,
+        # lo que provoca que los caracteres se pierdan. Usamos el setter nativo del
+        # prototipo HTMLInputElement para que Vue v-model reciba el valor completo
+        # de una vez, sin stale refs ni re-renders intermedios.
 
-        def _human_type(el, text):
-            ac = ActionChains(driver)
-            for ch in text:
-                ac.send_keys_to_element(el, ch).pause(_rnd.uniform(0.06, 0.19))
-            ac.perform()
+        def _vue_set(el, value: str):
+            driver.execute_script("""
+                var el = arguments[0], v = arguments[1];
+                var setter = Object.getOwnPropertyDescriptor(
+                    window.HTMLInputElement.prototype, 'value').set;
+                setter.call(el, v);
+                el.dispatchEvent(new Event('input',  {bubbles: true}));
+                el.dispatchEvent(new Event('change', {bubbles: true}));
+            """, el, value)
 
         email_el = wait.until(EC.element_to_be_clickable(
             (By.XPATH, "//form//input[not(@type='password') and not(@type='hidden')]")
         ))
-        ActionChains(driver).move_to_element(email_el).pause(_rnd.uniform(0.3, 0.6)).click().perform()
-        time.sleep(_rnd.uniform(0.3, 0.6))
-        email_el.send_keys(Keys.CONTROL, "a")
-        _human_type(email_el, email)
-        time.sleep(_rnd.uniform(0.4, 0.8))
+        email_el.click()
+        time.sleep(0.3)
+        _vue_set(email_el, email)
+        time.sleep(0.4)
 
         pwd_el = wait.until(EC.element_to_be_clickable(
             (By.CSS_SELECTOR, 'input[type="password"]')
         ))
-        ActionChains(driver).move_to_element(pwd_el).pause(_rnd.uniform(0.3, 0.6)).click().perform()
-        time.sleep(_rnd.uniform(0.3, 0.6))
-        pwd_el.send_keys(Keys.CONTROL, "a")
-        _human_type(pwd_el, password)
-        time.sleep(_rnd.uniform(0.6, 1.2))
+        pwd_el.click()
+        time.sleep(0.3)
+        _vue_set(pwd_el, password)
+        time.sleep(0.6)
 
         email_val = email_el.get_attribute("value") or ""
         pwd_val   = pwd_el.get_attribute("value") or ""
@@ -1557,7 +1573,7 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
                 var el = document.querySelector('[name="g-recaptcha-response"]');
                 info.rcField = el ? {tag: el.tagName, val_len: el.value.length} : null;
                 // window.__ourToken existe?
-                info.ourToken = typeof window.__ourToken !== 'undefined' ? window.__ourToken.slice(0,20) : 'undefined';
+                info.ourToken = (window.__ourToken != null) ? String(window.__ourToken).slice(0,20) : String(window.__ourToken);
                 // grecaptcha disponible?
                 info.hasGrecaptcha = typeof window.grecaptcha !== 'undefined';
                 // Funciones globales que podrían ser callbacks
@@ -1653,7 +1669,7 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
         print(f"  [trabajando] Login {'OK' if success else 'FALLÓ'}: {current}")
 
         # ── 9. Fallback: login directo vía requests (diagnóstico + fallback) ───
-        if not success and token:
+        if not success:
             print("  [direct] Intentando login directo con requests...")
             try:
                 base_h = {
@@ -1670,13 +1686,16 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
 
                 # Probar distintos formatos de body (el primero que devuelva 200 gana)
                 candidates = [
-                    {"email": email, "password": password, "recaptchaToken": token},
-                    {"email": email, "password": password, "token": token},
-                    {"email": email, "password": password, "recaptcha": token},
-                    {"email": email, "password": password, "g-recaptcha-response": token},
-                    {"correo": email, "password": password, "recaptchaToken": token},
-                    {"email": email, "password": password},   # sin token
+                    {"email": email, "password": password},   # sin token (primero — backend puede no requerirlo)
                 ]
+                if token:
+                    candidates += [
+                        {"email": email, "password": password, "recaptchaToken": token},
+                        {"email": email, "password": password, "token": token},
+                        {"email": email, "password": password, "recaptcha": token},
+                        {"email": email, "password": password, "g-recaptcha-response": token},
+                        {"correo": email, "password": password, "recaptchaToken": token},
+                    ]
                 for body in candidates:
                     r = sess.post(
                         "https://api.trabajando.com/login/login",
@@ -1782,6 +1801,11 @@ def get_trabajando_session(uid: str, email: str, password: str) -> webdriver.Chr
     if driver:
         with _sessions_lock:
             _sessions[key] = {"driver": driver, "email": email, "password": password}
+        try:
+            bq.save_portal_cookies(uid, "trabajando", driver.get_cookies())
+            print(f"  -> Cookies Trabajando guardadas para {uid} (post-login)")
+        except Exception as e:
+            print(f"  -> Error guardando cookies post-login: {e}")
     return driver
 
 
@@ -2384,14 +2408,23 @@ def _standard_answer(item: dict, user: dict, norm_fn=None) -> "str | None":
         "PHONE", "PHONE NUMBER", "CELL", "CELL PHONE", "MOBILE", "MOBILE NUMBER",
         "CONTACT NUMBER", "TELEPHONE",
     ]):
-        return cel_9
+        return cel_9 or None  # si no hay teléfono, continuar a siguiente sección
 
     # ── 4. Email ──────────────────────────────────────────────────────────────
     if any(k in label for k in [
         "EMAIL", "CORREO", "CORREO ELECTRONICO", "CORREO ELECTRÓNICO",
         "MAIL", "E-MAIL", "DIRECCION DE CORREO", "DIRECCIÓN DE CORREO",
     ]):
-        return email_val
+        _has_phone_in_label = any(k in label for k in [
+            "TELEFONO", "CELULAR", "MOVIL", "NUMERO", "CONTACTO", "PHONE", "CONTACT",
+        ])
+        if email_val and _has_phone_in_label and cel_9:
+            return f"{email_val} / {cel_9}"
+        if email_val:
+            return email_val
+        if cel_9:
+            return cel_9
+        return None
 
     # ── 5. Nombre completo ────────────────────────────────────────────────────
     if any(k in label for k in [
@@ -2553,11 +2586,28 @@ def _extract_cv_text(cv_url: str) -> str:
     if not cv_url:
         return ""
     try:
-        resp = requests.get(cv_url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
-        resp.raise_for_status()
         import io
+        pdf_bytes: bytes
+        if "storage.googleapis.com" in cv_url:
+            # URL de GCS — usar cliente autenticado (evita 403)
+            try:
+                from google.cloud import storage as _gcs
+                parts = cv_url.replace("https://storage.googleapis.com/", "").split("/", 1)
+                bucket_name, blob_name = parts[0], parts[1]
+                gcs_client = _gcs.Client()
+                blob = gcs_client.bucket(bucket_name).blob(blob_name)
+                pdf_bytes = blob.download_as_bytes()
+            except Exception as _ge:
+                print(f"    [CV] GCS auth error: {_ge} — intentando requests")
+                resp = requests.get(cv_url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
+                resp.raise_for_status()
+                pdf_bytes = resp.content
+        else:
+            resp = requests.get(cv_url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            pdf_bytes = resp.content
         from pypdf import PdfReader
-        reader = PdfReader(io.BytesIO(resp.content))
+        reader = PdfReader(io.BytesIO(pdf_bytes))
         pages = [p.extract_text() or "" for p in reader.pages]
         text = "\n".join(pages).strip()
         print(f"    [CV] Extraído: {len(text)} chars, {len(reader.pages)} pág(s)")
@@ -2585,6 +2635,10 @@ def _build_user_profile(user: dict) -> str:
     nombre = _get("NOMBRE", "nombre")
     if nombre:
         lines.append(f"Nombre completo: {nombre}")
+
+    email_p = _get("EMAIL", "email", "correo", "CORREO")
+    if email_p:
+        lines.append(f"Email: {email_p}")
 
     celular = _get("celular", "CELULAR", "telefono")
     if celular:
@@ -2710,6 +2764,9 @@ Nada más, solo el JSON."""
         raw = response.content[0].text.strip()
         start = raw.find("{")
         end   = raw.rfind("}") + 1
+        if start == -1:
+            print(f"    [Claude] respuesta sin JSON: {raw[:80]}")
+            return {}
         data  = json.loads(raw[start:end])
         result = {str(i): str(data.get(str(i), data.get(i, ""))) for i in range(len(questions))}
         print(f"    [Claude] {result}")
@@ -2797,34 +2854,45 @@ def _responder_preguntas(driver, user: dict = {}):
             return driver.execute_script("""
                 var el = arguments[0];
                 function isGeneric(t) {
-                    return /^(pregunta|question|respuesta|answer|campo|field)\\s*\\d*$/i.test(t.trim());
+                    t = t.trim();
+                    if (/^(pregunta|question|respuesta|answer|campo|field)\\s*\\d*$/i.test(t)) return true;
+                    if (/^campo\\s+requerido$/i.test(t)) return true;
+                    if (/^\\d+\\s*(de|of|\\/)\\s*\\d+/.test(t)) return true; // "0 de 3000"
+                    if (t.length < 4) return true;
+                    return false;
                 }
+                // 1. aria-label directo
                 var al = el.getAttribute('aria-label');
-                if (al && al.trim().length > 3 && !isGeneric(al)) return al.trim();
+                if (al && !isGeneric(al)) return al.trim();
+                // 2. label[for]
                 if (el.id) {
                     var lbl = document.querySelector('label[for="' + el.id + '"]');
-                    if (lbl && lbl.innerText && lbl.innerText.trim().length > 3) return lbl.innerText.trim();
-                }
-                var node = el.parentElement;
-                for (var i = 0; i < 10; i++) {
-                    if (!node) break;
-                    var children = node.childNodes;
-                    for (var j = 0; j < children.length; j++) {
-                        var c = children[j];
-                        var tag = (c.tagName || '').toUpperCase();
-                        if (['P','LABEL','SPAN','H3','H4','H5','STRONG','B','LI','DIV'].indexOf(tag) >= 0) {
-                            var txt = (c.innerText || c.textContent || '').trim();
-                            if (txt.length > 5 && !c.contains(el) && !isGeneric(txt)) return txt;
-                        }
-                        if (c.nodeType === 3) {
-                            var t3 = c.textContent.trim();
-                            if (t3.length > 5 && !isGeneric(t3)) return t3;
-                        }
+                    if (lbl) {
+                        var lt = lbl.innerText.trim();
+                        if (lt.length > 3 && !isGeneric(lt)) return lt;
                     }
-                    node = node.parentElement;
                 }
+                // 3. Traversal hacia arriba buscando SIBLINGS ANTERIORES al nodo en la ruta.
+                //    El texto de pregunta en Vuetify/Trabajando.cl siempre PRECEDE al input.
+                //    Los errores de validación SIGUEN al input — así los evitamos.
+                var cur = el;
+                for (var up = 0; up < 15; up++) {
+                    var parent = cur.parentElement;
+                    if (!parent) break;
+                    // Recorrer siblings ANTERIORES a cur
+                    var sib = cur.previousElementSibling;
+                    while (sib) {
+                        if (!sib.contains(el)) {
+                            var st = (sib.innerText || sib.textContent || '').trim();
+                            if (st.length > 5 && !isGeneric(st)) return st;
+                        }
+                        sib = sib.previousElementSibling;
+                    }
+                    cur = parent;
+                }
+                // 4. Placeholder si no es genérico
                 var ph = el.getAttribute('placeholder');
-                if (ph && ph.trim().length > 10 && !isGeneric(ph)) return ph.trim();
+                if (ph && !isGeneric(ph)) return ph.trim();
                 return '';
             """, el)
         except Exception:
@@ -2946,16 +3014,31 @@ def _responder_preguntas(driver, user: dict = {}):
             return any(k in lbl for k in _NUMERIC_LABEL_KEYS_SEL)
 
         def _fallback_sel(it: dict) -> str:
-            """Fallback cuando ni perfil ni Claude respondieron — nunca "Sí" para texto."""
-            t = it.get("type", "text")
+            """Fallback cuando ni perfil ni Claude respondieron."""
+            t   = it.get("type", "text")
+            lbl = _norm((it.get("label") or "") + " " + (it.get("placeholder") or ""))
             if _is_numeric_sel(it):
-                return re.sub(r"[^\d]", "", str(user.get("pretension_general") or "")) or str(user.get("experiencia") or "5")
+                # Distinguir años de experiencia vs renta/sueldo
+                if any(k in lbl for k in ("ANOS", "EXPERIENCIA", "EXP")):
+                    return re.sub(r"[^\d]", "", str(user.get("experiencia") or user.get("EXPERIENCIA") or "")) or "8"
+                return re.sub(r"[^\d]", "", str(user.get("pretension_general") or user.get("PRETENSION_GENERAL") or "")) or str(user.get("experiencia") or "5")
             if t == "textarea":
-                rv = str(user.get("resumen") or "")
+                rv = str(user.get("resumen") or user.get("RESUMEN") or "")
                 return rv[:400] if rv else f"Profesional con {str(user.get('experiencia') or '5')} años de experiencia."
-            if t in ("tel", "phone"):
-                return re.sub(r"\D", "", str(user.get("celular") or ""))[-9:]
-            return ""
+            if t in ("tel", "phone") or any(k in lbl for k in ("TELEFONO", "CELULAR", "MOVIL", "PHONE")):
+                celular = re.sub(r"\D", "", str(user.get("celular") or user.get("CELULAR") or ""))
+                return celular[-9:] if celular else ""
+            if any(k in lbl for k in ("RUT", "CEDULA", "DOCUMENTO", "DNI")):
+                return str(user.get("rut") or user.get("RUT") or "")[:15]
+            if any(k in lbl for k in ("CIUDAD", "LOCALIDAD", "UBICACION", "REGION", "COMUNA")):
+                return str(user.get("ubicaciones") or user.get("UBICACIONES") or ["Santiago"])[0] if isinstance(
+                    (user.get("ubicaciones") or user.get("UBICACIONES") or []), list
+                ) else "Santiago"
+            # Campo requerido genérico — usar teléfono si disponible, sino nombre profesión
+            celular = re.sub(r"\D", "", str(user.get("celular") or user.get("CELULAR") or ""))
+            if celular:
+                return celular[-9:]
+            return str(user.get("profesion") or user.get("PROFESION") or "")
 
         for idx, item in enumerate(pending_all):
             try:
@@ -3128,7 +3211,23 @@ def apply_trabajando_selenium(driver: webdriver.Chrome, job_url: str, user: dict
             print(f"    [trabajando] No se encontró botón de postular en {job_url[:70]}")
             return False
 
-        time.sleep(2)
+        time.sleep(3)
+
+        # ── Debug: capturar estado de página tras click ────────────────────────
+        try:
+            api_log_post = driver.execute_script("return (window.__apiLog||[]).filter(x => x.reqBody && x.reqBody.length > 0 || x.url.includes('postulacion'));")
+            if api_log_post:
+                for e in api_log_post:
+                    print(f"    [tbj-api] {e.get('status','-')} {e.get('url','')[:80]} req:{e.get('reqBody','')[:60]}")
+            # Mostrar botones visibles en modal (si apareció)
+            modal_btns = driver.execute_script("""
+                var btns = document.querySelectorAll('div[class*="modal"] button, [id*="modal"] button');
+                return Array.from(btns).filter(b => b.offsetParent !== null).map(b => b.textContent.trim().slice(0,40));
+            """)
+            if modal_btns:
+                print(f"    [tbj-modal] Botones en modal: {modal_btns}")
+        except Exception as _de:
+            pass
 
         # ── Paso 2a: Modal "Este empleo solicita un CV Trabajando.com" ─────────
         # Algunos empleos exigen CV interno. Por ahora guardamos y saltamos.
@@ -3186,8 +3285,18 @@ def apply_trabajando_selenium(driver: webdriver.Chrome, job_url: str, user: dict
 
         # ── Paso 3: Modal con preguntas ────────────────────────────────────────
         try:
-            xp_preg = '//*[@id="modalConfirmarPreguntas"]/div/div/div[2]/div/div[2]/div[3]/button'
-            if _safe_click(driver, By.XPATH, xp_preg, timeout=5, label="Siguiente (preguntas)"):
+            _paso3_xpaths = [
+                '//*[@id="modalConfirmarPreguntas"]/div/div/div[2]/div/div[2]/div[3]/button',
+                '//button[normalize-space(text())="Comenzar" and not(ancestor::*[@id="columnaPostular"])]',
+                '//button[contains(text(),"Comenzar") and not(ancestor::*[@id="columnaPostular"])]',
+                '//*[contains(@id,"modal") or contains(@class,"modal")]//button[contains(text(),"Comenzar")]',
+            ]
+            _clicked_paso3 = False
+            for _xp in _paso3_xpaths:
+                if _safe_click(driver, By.XPATH, _xp, timeout=5, label="Siguiente (preguntas)"):
+                    _clicked_paso3 = True
+                    break
+            if _clicked_paso3:
                 time.sleep(2)
 
                 # Responder todas las preguntas para habilitar el botón de envío
@@ -3247,11 +3356,23 @@ def apply_trabajando_selenium(driver: webdriver.Chrome, job_url: str, user: dict
         except Exception:
             pass
 
-        # 2. Buscar señales de éxito en el contenido de la página
+        # 2. Revisar si la API de postulación recibió una llamada exitosa
+        try:
+            all_api = driver.execute_script("return window.__apiLog || [];")
+            for e in all_api:
+                url = e.get("url", "")
+                if "postulacion" in url and e.get("status") in (200, 201):
+                    print(f"    [trabajando] OK Postulado (API postulacion: {url[:60]})")
+                    return _ok()
+        except Exception:
+            pass
+
+        # 3. Buscar señales de éxito en el contenido de la página
         content = driver.page_source.lower()
         exito = any(s in content for s in [
             "postulación enviada", "te has postulado", "gracias por postular",
             "postulaste exitosamente", "aplicación enviada",
+            "ya postulaste", "postulacion exitosa",
         ])
         print(f"    [trabajando] {'OK Postulado' if exito else 'Sin confirmar exito'} -> {driver.current_url[:60]}")
         return _ok() if exito else False
@@ -3287,7 +3408,7 @@ def get_or_create_account(user: dict, portal: str) -> dict | None:
     ok = False
     if portal == "trabajando":
         print(f"  -> Creando cuenta en Trabajando.cl para {nombre} {apellido} ({portal_email})")
-        ok = crear_cuenta_trabajando(nombre, apellido, celular, portal_email, clave)
+        ok = crear_cuenta_trabajando(nombre, apellido, celular, portal_email, clave, uid=uid)
 
     elif portal == "chiletrabajos":
         # El módulo genera email/clave y guarda en CUENTAS_PORTALES por sí mismo

@@ -36,8 +36,40 @@ PORTAL_ID = "chiletrabajos"
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+_CHROMIUM = "/usr/bin/chromium"
+_CHROMEDRIVER = "/usr/bin/chromedriver"
+
+_xvfb_started = False
+
+
+def _ensure_xvfb():
+    global _xvfb_started
+    if _xvfb_started:
+        return
+    try:
+        import subprocess
+        subprocess.Popen(
+            ["Xvfb", ":99", "-screen", "0", "1366x768x24", "-ac"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        os.environ["DISPLAY"] = ":99"
+        time.sleep(1.5)
+        _xvfb_started = True
+        print("  [cht] Xvfb :99 iniciado")
+    except Exception as e:
+        print(f"  [cht] Xvfb falló: {e}")
+
+
 def _make_driver() -> webdriver.Chrome:
+    from selenium.webdriver.chrome.service import Service
+
+    in_linux = os.path.exists(_CHROMIUM)
+    if in_linux:
+        _ensure_xvfb()
+
     options = Options()
+    if not in_linux:
+        options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-blink-features=AutomationControlled")
@@ -48,7 +80,13 @@ def _make_driver() -> webdriver.Chrome:
     )
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
-    driver = webdriver.Chrome(options=options)
+
+    if in_linux:
+        options.binary_location = _CHROMIUM
+        driver = webdriver.Chrome(service=Service(_CHROMEDRIVER), options=options)
+    else:
+        driver = webdriver.Chrome(options=options)
+
     driver.execute_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
     return driver
 

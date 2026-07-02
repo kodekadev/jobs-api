@@ -68,10 +68,12 @@ def _pf_select(alias: str = "pf") -> str:
 def get_active_users() -> list[dict]:
     """Retorna usuarios con POSTULACIONES_AUTO activo=1 y POSTULA_FACIL completo."""
     query = f"""
-        SELECT {_pf_select('pf')}
+        SELECT {_pf_select('pf')}, u.EMAIL
         FROM `{PROJECT}.{DATASET}.POSTULA_FACIL` pf
         INNER JOIN `{PROJECT}.{DATASET}.POSTULACIONES_AUTO` pa
             ON LOWER(pa.id_usuario) = LOWER(pf.ID_USUARIO)
+        LEFT JOIN `{PROJECT}.{DATASET}.USUARIOS` u
+            ON LOWER(u.ID_USUARIO) = LOWER(pf.ID_USUARIO)
         WHERE pa.activo = 1
           AND pf.CARGOS IS NOT NULL
           AND pf.UBICACIONES IS NOT NULL
@@ -87,8 +89,10 @@ def get_active_users() -> list[dict]:
 def get_user_by_id(user_id: str) -> list[dict]:
     """Retorna perfil completo de un usuario desde POSTULA_FACIL."""
     query = f"""
-        SELECT {_pf_select('pf')}
+        SELECT {_pf_select('pf')}, u.EMAIL
         FROM `{PROJECT}.{DATASET}.POSTULA_FACIL` pf
+        LEFT JOIN `{PROJECT}.{DATASET}.USUARIOS` u
+            ON LOWER(u.ID_USUARIO) = LOWER(pf.ID_USUARIO)
         WHERE LOWER(pf.ID_USUARIO) = LOWER(@uid)
         LIMIT 1
     """
@@ -167,24 +171,34 @@ def save_portal_account(user_id: str, portal: str, email: str, password: str) ->
     _query(query, cfg).result()
 
 
-def save_portal_cookies(user_id: str, portal: str, cookies: list[dict]) -> None:
-    """Guarda cookies de sesión en CUENTAS_PORTALES (columnas cookies_json / cookies_at)."""
+def save_portal_cookies(user_id: str, portal: str, cookies: list[dict],
+                        email: str = "", password: str = "") -> None:
+    """Guarda cookies de sesión en CUENTAS_PORTALES. Crea la fila si no existe."""
     import json
     cookies_str = json.dumps(cookies)
     query = f"""
-        UPDATE `{PROJECT}.{DATASET}.CUENTAS_PORTALES`
-        SET cookies_json = @cookies, cookies_at = CURRENT_TIMESTAMP()
-        WHERE id_usuario = @uid AND portal = @portal
+        MERGE `{PROJECT}.{DATASET}.CUENTAS_PORTALES` AS t
+        USING (SELECT @uid AS id_usuario, @portal AS portal) AS s
+        ON t.id_usuario = s.id_usuario AND t.portal = s.portal
+        WHEN MATCHED THEN
+            UPDATE SET cookies_json = @cookies, cookies_at = CURRENT_TIMESTAMP(),
+                       updated_at = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN
+            INSERT (id_usuario, portal, email, password, cookies_json, cookies_at, created_at, updated_at)
+            VALUES (@uid, @portal, @email, @password, @cookies, CURRENT_TIMESTAMP(),
+                    CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP())
     """
     cfg = bigquery.QueryJobConfig(query_parameters=[
-        bigquery.ScalarQueryParameter("uid",     "STRING", user_id),
-        bigquery.ScalarQueryParameter("portal",  "STRING", portal),
-        bigquery.ScalarQueryParameter("cookies", "STRING", cookies_str),
+        bigquery.ScalarQueryParameter("uid",      "STRING", user_id),
+        bigquery.ScalarQueryParameter("portal",   "STRING", portal),
+        bigquery.ScalarQueryParameter("email",    "STRING", email),
+        bigquery.ScalarQueryParameter("password", "STRING", password),
+        bigquery.ScalarQueryParameter("cookies",  "STRING", cookies_str),
     ])
     _query(query, cfg).result()
 
 
-def get_portal_cookies(user_id: str, portal: str, max_age_hours: int = 48) -> list[dict] | None:
+def get_portal_cookies(user_id: str, portal: str, max_age_hours: int = 120) -> list[dict] | None:
     """Retorna cookies guardadas si existen y tienen menos de max_age_hours."""
     import json
     query = f"""
