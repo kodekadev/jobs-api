@@ -1,13 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "PostulAI — LinkedIn Auto Apply",
-  "version": "1.2.1",
-  "description": "Postula automáticamente a empleos de LinkedIn Easy Apply usando tu perfil de PostulAI.",
+  "name": "AplicAI — LinkedIn Auto Apply",
+  "version": "1.3.1",
+  "description": "Postula automáticamente a empleos de LinkedIn Easy Apply usando tu perfil de AplicAI.",
 
   "permissions": ["storage", "alarms", "tabs", "notifications"],
   "host_permissions": [
     "https://*.linkedin.com/*",
-    "https://api.postulai.cl/*",
     "https://*.run.app/*"
   ],
 

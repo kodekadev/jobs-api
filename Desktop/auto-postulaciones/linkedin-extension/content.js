@@ -44,10 +44,10 @@
   // ── indicador visual ────────────────────────────────────────────────────────
 
   function showBadge(text, color = "#0077b5", sticky = false) {
-    let badge = document.getElementById("postulai-badge");
+    let badge = document.getElementById("aplicai-badge");
     if (!badge) {
       badge = document.createElement("div");
-      badge.id = "postulai-badge";
+      badge.id = "aplicai-badge";
       Object.assign(badge.style, {
         position: "fixed", bottom: "24px", right: "24px",
         background: color, color: "#fff",
@@ -72,11 +72,11 @@
 
   async function ensureContext() {
     const cfg = await chrome.storage.sync.get(["enabled", "autopilot", "userId"]);
-    if (!cfg.enabled) { showBadge("PostulAI: extensión desactivada — actívala en el popup", "#e74c3c"); return null; }
-    if (!cfg.userId)  { showBadge("PostulAI: inicia sesión desde el popup", "#e74c3c"); return null; }
+    if (!cfg.enabled) { showBadge("AplicAI: extensión desactivada — actívala en el popup", "#e74c3c"); return null; }
+    if (!cfg.userId)  { showBadge("AplicAI: inicia sesión desde el popup", "#e74c3c"); return null; }
 
     const { profile } = await chrome.storage.local.get(["profile"]);
-    if (!profile) { showBadge("PostulAI: perfil no sincronizado — abre el popup", "#e74c3c"); return null; }
+    if (!profile) { showBadge("AplicAI: perfil no sincronizado — abre el popup", "#e74c3c"); return null; }
 
     if (!ctx) {
       const { appliedIds } = await chrome.storage.local.get(["appliedIds"]);
@@ -111,8 +111,7 @@
   }
 
   function panelSaysApplied() {
-    const scope = document.querySelector(".jobs-details__main-content, .job-view-layout") || document.body;
-    return APPLIED_RE.test((scope.innerText || "").slice(0, 2500).toLowerCase());
+    return APPLIED_RE.test((getDetailPanel().innerText || "").slice(0, 2500).toLowerCase());
   }
 
   // ── detección del botón Easy Apply ──────────────────────────────────────────
@@ -125,17 +124,27 @@
     return r.width > 0 && r.height > 0;
   }
 
+  // Panel derecho donde aparecen los detalles del empleo y el botón Easy Apply.
+  // Buscamos aquí para no confundir con los botones de los cards del sidebar.
+  function getDetailPanel() {
+    return (
+      document.querySelector(".scaffold-layout__detail") ||
+      document.querySelector(".jobs-details__main-content") ||
+      document.querySelector(".job-view-layout") ||
+      document.querySelector("[data-view-name='job-details']") ||
+      document.body
+    );
+  }
+
   function findEasyApplyButton() {
-    // LinkedIn alterna entre <button>, <a> y divs con role=button según versión del DOM.
-    // Las tarjetas de la lista son DIVs role=button cuyo texto incluye "Solicitud sencilla":
-    // se excluyen exigiendo aria-label explícito o texto CORTO (el botón real solo dice eso).
     const PHRASES = ["solicitud sencilla", "easy apply", "aplicar fácilmente"];
-    for (const btn of LIFormFiller.deepQAll("button, a, [role='button']")) {
+    // Buscar SOLO en el panel de detalles del empleo (derecha), no en los cards del sidebar.
+    const panel = getDetailPanel();
+    for (const btn of LIFormFiller.deepQAll("button, a, [role='button']", panel)) {
       if (!isVisible(btn)) continue;
-      if (btn.closest("div[role='dialog']")) continue; // controles dentro de un modal no cuentan
+      if (btn.closest("div[role='dialog']")) continue;
       const aria = (btn.getAttribute("aria-label") || "").toLowerCase();
       const txt  = (btn.textContent || "").trim().toLowerCase();
-      // Excluir postulación externa ("Solicitar en el sitio web de la empresa")
       if (aria.includes("sitio web") || aria.includes("company website")) continue;
       if (PHRASES.some((p) => aria.includes(p))) return btn;
       if (txt.length < 40 && PHRASES.some((p) => txt.includes(p))) return btn;
@@ -145,7 +154,8 @@
 
   // Detectar postulación EXTERNA ("Solicitar ↗" / en el sitio de la empresa)
   function findExternalApply() {
-    for (const el of LIFormFiller.deepQAll("button, a, [role='button']")) {
+    const panel = getDetailPanel();
+    for (const el of LIFormFiller.deepQAll("button, a, [role='button']", panel)) {
       if (!isVisible(el)) continue;
       if (el.closest("div[role='dialog']")) continue;
       const aria = (el.getAttribute("aria-label") || "").toLowerCase();
@@ -174,7 +184,7 @@
       .filter(isVisible)
       .map((b) => `${b.tagName}: aria="${b.getAttribute("aria-label") || ""}" txt="${(b.textContent || "").trim().slice(0, 35)}"`)
       .filter((t) => /solicit|apply|guardar|save/i.test(t));
-    console.log("[PostulAI] DEBUG controles visibles:", cands);
+    console.log("[AplicAI] DEBUG controles visibles:", cands);
   }
 
   // ── cierre de modales ───────────────────────────────────────────────────────
@@ -220,8 +230,8 @@
 
   async function applyToCurrentJob(overrideJobId) {
     const jobId = overrideJobId || getJobId();
-    if (!jobId) { console.log("[PostulAI] Sin jobId en la URL"); return "skipped"; }
-    if (isAlreadyApplied(jobId)) { console.log(`[PostulAI] ${jobId} ya postulado, saltando`); return "skipped"; }
+    if (!jobId) { console.log("[AplicAI] Sin jobId en la URL"); return "skipped"; }
+    if (isAlreadyApplied(jobId)) { console.log(`[AplicAI] ${jobId} ya postulado, saltando`); return "skipped"; }
 
     // Si el wizard ya está abierto, el botón Easy Apply queda oculto detrás:
     // ir directo al llenado (SDUI ya no usa div[role='dialog'])
@@ -231,17 +241,17 @@
       const applyBtn = await waitForApplyControl();
       if (!applyBtn) {
         if (panelSaysApplied()) {
-          console.log(`[PostulAI] ${jobId}: LinkedIn indica "Solicitud enviada", saltando`);
+          console.log(`[AplicAI] ${jobId}: LinkedIn indica "Solicitud enviada", saltando`);
           markApplied(jobId);
         } else if (findExternalApply()) {
-          console.log("[PostulAI] Postulación externa (Solicitar ↗), saltando");
+          console.log("[AplicAI] Postulación externa (Solicitar ↗), saltando");
         } else {
-          console.log("[PostulAI] No hay botón Easy Apply visible tras 8s");
+          console.log("[AplicAI] No hay botón Easy Apply visible tras 8s");
           dumpApplyCandidates();
         }
         return "skipped";
       }
-      showBadge("PostulAI: abriendo Easy Apply...");
+      showBadge("AplicAI: abriendo Easy Apply...");
       applyBtn.click();
 
       for (let i = 0; i < 16 && !modal; i++) {
@@ -249,20 +259,20 @@
         modal = LIFormFiller.findContainer();
       }
       if (!modal) {
-        showBadge("PostulAI: el formulario no apareció", "#e74c3c");
+        showBadge("AplicAI: el formulario no apareció", "#e74c3c");
         const iframes = [...document.querySelectorAll("iframe")].map((f) => (f.src || "(sin src)").slice(0, 90));
         console.warn(
-          `[PostulAI] Formulario Easy Apply no encontrado tras 8s | url=${location.href.slice(0, 90)} | ` +
+          `[AplicAI] Formulario Easy Apply no encontrado tras 8s | url=${location.href.slice(0, 90)} | ` +
           `dialogs=${LIFormFiller.deepQAll("div[role='dialog']").length} forms=${LIFormFiller.deepQAll("form").length} ` +
           `iframes=${JSON.stringify(iframes)}`
         );
         return "failed";
       }
     } else {
-      console.log("[PostulAI] Modal ya abierto — llenando directamente");
+      console.log("[AplicAI] Modal ya abierto — llenando directamente");
     }
 
-    showBadge("PostulAI: llenando formulario...");
+    showBadge("AplicAI: llenando formulario...");
     const result = await LIFormFiller.fill(ctx.profile);
 
     if (result === true) {
@@ -274,19 +284,19 @@
         payload: { jobId, title, company, url: `https://www.linkedin.com/jobs/view/${jobId}/`, cargo: ctx.profile.cargos?.[0] || "" },
       });
 
-      showBadge(`PostulAI: postulado a ${company || "empleo"}`, "#27ae60");
-      console.log("[PostulAI] Postulación enviada:", title, "—", company);
+      showBadge(`AplicAI: postulado a ${company || "empleo"}`, "#27ae60");
+      console.log("[AplicAI] Postulación enviada:", title, "—", company);
       await closeSuccessModal();
       return "applied";
     }
 
     if (result === "review") {
-      showBadge("PostulAI: listo para enviar — revisa y confirma", "#f39c12");
+      showBadge("AplicAI: listo para enviar — revisa y confirma", "#f39c12");
       return "review";
     }
 
-    showBadge("PostulAI: no se pudo completar la postulación", "#e74c3c");
-    console.warn("[PostulAI] fill() retornó:", result);
+    showBadge("AplicAI: no se pudo completar la postulación", "#e74c3c");
+    console.warn("[AplicAI] fill() retornó:", result);
     await dismissAnyModal();
     return "failed";
   }
@@ -361,7 +371,7 @@
       jobList.scrollTop = 0;
       await sleep(800);
     } else {
-      console.warn("[PostulAI] No se encontró contenedor scrolleable de la lista");
+      console.warn("[AplicAI] No se encontró contenedor scrolleable de la lista");
       collect();
     }
     return [...jobIdSet];
@@ -452,7 +462,7 @@
   // está oculta (modo 2do plano), sin él los sleeps correrían 1 vez por minuto
   async function runAutopilot(maxJobs) {
     let out;
-    await navigator.locks.request("postulai-autopilot", async () => {
+    await navigator.locks.request("aplicai-autopilot", async () => {
       out = await runAutopilotInner(maxJobs);
     });
     return out;
@@ -462,8 +472,8 @@
   const MAX_CONSECUTIVE_FAILS = 5;
 
   async function runAutopilotInner(maxJobs) {
-    console.log("[PostulAI] Autopilot: recolectando empleos...");
-    showBadge("PostulAI: buscando empleos...", "#0077b5", true);
+    console.log("[AplicAI] Autopilot: recolectando empleos...");
+    showBadge("AplicAI: buscando empleos...", "#0077b5", true);
 
     let applied = 0, failed = 0, skipped = 0, total = 0, pages = 0;
     let consecutiveFails = 0;
@@ -475,10 +485,10 @@
       jobIds.forEach((id) => seen.add(id));
       pages = page;
       total += jobIds.length;
-      console.log(`[PostulAI] Página ${page}: ${jobIds.length} tarjetas nuevas`);
+      console.log(`[AplicAI] Página ${page}: ${jobIds.length} tarjetas nuevas`);
 
       if (!jobIds.length) {
-        if (page === 1) showBadge("PostulAI: no se encontraron empleos en esta página", "#e74c3c");
+        if (page === 1) showBadge("AplicAI: no se encontraron empleos en esta página", "#e74c3c");
         break;
       }
 
@@ -486,8 +496,8 @@
         const jobId = jobIds[i];
         if (maxJobs > 0 && applied >= maxJobs) { stopReason = "limite-plan"; break; }
 
-        console.log(`[PostulAI] Pág ${page} — empleo ${i + 1}/${jobIds.length} — ID: ${jobId}`);
-        showBadge(`PostulAI: pág ${page}, empleo ${i + 1}/${jobIds.length} (${applied} postulados)`, "#0077b5", true);
+        console.log(`[AplicAI] Pág ${page} — empleo ${i + 1}/${jobIds.length} — ID: ${jobId}`);
+        showBadge(`AplicAI: pág ${page}, empleo ${i + 1}/${jobIds.length} (${applied} postulados)`, "#0077b5", true);
 
         // Un error en un empleo NO detiene el ciclo
         try {
@@ -503,14 +513,14 @@
           // Re-query de la tarjeta desde el DOM actual (DOM virtual)
           const row = await findRow(jobId);
           if (!row) {
-            console.log(`[PostulAI] Tarjeta ${jobId} no encontrada en el DOM, saltando`);
+            console.log(`[AplicAI] Tarjeta ${jobId} no encontrada en el DOM, saltando`);
             skipped++;
             continue;
           }
 
           // LinkedIn ya la marca como "Solicitud enviada": saltar sin abrir el panel
           if (cardSaysApplied(row)) {
-            console.log(`[PostulAI] ${jobId} ya postulado según LinkedIn, saltando`);
+            console.log(`[AplicAI] ${jobId} ya postulado según LinkedIn, saltando`);
             markApplied(jobId);
             skipped++;
             continue;
@@ -526,8 +536,8 @@
           await sleep(600);
 
           if (hitDailyLimit()) {
-            console.warn("[PostulAI] Límite diario de LinkedIn alcanzado");
-            showBadge("PostulAI: límite diario de LinkedIn alcanzado", "#e74c3c");
+            console.warn("[AplicAI] Límite diario de LinkedIn alcanzado");
+            showBadge("AplicAI: límite diario de LinkedIn alcanzado", "#e74c3c");
             stopReason = "limite-linkedin";
             break;
           }
@@ -540,14 +550,14 @@
         } catch (err) {
           failed++;
           consecutiveFails++;
-          console.warn(`[PostulAI] Error en empleo ${jobId}:`, err?.message || err);
+          console.warn(`[AplicAI] Error en empleo ${jobId}:`, err?.message || err);
           await dismissAnyModal();
         }
 
         // Demasiados fallos seguidos = algo cambió en LinkedIn; cortar para no insistir
         if (consecutiveFails >= MAX_CONSECUTIVE_FAILS) {
-          console.warn(`[PostulAI] ${MAX_CONSECUTIVE_FAILS} fallos consecutivos — abortando ciclo`);
-          showBadge("PostulAI: demasiados errores seguidos, ciclo detenido", "#e74c3c");
+          console.warn(`[AplicAI] ${MAX_CONSECUTIVE_FAILS} fallos consecutivos — abortando ciclo`);
+          showBadge("AplicAI: demasiados errores seguidos, ciclo detenido", "#e74c3c");
           stopReason = "fallos-consecutivos";
           break;
         }
@@ -563,8 +573,8 @@
       stopReason: stopReason || "fin-resultados",
     };
     try { chrome.storage.local.set({ lastRunStats: stats }); } catch (_) {}
-    console.log("[PostulAI] Autopilot completado —", JSON.stringify(stats));
-    showBadge(`PostulAI: ciclo completado — ${applied} postulaciones`, applied > 0 ? "#27ae60" : "#f39c12");
+    console.log("[AplicAI] Autopilot completado —", JSON.stringify(stats));
+    showBadge(`AplicAI: ciclo completado — ${applied} postulaciones`, applied > 0 ? "#27ae60" : "#f39c12");
     const out = { applied, total };
     if (stopReason === "fallos-consecutivos") out.error = "fallos-consecutivos";
     return out;
@@ -619,7 +629,7 @@
 
     if (msg.type === "RUN_AUTOPILOT") {
       if (autopilotRunning) {
-        console.log("[PostulAI] Autopilot ya está corriendo");
+        console.log("[AplicAI] Autopilot ya está corriendo");
         sendResponse({ ok: false, error: "already_running" });
         return;
       }
@@ -636,6 +646,6 @@
     }
   });
 
-  console.log("[PostulAI] Content script listo — usa el popup para postular o iniciar el autopilot");
+  console.log("[AplicAI] Content script listo — usa el popup para postular o iniciar el autopilot");
 
 })();
