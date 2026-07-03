@@ -1,13 +1,31 @@
 """Envía resumen diario al usuario con los empleos encontrados/postulados."""
 
 import os
-import json
-import urllib.request
-import urllib.error
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 FROM_DOMAIN    = os.environ.get("FROM_DOMAIN", "jobs.ko-deka.com")
 APP_URL        = os.environ.get("APP_URL", "https://postulai.com")
+
+
+def _send_smtp(from_addr: str, to: str, subject: str, html: str) -> bool:
+    """Envía email vía Resend SMTP (evita bloqueo Cloudflare en REST API)."""
+    if not RESEND_API_KEY:
+        return False
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["From"]    = from_addr
+        msg["To"]      = to
+        msg["Subject"] = subject
+        msg.attach(MIMEText(html, "html", "utf-8"))
+        with smtplib.SMTP_SSL("smtp.resend.com", 465, timeout=15) as server:
+            server.login("resend", RESEND_API_KEY)
+            server.sendmail(from_addr, [to], msg.as_string())
+        return True
+    except Exception as e:
+        raise e
 
 
 def send_summary(user: dict, jobs_found: list[dict], applied: list[dict]) -> None:
@@ -72,26 +90,11 @@ def send_summary(user: dict, jobs_found: list[dict], applied: list[dict]) -> Non
     </div>
     """
 
-    payload = {
-        "from":    f"Postulai <postulaciones@{FROM_DOMAIN}>",
-        "to":      [to],
-        "subject": f"✅ Postulamos {applied_count} {'vez' if applied_count == 1 else 'veces'} por ti hoy — revisa tus postulaciones",
-        "html":    html,
-    }
-
+    from_addr = f"AplicAI <postulaciones@{FROM_DOMAIN}>"
+    subject   = f"✅ Postulamos {applied_count} {'vez' if applied_count == 1 else 'veces'} por ti hoy — revisa tus postulaciones"
     try:
-        data = json.dumps(payload).encode()
-        req  = urllib.request.Request(
-            "https://api.resend.com/emails",
-            data=data,
-            headers={
-                "Authorization": f"Bearer {RESEND_API_KEY}",
-                "Content-Type":  "application/json",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            if resp.status == 200:
-                print(f"  ✓ Resumen enviado a {to}")
+        _send_smtp(from_addr, to, subject, html)
+        print(f"  ✓ Resumen enviado a {to}")
     except Exception as e:
         print(f"  ⚠ Error enviando resumen a {to}: {e}")
 
@@ -145,25 +148,10 @@ def send_trial_warning(user: dict, days_left: int) -> None:
     </div>
     """
 
-    payload = {
-        "from":    f"Postulai <hola@{FROM_DOMAIN}>",
-        "to":      [to],
-        "subject": f"⏳ Tu prueba PRO vence en {days_left} días — Postulai",
-        "html":    html,
-    }
-
+    from_addr = f"AplicAI <hola@{FROM_DOMAIN}>"
+    subject   = f"⏳ Tu prueba PRO vence en {days_left} días — AplicAI"
     try:
-        data = json.dumps(payload).encode()
-        req  = urllib.request.Request(
-            "https://api.resend.com/emails",
-            data=data,
-            headers={
-                "Authorization": f"Bearer {RESEND_API_KEY}",
-                "Content-Type":  "application/json",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            if resp.status == 200:
-                print(f"  ✓ Aviso trial enviado a {to}")
+        _send_smtp(from_addr, to, subject, html)
+        print(f"  ✓ Aviso trial enviado a {to}")
     except Exception as e:
         print(f"  ⚠ Error enviando aviso trial a {to}: {e}")
