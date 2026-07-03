@@ -1357,63 +1357,10 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
 
     wait = WebDriverWait(driver, 20)
     try:
-        # ── 1a. Bloquear el script real de reCAPTCHA solo si tenemos 2captcha ──
-        # Sin TWOCAPTCHA_KEY, dejar que el reCAPTCHA real corra en el browser.
-        # reCAPTCHA v3 es basado en score — Selenium a veces pasa sin bloquear.
+        # Dejar reCAPTCHA nativo correr — el token se genera desde la IP de Cloud Run.
+        # 2captcha SIEMPRE falla porque el token viene de otra IP (mismatch).
+        # Con reCAPTCHA nativo el token y la petición comparten IP.
         driver.execute_cdp_cmd("Network.enable", {})
-        if TWOCAPTCHA_KEY:
-            try:
-                driver.execute_cdp_cmd("Network.setBlockedURLs", {"urls": [
-                    "https://www.google.com/recaptcha/api.js*",
-                    "https://www.google.com/recaptcha/api2/*",
-                    "https://recaptcha.net/recaptcha/api.js*",
-                    "https://recaptcha.net/recaptcha/api2/*",
-                ]})
-                print("  [captcha] recaptcha bloqueado via CDP (2captcha activo)")
-            except Exception as _ce:
-                print(f"  [captcha] Network.setBlockedURLs no disponible: {_ce}")
-
-        # ── 1b. Mock de grecaptcha solo cuando hay 2captcha (para inyectar token) ─
-        # Sin 2captcha: dejar que el grecaptcha real maneje el flujo.
-        if TWOCAPTCHA_KEY:
-            driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-                "source": "window.__hasTwoCaptchaKey = true;"
-            })
-            driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-                "source": """
-                // ── Mock de grecaptcha ─────────────────────────────────────────────
-                window.__ourToken = null;
-                window.__waiters  = [];
-                window.__injectToken = function(token) {
-                    window.__ourToken = token;
-                    var w = window.__waiters;
-                    window.__waiters = [];
-                    for (var i = 0; i < w.length; i++) w[i](token);
-                };
-
-                var _mockGrecaptcha = {
-                    ready: function(cb) { if (typeof cb === 'function') cb(); },
-                    execute: function() {
-                        if (window.__ourToken) { return Promise.resolve(window.__ourToken); }
-                        return new Promise(function(resolve) {
-                            window.__waiters.push(resolve);
-                        });
-                    },
-                    getResponse: function() { return window.__ourToken || ''; },
-                    reset: function() {},
-                    render: function() { return 0; }
-                };
-
-                // Definir con setter que ignora reemplazos para que la lib real no borre el mock
-                Object.defineProperty(window, 'grecaptcha', {
-                    get: function() { return _mockGrecaptcha; },
-                    set: function() {},   // ignora cualquier window.grecaptcha = <lib real>
-                    configurable: false,
-                    enumerable: true
-                });
-
-            """
-            })
 
         # Interceptores de red siempre activos (para diagnóstico del login)
         driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
@@ -1468,18 +1415,10 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
             """
         })
 
-        # ── 2. Lanzar 2captcha en hilo paralelo mientras carga la página ──────
         token_box = {"token": None}
-        def _fetch():
-            token_box["token"] = _solve_recaptcha(TBJO_SITEKEY, PAGE_URL, action="login")
-        if TWOCAPTCHA_KEY:
-            print(f"  [captcha] solicitando token a 2captcha en paralelo...")
-            t = threading.Thread(target=_fetch, daemon=True)
-            t.start()
-        else:
-            t = None
+        t = None
 
-        # ── 3. Navegar a la página (el override ya está activo) ───────────────
+        # ── 3. Navegar a la página ─────────────────────────────────────────────
         driver.get(PAGE_URL)
         time.sleep(3)
 
@@ -1528,35 +1467,10 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
         pwd_val   = pwd_el.get_attribute("value") or ""
         print(f"  [trabajando] Form email={email_val[:30]!r} pwd_len={len(pwd_val)}")
 
-        # ── 5. Esperar token de 2captcha e inyectarlo ──────────────────────────
-        if t:
-            t.join(timeout=150)
-        token = token_box.get("token")
-        if token:
-            # 1. Resolver promesas pendientes de grecaptcha.execute() (v3/invisible)
-            driver.execute_script("window.__injectToken(arguments[0]);", token)
-            # 2. Inyección v2: textarea + invocar callback directamente
-            driver.execute_script("""
-                var t = arguments[0];
-                // Setear campo g-recaptcha-response (v2 usa textarea)
-                var el = document.querySelector('textarea[name="g-recaptcha-response"]')
-                      || document.querySelector('[name="g-recaptcha-response"]');
-                if (el) { el.style.display='block'; el.value = t;
-                          el.dispatchEvent(new Event('change',{bubbles:true})); }
-                // Invocar callback de botones con data-callback (v2 invisible)
-                var btns = document.querySelectorAll('[data-callback]');
-                for (var b of btns) {
-                    var cb = b.getAttribute('data-callback');
-                    if (cb && typeof window[cb]==='function') { window[cb](t); break; }
-                }
-                // También setear en grecaptcha widget si existe
-                if (window.grecaptcha && window.grecaptcha.getResponse) {
-                    try { window.__rcResponseOverride = t; } catch(e) {}
-                }
-            """, token)
-            print("  [captcha] token inyectado (v2+v3)")
-        elif TWOCAPTCHA_KEY:
-            print("  [captcha] sin token — continuando sin CAPTCHA")
+        # reCAPTCHA nativo corre automáticamente en el browser — no inyectamos nada.
+        # El token se genera desde la IP de Cloud Run, que coincide con la petición de login.
+        token = None
+        time.sleep(2)  # dar tiempo al reCAPTCHA nativo para inicializarse
 
         # ── 6. Debug: loggear estructura del formulario y respuesta reCAPTCHA ───
         try:
@@ -1572,8 +1486,8 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
                 // Campo g-recaptcha-response
                 var el = document.querySelector('[name="g-recaptcha-response"]');
                 info.rcField = el ? {tag: el.tagName, val_len: el.value.length} : null;
-                // window.__ourToken existe?
-                info.ourToken = (window.__ourToken != null) ? String(window.__ourToken).slice(0,20) : String(window.__ourToken);
+                // reCAPTCHA token disponible?
+                info.ourToken = null;
                 // grecaptcha disponible?
                 info.hasGrecaptcha = typeof window.grecaptcha !== 'undefined';
                 // Funciones globales que podrían ser callbacks
