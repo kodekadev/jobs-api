@@ -2,14 +2,14 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <title>PostulAI — Configuración</title>
+  <title>AplicAI — Configuración</title>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       max-width: 520px; margin: 40px auto; padding: 0 20px;
       color: #1a1a2e; background: #f3f6f8;
     }
-    h1 { font-size: 22px; color: #0077b5; margin-bottom: 6px; }
+    h1 { font-size: 22px; color: #2A8FA5; margin-bottom: 6px; }
     p.sub { color: #888; font-size: 13px; margin-bottom: 28px; }
 
     .field { margin-bottom: 20px; }
@@ -19,15 +19,15 @@
       border-radius: 8px; font-size: 14px; outline: none;
       transition: border .2s;
     }
-    input:focus { border-color: #0077b5; }
+    input:focus { border-color: #2A8FA5; }
     small { color: #888; font-size: 11px; margin-top: 4px; display: block; }
 
     button {
-      background: #0077b5; color: #fff; border: none;
+      background: #2A8FA5; color: #fff; border: none;
       border-radius: 8px; padding: 11px 28px;
       font-size: 14px; font-weight: 600; cursor: pointer;
     }
-    button:hover { background: #005f8e; }
+    button:hover { background: #1E6E82; }
 
     .msg {
       margin-top: 16px; padding: 10px 14px; border-radius: 8px;
@@ -38,24 +38,24 @@
   </style>
 </head>
 <body>
-  <h1>PostulAI — Configuración</h1>
-  <p class="sub">Conecta la extensión con tu cuenta de PostulAI.</p>
+  <h1>AplicAI — Configuración</h1>
+  <p class="sub">Conecta la extensión con tu cuenta de AplicAI.</p>
 
   <div class="field">
-    <label for="userId">Tu ID de usuario PostulAI</label>
+    <label for="userId">Tu ID de usuario AplicAI</label>
     <input type="text" id="userId" placeholder="ej: jobs2">
-    <small>Lo encuentras en tu perfil de PostulAI.</small>
+    <small>Lo encuentras en tu perfil de AplicAI.</small>
   </div>
 
   <div class="field">
-    <label for="apiUrl">URL del API de PostulAI</label>
-    <input type="url" id="apiUrl" placeholder="https://api.postulai.cl">
+    <label for="apiUrl">URL del API de AplicAI</label>
+    <input type="url" id="apiUrl" placeholder="https://jobs-api-994947687832.us-central1.run.app">
   </div>
 
   <div class="field">
     <label for="apiToken">Token de acceso</label>
     <input type="password" id="apiToken" placeholder="Bearer token de tu sesión">
-    <small>Se obtiene al iniciar sesión en PostulAI. No lo compartas.</small>
+    <small>Se obtiene al iniciar sesión en AplicAI. No lo compartas.</small>
   </div>
 
   <button id="btnSave">Guardar y conectar</button>

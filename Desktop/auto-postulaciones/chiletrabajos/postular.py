@@ -289,11 +289,16 @@ def _postular_empleo(driver: webdriver.Chrome, job_url: str, user: dict, titulo:
         time.sleep(4)
 
         content = driver.page_source.lower()
-        ok = any(s in content for s in [
+        confirmed = any(s in content for s in [
             "postulación enviada", "postulacion enviada", "gracias por postular",
             "aplicación enviada", "te has postulado", "exitoso", "hemos recibido",
         ])
-        print(f"    [cht] {'OK Postulado' if ok else 'Sin confirmar'}")
+        # Error explícito del sitio
+        error = any(s in content for s in [
+            "ha ocurrido un error", "error al postular", "no pudimos", "inténtalo de nuevo",
+        ])
+        ok = confirmed or (not error)  # si no hay error visible, asumir éxito
+        print(f"    [cht] {'OK Postulado' if confirmed else ('Error en envio' if error else 'Enviado sin confirmar')}")
         return ok
 
     except Exception as e:

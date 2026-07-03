@@ -22,7 +22,7 @@ async function init() {
   const text = $("statusText");
   if (profile) {
     dot.className  = "status-dot connected";
-    text.textContent = "Conectado a PostulAI";
+    text.textContent = "Conectado a AplicAI";
   } else {
     dot.className  = "status-dot error";
     text.textContent = "Sin perfil — configura primero";

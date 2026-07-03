@@ -350,6 +350,200 @@ def apply_chiletrabajos(user: dict, job_url: str) -> bool:
             Path(cv_path).unlink(missing_ok=True)
 
 
+# ─── LINKEDIN ─────────────────────────────────────────────────────────────────
+
+def apply_linkedin(user: dict, job_url: str, direct_url: str = "",
+                   cookies: list[dict] | None = None) -> bool:
+    """
+    Postula a un empleo de LinkedIn.
+    Estrategia:
+      1. Si hay direct_url (ATS externo) → intenta postular ahí directamente
+      2. Si hay cookies de sesión → LinkedIn Easy Apply modal
+      3. Sin cookies → retorna False (requiere login previo)
+    """
+    nombre     = user.get("NOMBRE") or user.get("nombre") or ""
+    email      = user.get("EMAIL") or user.get("email") or ""
+    celular    = _clean_phone(user.get("CELULAR") or user.get("celular") or "")
+    cv_path    = _download_cv(user.get("cv_url") or user.get("CV_URL") or "")
+
+    if cookies is None:
+        uid = user.get("ID_USUARIO") or user.get("id_usuario", "")
+        if uid:
+            try:
+                import bq as _bq
+                cookies = _bq.get_portal_cookies(uid, "linkedin") or []
+            except Exception:
+                cookies = []
+
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(
+                headless=HEADLESS,
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+            ctx = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                ),
+                locale="es-CL",
+            )
+            if cookies:
+                try:
+                    ctx.add_cookies(cookies)
+                except Exception:
+                    pass
+
+            page = ctx.new_page()
+            page.add_init_script(
+                "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"
+            )
+
+            # ── 1. Intentar URL directa (ATS externo) ────────────────────────
+            if direct_url and direct_url.startswith("http") and "linkedin.com" not in direct_url:
+                try:
+                    page.goto(direct_url, timeout=20000, wait_until="domcontentloaded")
+                    time.sleep(random.uniform(1.5, 2.5))
+                    content = page.content().lower()
+                    # Buscar campos de aplicación — si tiene formulario, llenarlo
+                    has_form = any(s in content for s in ["input type", "textarea", "apply", "postul"])
+                    if has_form:
+                        _fill_text(page, "input[name*='name'], input[placeholder*='ombre'], input[id*='name']", nombre)
+                        _fill_text(page, "input[type='email'], input[name*='email']", email)
+                        _fill_text(page, "input[type='tel'], input[name*='phone'], input[name*='phone']", celular)
+                        if cv_path:
+                            try:
+                                page.locator("input[type='file']").first.set_input_files(cv_path)
+                                time.sleep(1)
+                            except Exception:
+                                pass
+                        _answer_common_questions(page, user)
+                        for sel in ["button[type='submit']", "input[type='submit']",
+                                    "text=Submit", "text=Apply", "text=Postular", "text=Enviar"]:
+                            if _click_if_exists(page, sel, timeout=3000):
+                                time.sleep(2)
+                                browser.close()
+                                print(f"    [linkedin] Postulado via URL directa: {direct_url[:60]}")
+                                return True
+                except Exception:
+                    pass
+
+            # ── 2. LinkedIn Easy Apply (requiere cookies de sesión) ───────────
+            if not cookies:
+                browser.close()
+                print(f"    [linkedin] Sin cookies de sesión — no se puede aplicar")
+                return False
+
+            page.goto(job_url, timeout=30000, wait_until="domcontentloaded")
+            time.sleep(random.uniform(2, 3))
+
+            # Verificar que estamos logueados (no redirigió a login)
+            if "linkedin.com/login" in page.url or "authwall" in page.url:
+                print(f"    [linkedin] Cookies expiradas — redirigió a login")
+                browser.close()
+                return False
+
+            # Buscar botón Easy Apply
+            easy_apply_clicked = False
+            for sel in [
+                "button.jobs-apply-button",
+                "button[data-control-name='jobdetails_topcard_inapply']",
+                "button:has-text('Easy Apply')",
+                "button:has-text('Solicitud sencilla')",
+                "button:has-text('Postulación simplificada')",
+                ".jobs-apply-button",
+            ]:
+                try:
+                    page.locator(sel).first.wait_for(timeout=3000)
+                    page.locator(sel).first.click()
+                    easy_apply_clicked = True
+                    break
+                except Exception:
+                    continue
+
+            if not easy_apply_clicked:
+                print(f"    [linkedin] Sin botón Easy Apply en {job_url[:60]}")
+                browser.close()
+                return False
+
+            time.sleep(2)
+
+            # ── Wizard multi-paso ─────────────────────────────────────────────
+            submitted = False
+            for step in range(8):
+                time.sleep(1.5)
+                content = page.content().lower()
+
+                # ¿Ya llegamos a "review"?
+                if any(s in content for s in ["review your application", "revisar solicitud",
+                                               "submit application", "enviar solicitud"]):
+                    for sel in ["button:has-text('Submit application')",
+                                "button:has-text('Enviar solicitud')",
+                                "button:has-text('Submit')"]:
+                        if _click_if_exists(page, sel, timeout=4000):
+                            submitted = True
+                            break
+                    break
+
+                # ¿Hay modal de error/CAPTCHA? → abortar
+                if any(s in content for s in ["captcha", "verification", "verificación"]):
+                    print(f"    [linkedin] CAPTCHA detectado — abortando")
+                    break
+
+                # Llenar campos de contacto si aparecen
+                _fill_text(page, "input[id*='phoneNumber'], input[name*='phone']", celular)
+                _fill_text(page, "input[id*='email'], input[name*='email']", email)
+
+                # Subir CV si hay input file
+                if cv_path:
+                    try:
+                        fi = page.locator("input[type='file']").first
+                        fi.wait_for(timeout=1000)
+                        fi.set_input_files(cv_path)
+                        time.sleep(1)
+                    except Exception:
+                        pass
+
+                # Responder preguntas comunes
+                _answer_common_questions(page, user)
+
+                # Avanzar al siguiente paso
+                advanced = False
+                for sel in ["button:has-text('Next')", "button:has-text('Siguiente')",
+                            "button:has-text('Continue')", "button:has-text('Continuar')",
+                            "button[aria-label*='Next']", "button[aria-label*='Continue']"]:
+                    if _click_if_exists(page, sel, timeout=2000):
+                        advanced = True
+                        break
+
+                if not advanced:
+                    # Intentar submit directo
+                    for sel in ["button:has-text('Submit application')",
+                                "button:has-text('Enviar solicitud')"]:
+                        if _click_if_exists(page, sel, timeout=2000):
+                            submitted = True
+                            break
+                    break
+
+            time.sleep(2)
+            # Confirmar éxito buscando señal en la página
+            if not submitted:
+                content = page.content().lower()
+                submitted = any(s in content for s in [
+                    "application submitted", "solicitud enviada", "applied",
+                    "you've applied", "application was sent",
+                ])
+            browser.close()
+            return submitted
+
+    except Exception as e:
+        print(f"    ⚠ LinkedIn error: {e}")
+        return False
+    finally:
+        if cv_path and Path(cv_path).exists():
+            Path(cv_path).unlink(missing_ok=True)
+
+
 # ─── INDEED ───────────────────────────────────────────────────────────────────
 
 def apply_indeed(user: dict, job_url: str, cookies: list[dict] | None = None) -> bool:
@@ -527,7 +721,8 @@ def _answer_common_questions(page, user: dict) -> None:
 
 def apply_via_form(user: dict, job: dict, credentials: dict | None = None,
                    trabajando_driver=None, trabajando_page=None,
-                   chiletrabajos_driver=None) -> "dict | bool":
+                   chiletrabajos_driver=None,
+                   linkedin_cookies: list | None = None) -> "dict | bool":
     """
     Intenta postular al empleo usando el formulario del portal.
     Para Trabajando.cl usa Playwright (page) si está disponible, Selenium como fallback.
@@ -535,8 +730,9 @@ def apply_via_form(user: dict, job: dict, credentials: dict | None = None,
     """
     from portal_accounts import apply_trabajando_selenium, apply_trabajando_playwright
 
-    url    = job.get("link", "")
-    fuente = job.get("fuente", "").lower()
+    url        = job.get("link", "")
+    fuente     = job.get("fuente", "").lower()
+    direct_url = job.get("direct_url", "")
 
     if not url:
         return False
@@ -561,10 +757,16 @@ def apply_via_form(user: dict, job: dict, credentials: dict | None = None,
                 from chiletrabajos.postular import _postular_empleo
                 ok = _postular_empleo(chiletrabajos_driver, url, user, job.get("titulo", ""))
             else:
-                # Sin cuenta: postulación como invitado
                 ok = apply_chiletrabajos(user, url)
 
+        elif fuente == "linkedin" or "linkedin.com" in url:
+            ok = apply_linkedin(user, url, direct_url=direct_url, cookies=linkedin_cookies)
+
+        elif fuente == "indeed" or "indeed.com" in url:
+            ok = apply_indeed(user, url)
+
         else:
+            print(f"  ⚠ Fuente sin handler de postulación: [{fuente}] {job.get('titulo', '')[:50]}")
             return False
 
         if ok:

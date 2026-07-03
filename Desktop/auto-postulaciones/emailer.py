@@ -1,11 +1,13 @@
-"""Envío de postulaciones por email usando la API de Resend."""
+"""Envío de postulaciones por email usando Resend SMTP (evita bloqueo Cloudflare)."""
 
 import os
 import re
-import json
-import base64
+import smtplib
 import urllib.request
-import urllib.error
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 FROM_DOMAIN     = os.environ.get("FROM_DOMAIN", "jobs.ko-deka.com")
@@ -29,10 +31,20 @@ def extract_email(text: str) -> str | None:
 def _download_cv(cv_url: str) -> bytes | None:
     if not cv_url:
         return None
+    # Usar GCS SDK con credenciales del SA cuando la URL es de Google Storage
+    if "storage.googleapis.com" in cv_url:
+        try:
+            path = cv_url.split("storage.googleapis.com/", 1)[-1]
+            bucket_name, blob_name = path.split("/", 1)
+            from google.cloud import storage as gcs
+            blob = gcs.Client().bucket(bucket_name).blob(blob_name)
+            data = blob.download_as_bytes(timeout=30)
+            return data
+        except Exception as e:
+            print(f"  ⚠ GCS SDK falló ({cv_url}): {e} — intentando HTTP")
+    # Fallback HTTP para otras URLs
     try:
-        req = urllib.request.Request(cv_url, headers={
-            "User-Agent": "Mozilla/5.0"
-        })
+        req = urllib.request.Request(cv_url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=30) as resp:
             return resp.read()
     except Exception as e:
@@ -94,39 +106,29 @@ def send_application(user: dict, job: dict, to_email: str) -> bool:
     </div>
     """
 
-    payload: dict = {
-        "from":     f"{nombre} <postulaciones@{FROM_DOMAIN}>",
-        "to":       [to_email],
-        "reply_to": email,
-        "subject":  subject,
-        "html":     html,
-    }
-
-    # Adjuntar CV si existe
-    cv_bytes = _download_cv(cv_url)
-    if cv_bytes:
-        safe_name = nombre.replace(" ", "_") if nombre else "CV"
-        payload["attachments"] = [{
-            "filename": f"CV_{safe_name}.pdf",
-            "content":  base64.b64encode(cv_bytes).decode(),
-        }]
+    from_addr = f"{nombre} <postulaciones@{FROM_DOMAIN}>"
+    cv_bytes  = _download_cv(cv_url)
 
     try:
-        data = json.dumps(payload).encode()
-        req  = urllib.request.Request(
-            "https://api.resend.com/emails",
-            data=data,
-            headers={
-                "Authorization": f"Bearer {RESEND_API_KEY}",
-                "Content-Type":  "application/json",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            return resp.status == 200
-    except urllib.error.HTTPError as e:
-        body = e.read().decode()
-        print(f"  ⚠ Resend HTTP {e.code}: {body[:200]}")
-        return False
+        msg = MIMEMultipart("mixed")
+        msg["From"]     = from_addr
+        msg["To"]       = to_email
+        msg["Subject"]  = subject
+        msg["Reply-To"] = email
+        msg.attach(MIMEText(html, "html", "utf-8"))
+
+        if cv_bytes:
+            safe_name = nombre.replace(" ", "_") if nombre else "CV"
+            part = MIMEBase("application", "octet-stream")
+            part.set_payload(cv_bytes)
+            encoders.encode_base64(part)
+            part.add_header("Content-Disposition", f'attachment; filename="CV_{safe_name}.pdf"')
+            msg.attach(part)
+
+        with smtplib.SMTP_SSL("smtp.resend.com", 465, timeout=20) as server:
+            server.login("resend", RESEND_API_KEY)
+            server.sendmail(from_addr, [to_email], msg.as_string())
+        return True
     except Exception as e:
         print(f"  ⚠ Error enviando email a {to_email}: {e}")
         return False

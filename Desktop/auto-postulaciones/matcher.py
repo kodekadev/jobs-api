@@ -75,18 +75,18 @@ def _build_profile_text(user: dict) -> str:
     resumen    = (user.get("resumen") or user.get("RESUMEN") or "")[:400]
     experiencia = user.get("experiencia") or user.get("EXPERIENCIA") or "no especificada"
     pretension = user.get("pretension_general") or user.get("PRETENSION_GENERAL") or ""
+    try:
+        pretension_fmt = f"${int(pretension):,} CLP" if pretension else ""
+    except (ValueError, TypeError):
+        pretension_fmt = f"${pretension} CLP" if pretension else ""
 
-    return (
-        f"Profesión: {profesion}\n"
-        f"Cargos buscados: {', '.join(cargos)}\n"
-        f"Años/nivel de experiencia: {experiencia}\n"
-        f"Resumen profesional: {resumen}\n"
-        f"Pretensión salarial: ${pretension:,} CLP" if pretension else
+    base = (
         f"Profesión: {profesion}\n"
         f"Cargos buscados: {', '.join(cargos)}\n"
         f"Años/nivel de experiencia: {experiencia}\n"
         f"Resumen profesional: {resumen}"
     )
+    return base + (f"\nPretensión salarial: {pretension_fmt}" if pretension_fmt else "")
 
 
 def _llm_filter_batch(user: dict, jobs: list[dict]) -> list[int]:
@@ -118,11 +118,12 @@ PERFIL DEL CANDIDATO:
 EMPLEOS A EVALUAR:
 {empleos_txt}
 
-CRITERIOS DE MATCHING:
-- El cargo debe corresponder al nivel profesional del candidato (no junior si tiene experiencia senior)
-- La industria debe ser compatible con su formación
-- Rechaza prácticas, sin experiencia, ventas directas, multinivel
-- Acepta aunque el título no sea exacto si el rol es claramente compatible
+CRITERIOS DE MATCHING (en orden de prioridad):
+1. ACEPTA SIEMPRE si el título del empleo contiene las mismas palabras clave del cargo buscado (p.ej. si busca "Jefe de proyectos" y el título dice "Jefe de Proyecto" o "Jefe(a) Proyecto" → ACEPTA).
+2. RECHAZA SIEMPRE si el empleo es: práctica profesional, sin experiencia, pasantía, ventas directas, multinivel, retail operativo.
+3. RECHAZA si la industria es claramente incompatible con la formación (p.ej. ingeniero civil industrial → no aplica a cargo de psicólogo, enfermera, chef).
+4. En caso de duda, ACEPTA. Es mejor postular a un empleo borderline que perder una oportunidad.
+5. Si la descripción está vacía, evalúa solo por título y sé generoso.
 
 Responde SOLO con JSON válido: {{"match": [lista de índices que son buen match]}}
 No incluyas texto adicional, solo el JSON."""
@@ -192,5 +193,8 @@ def filter_jobs(user: dict, jobs: list[dict], verbose: bool = True) -> list[dict
 
     if verbose:
         print(f"  [matcher] LLM: {len(llm_passed)} pasan / {len(kw_passed)-len(llm_passed)} rechazados")
+        for j in llm_passed:
+            fuente = j.get("fuente", "?")
+            print(f"  [matcher/llm] ✓ [{fuente}] {j.get('titulo','')[:55]}")
 
     return llm_passed

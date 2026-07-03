@@ -1,10 +1,10 @@
 /**
- * background.js — Service Worker de la extensión PostulAI.
+ * background.js — Service Worker de la extensión AplicAI.
  */
 
-const SYNC_ALARM   = "postulai-sync";
+const SYNC_ALARM   = "aplicai-sync";
 const SYNC_MINUTES = 30;
-const DAILY_ALARM  = "postulai-daily";
+const DAILY_ALARM  = "aplicai-daily";
 
 const PLAN_LIMITS = { FREE: 10, PRO: 25, PREMIUM: 50, TRIAL: 25 };
 
@@ -59,9 +59,9 @@ async function syncProfile() {
       fecha_nacimiento:      pf.fecha_nacimiento || '',
     };
     await chrome.storage.local.set({ profile });
-    console.log("[PostulAI] Perfil sincronizado:", profile.nombre);
+    console.log("[AplicAI] Perfil sincronizado:", profile.nombre);
   } catch (e) {
-    console.warn("[PostulAI] Error sincronizando perfil:", e.message);
+    console.warn("[AplicAI] Error sincronizando perfil:", e.message);
   }
 }
 
@@ -78,9 +78,9 @@ async function syncAppliedIds() {
     if (!r.ok) return;
     const ids = await r.json(); // string[]
     await chrome.storage.local.set({ appliedIds: ids });
-    console.log("[PostulAI] IDs aplicados sincronizados:", ids.length);
+    console.log("[AplicAI] IDs aplicados sincronizados:", ids.length);
   } catch (e) {
-    console.warn("[PostulAI] Error sincronizando appliedIds:", e.message);
+    console.warn("[AplicAI] Error sincronizando appliedIds:", e.message);
   }
 }
 
@@ -109,7 +109,7 @@ async function getPlanLimit(cfg) {
       headers: { Authorization: `Bearer ${cfg.apiToken}` },
     });
     if (r.status === 401) {
-      notify("PostulAI", "Tu sesión expiró — vuelve a iniciar sesión en PostulAI para seguir postulando");
+      notify("AplicAI", "Tu sesión expiró — vuelve a iniciar sesión en AplicAI para seguir postulando");
       return null;
     }
     if (!r.ok) return PLAN_LIMITS.FREE;
@@ -146,7 +146,7 @@ async function maybeRunDailyAutopilot(force = false) {
   try {
     await runDailyAutopilot(force);
   } catch (e) {
-    console.warn("[PostulAI] Auto: error", e);
+    console.warn("[AplicAI] Auto: error", e);
     await chrome.storage.local.set({ autoLastError: String((e && e.message) || e) });
   }
 }
@@ -178,7 +178,7 @@ async function runDailyAutopilot(force) {
     profile = (await chrome.storage.local.get("profile")).profile;
   }
   if (!profile || !profile.cargos || !profile.cargos.length) {
-    console.log("[PostulAI] Auto: sin cargos en el perfil, no se ejecuta");
+    console.log("[AplicAI] Auto: sin cargos en el perfil, no se ejecuta");
     return mark("sin-cargos");
   }
 
@@ -195,7 +195,7 @@ async function runDailyAutopilot(force) {
 
   const location = buildLocation(profile.ubicaciones);
   const cargos   = profile.cargos;
-  console.log(`[PostulAI] Auto: iniciando — cargos: ${cargos.join(", ")} | ${location} | tope: ${remaining}`);
+  console.log(`[AplicAI] Auto: iniciando — cargos: ${cargos.join(", ")} | ${location} | tope: ${remaining}`);
 
   // Ventana aparte: Chrome congela el rendering de pestañas ocultas y de
   // ventanas 100% tapadas (occlusion) — el wizard nunca se monta. La ventana
@@ -209,7 +209,7 @@ async function runDailyAutopilot(force) {
     left:    60,
     top:     40,
   });
-  notify("PostulAI", "Postulando por ti en la ventana nueva — puedes seguir usando el PC, pero no la minimices");
+  notify("AplicAI", "Postulando por ti en la ventana nueva — puedes seguir usando el PC, pero no la minimices");
   const tab = win.tabs && win.tabs[0];
   await chrome.storage.local.set({
     autoRun: { tabId: tab.id, winId: win.id, cargos, location, cargoIndex: 0, limit, date: today },
@@ -217,7 +217,7 @@ async function runDailyAutopilot(force) {
 
   const ok = await waitForContentScript(tab.id);
   if (ok === "auth") {
-    notify("PostulAI", "Inicia sesión en LinkedIn una vez para que postulemos por ti automáticamente");
+    notify("AplicAI", "Inicia sesión en LinkedIn una vez para que postulemos por ti automáticamente");
     await chrome.storage.local.set({ lastAutoRun: today });
     await chrome.storage.local.remove("autoRun");
     chrome.windows.remove(win.id).catch(() => {});
@@ -256,8 +256,8 @@ async function handleAutopilotDone(tabId, result) {
   await chrome.storage.local.remove("autoRun");
   if (autoRun.winId) chrome.windows.remove(autoRun.winId).catch(() => {});
   else chrome.tabs.remove(tabId).catch(() => {});
-  notify("PostulAI — Postulación automática", `Hoy postulamos a ${count} empleo(s) por ti`);
-  console.log(`[PostulAI] Auto: ciclo diario completado — ${count} postulaciones`);
+  notify("AplicAI — Postulación automática", `Hoy postulamos a ${count} empleo(s) por ti`);
+  console.log(`[AplicAI] Auto: ciclo diario completado — ${count} postulaciones`);
 }
 
 // ── mensajes internos (desde content.js y popup) ─────────────────────────────
@@ -291,7 +291,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-// ── mensajes externos (desde la web de PostulAI via externally_connectable) ───
+// ── mensajes externos (desde la web de AplicAI via externally_connectable) ───
 
 chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
   if (msg.type === "GET_STATS") {
@@ -300,7 +300,7 @@ chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  if (msg.type === "POSTULAI_LOGIN") {
+  if (msg.type === "APLICAI_LOGIN") {
     // El frontend envía el perfil y token al hacer login
     const { profile, apiUrl, apiToken, userId } = msg.payload || {};
     const saves = {};
@@ -329,7 +329,7 @@ chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  if (msg.type === "POSTULAI_LOGOUT") {
+  if (msg.type === "APLICAI_LOGOUT") {
     chrome.storage.local.clear(() => sendResponse({ ok: true }));
     chrome.storage.sync.remove(["apiUrl", "apiToken", "userId"]);
     return true;
@@ -370,9 +370,9 @@ async function handleApplication({ jobId, title, company, url, cargo }) {
           portal:        "linkedin",
         }),
       });
-      if (!r.ok) console.warn("[PostulAI] Backend rechazó la postulación:", r.status);
+      if (!r.ok) console.warn("[AplicAI] Backend rechazó la postulación:", r.status);
     } catch (e) {
-      console.warn("[PostulAI] Error guardando postulación:", e.message);
+      console.warn("[AplicAI] Error guardando postulación:", e.message);
     }
   }
 
@@ -380,7 +380,7 @@ async function handleApplication({ jobId, title, company, url, cargo }) {
   chrome.notifications.create({
     type:    "basic",
     iconUrl: "icons/icon48.png",
-    title:   "PostulAI — Postulación enviada",
+    title:   "AplicAI — Postulación enviada",
     message: `${title}${company ? " en " + company : ""}`,
   });
 }

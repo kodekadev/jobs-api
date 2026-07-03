@@ -1,5 +1,5 @@
 /**
- * api.js — Cliente HTTP al backend de PostulAI.
+ * api.js — Cliente HTTP al backend de AplicAI.
  *
  * Todos los métodos leen la API_URL y el token de chrome.storage.
  * Si no hay token configurado, retornan null sin lanzar error.
@@ -46,7 +46,7 @@ const API = {
     }
   },
 
-  /** Trae el perfil del usuario desde PostulAI */
+  /** Trae el perfil del usuario desde AplicAI */
   async getProfile() {
     const { userId } = await this._cfg();
     if (!userId) return null;

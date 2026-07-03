@@ -292,7 +292,7 @@ const LIFormFiller = (() => {
       if (val == null || val === "") continue;
       val = String(val);
       if (el.type === "number") val = val.replace(/[^\d]/g, "") || "0";
-      console.log(`[PostulAI] Campo "${label.slice(0, 60)}" → "${String(val).slice(0, 40)}"`);
+      console.log(`[AplicAI] Campo "${label.slice(0, 60)}" → "${String(val).slice(0, 40)}"`);
       await humanType(el, val);
     }
   }
@@ -309,7 +309,7 @@ const LIFormFiller = (() => {
 
     for (const section of sections) {
       try { await fillSection(section, profile); }
-      catch (err) { console.warn("[PostulAI] Error llenando sección:", err?.message || err); }
+      catch (err) { console.warn("[AplicAI] Error llenando sección:", err?.message || err); }
     }
   }
 
@@ -387,7 +387,7 @@ const LIFormFiller = (() => {
   async function fill(profile) {
     let modal = getModal();
     for (let i = 0; i < 10 && !modal; i++) { await sleep(500); modal = getModal(); }
-    if (!modal) { console.warn("[PostulAI] Modal no encontrado"); return false; }
+    if (!modal) { console.warn("[AplicAI] Modal no encontrado"); return false; }
 
     const MAX_STEPS = 15;
     let lastHeading = null;
@@ -396,16 +396,16 @@ const LIFormFiller = (() => {
     for (let step = 0; step < MAX_STEPS; step++) {
       await sleep(800);
       modal = getModal();
-      if (!modal) { console.warn("[PostulAI] El modal se cerró inesperadamente"); return false; }
+      if (!modal) { console.warn("[AplicAI] El modal se cerró inesperadamente"); return false; }
 
       const heading = stepHeading(modal);
-      console.log(`[PostulAI] Paso ${step + 1} — "${heading}"`);
+      console.log(`[AplicAI] Paso ${step + 1} — "${heading}"`);
 
       // Detectar bucle: mismo paso 3 veces sin avanzar → algo no se pudo llenar
       if (heading && heading === lastHeading) {
         stuckCount++;
         if (stuckCount >= 3) {
-          console.warn(`[PostulAI] Atascado en "${heading}" tras 3 intentos — abortando`);
+          console.warn(`[AplicAI] Atascado en "${heading}" tras 3 intentos — abortando`);
           return false;
         }
       } else {
@@ -421,16 +421,16 @@ const LIFormFiller = (() => {
       const submitBtn = findSubmit(modal);
       if (submitBtn) {
         if (!profile._autopilot) {
-          console.log("[PostulAI] Pantalla de envío — modo manual, dejando para revisión");
+          console.log("[AplicAI] Pantalla de envío — modo manual, dejando para revisión");
           return "review";
         }
-        console.log("[PostulAI] Pantalla de envío — enviando solicitud...");
+        console.log("[AplicAI] Pantalla de envío — enviando solicitud...");
         submitBtn.click();
         await sleep(2500);
         // Verificar que no haya errores de validación que impidieron el envío
         const after = getModal();
         if (after && findSubmit(after) && hasFormErrors(after)) {
-          console.warn("[PostulAI] El envío fue rechazado por validación");
+          console.warn("[AplicAI] El envío fue rechazado por validación");
           return false;
         }
         return true;
@@ -439,7 +439,7 @@ const LIFormFiller = (() => {
       // 3) "Ir al siguiente paso" (Python: aria-label='Ir al siguiente paso')
       const nextBtn = findNext(modal);
       if (nextBtn) {
-        console.log(`[PostulAI] Paso ${step + 1} — avanzando...`);
+        console.log(`[AplicAI] Paso ${step + 1} — avanzando...`);
         nextBtn.click();
         await sleep(1500);
         continue;
@@ -448,17 +448,17 @@ const LIFormFiller = (() => {
       // 4) "Revisar" (Python: //button[contains(., 'Revisar')])
       const revisarBtn = findRevisar(modal);
       if (revisarBtn) {
-        console.log(`[PostulAI] Paso ${step + 1} — pasando a revisión...`);
+        console.log(`[AplicAI] Paso ${step + 1} — pasando a revisión...`);
         revisarBtn.click();
         await sleep(1500);
         continue;
       }
 
-      console.warn(`[PostulAI] Paso ${step + 1}: sin botón de avance (Siguiente/Revisar/Enviar)`);
+      console.warn(`[AplicAI] Paso ${step + 1}: sin botón de avance (Siguiente/Revisar/Enviar)`);
       return false;
     }
 
-    console.warn(`[PostulAI] Más de ${MAX_STEPS} pasos — abortando`);
+    console.warn(`[AplicAI] Más de ${MAX_STEPS} pasos — abortando`);
     return false;
   }
 
