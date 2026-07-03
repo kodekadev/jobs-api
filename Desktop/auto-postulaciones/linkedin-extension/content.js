@@ -407,11 +407,11 @@
     return queryRow(jobId);
   }
 
-  // Esperar a que el panel derecho cargue el empleo clickeado
+  // Esperar a que el panel derecho cargue el empleo clickeado (hasta 6 segundos)
   async function waitForJobPanel(jobId) {
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 15; i++) {
       if (getJobId() === jobId && findEasyApplyButton()) return true;
-      if (getJobId() === jobId && i >= 6) return true; // cargó pero sin botón (externo)
+      if (getJobId() === jobId && i >= 8) return true; // cargó pero sin botón (externo)
       await sleep(400);
     }
     return getJobId() === jobId;
