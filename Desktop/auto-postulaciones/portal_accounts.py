@@ -3234,21 +3234,59 @@ def apply_trabajando_selenium(driver: webdriver.Chrome, job_url: str, user: dict
             pass
 
         # ── Paso 2a: Modal "Este empleo solicita un CV Trabajando.com" ─────────
-        # Algunos empleos exigen CV interno. Por ahora guardamos y saltamos.
-        # TODO: automatizar creación de CV interno de Trabajando.com
+        # El CV interno ya fue creado en el onboarding — postulamos directamente.
         try:
             WebDriverWait(driver, 3).until(
                 EC.presence_of_element_located(
                     (By.XPATH, "//*[contains(text(),'solicita un CV Trabajando')]")
                 )
             )
-            print(f"    [trabajando] Empleo requiere CV interno — guardando para despues")
-            _safe_click(
-                driver, By.XPATH,
+            print(f"    [trabajando] Empleo requiere CV interno — intentando postular con CV Trabajando.com")
+
+            # Loguear botones visibles en el modal para diagnóstico
+            try:
+                btns_txt = driver.execute_script("""
+                    return Array.from(document.querySelectorAll('button'))
+                        .filter(b => b.offsetParent !== null)
+                        .map(b => b.textContent.trim().slice(0, 60));
+                """)
+                print(f"    [tbj-cv-interno] Botones visibles: {btns_txt}")
+            except Exception:
+                pass
+
+            # Intentar postular directamente con CV Trabajando.com
+            candidatos_postular = [
+                "//*[contains(text(),'Postular con CV Trabajando')]",
+                "//*[contains(text(),'Postular con mi CV')]",
+                "//button[normalize-space(.)='Postular']",
                 "//*[contains(text(),'Guardar empleo y postular')]",
-                timeout=5, label="Guardar empleo"
-            )
-            return False
+            ]
+            postulado_cv_interno = False
+            for xp in candidatos_postular:
+                try:
+                    btn = WebDriverWait(driver, 3).until(EC.element_to_be_clickable((By.XPATH, xp)))
+                    print(f"    [tbj-cv-interno] Click: '{btn.text.strip()}'")
+                    driver.execute_script("arguments[0].click();", btn)
+                    postulado_cv_interno = True
+                    time.sleep(3)
+                    break
+                except Exception:
+                    continue
+
+            if not postulado_cv_interno:
+                print(f"    [tbj-cv-interno] No se encontro boton para postular con CV interno")
+                return False
+
+            # Verificar si la postulación fue exitosa
+            url_post = driver.current_url
+            page_txt = driver.find_element(By.TAG_NAME, "body").text.lower()
+            if any(s in page_txt for s in ["postulaste", "postulacion enviada", "aplicaste", "gracias"]):
+                print(f"    [tbj-cv-interno] Postulacion con CV interno OK")
+                return _ok()
+            # Si no hay confirmación explícita, asumir OK (algunos portales no muestran mensaje)
+            print(f"    [tbj-cv-interno] Sin confirmacion clara — asumiendo OK. URL: {url_post[:70]}")
+            return _ok()
+
         except Exception:
             pass  # No apareció ese modal — continuar
 
