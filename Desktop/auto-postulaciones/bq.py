@@ -198,6 +198,25 @@ def save_portal_cookies(user_id: str, portal: str, cookies: list[dict],
     _query(query, cfg).result()
 
 
+def get_cookie_age_hours(user_id: str, portal: str) -> float | None:
+    """Retorna cuántas horas han pasado desde que se guardaron las cookies, o None si no hay."""
+    query = f"""
+        SELECT TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), cookies_at, HOUR) AS age_hours
+        FROM `{PROJECT}.{DATASET}.CUENTAS_PORTALES`
+        WHERE id_usuario = @uid AND portal = @portal
+          AND cookies_json IS NOT NULL
+        LIMIT 1
+    """
+    cfg = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("uid",    "STRING", user_id),
+        bigquery.ScalarQueryParameter("portal", "STRING", portal),
+    ])
+    rows = list(_query(query, cfg).result())
+    if rows:
+        return float(rows[0].age_hours)
+    return None
+
+
 def get_portal_cookies(user_id: str, portal: str, max_age_hours: int = 120) -> list[dict] | None:
     """Retorna cookies guardadas si existen y tienen menos de max_age_hours."""
     import json
@@ -252,60 +271,6 @@ def mark_notificaciones_leidas(user_id: str) -> None:
     _query(query, cfg).result()
 
 
-def set_indeed_otp_pending(user_id: str, pending: bool) -> None:
-    """Marca que el usuario necesita ingresar el OTP de Indeed en el frontend."""
-    query = f"""
-        UPDATE `{PROJECT}.{DATASET}.POSTULACIONES_AUTO`
-        SET indeed_otp_pending = @pending,
-            indeed_otp_value   = NULL,
-            indeed_otp_at      = NULL,
-            fecha_actualizacion = CURRENT_TIMESTAMP()
-        WHERE LOWER(id_usuario) = LOWER(@uid)
-    """
-    cfg = bigquery.QueryJobConfig(query_parameters=[
-        bigquery.ScalarQueryParameter("uid",     "STRING",  user_id),
-        bigquery.ScalarQueryParameter("pending", "BOOL",    pending),
-    ])
-    _query(query, cfg).result()
-
-
-def get_indeed_otp(user_id: str) -> str | None:
-    """Retorna el OTP ingresado por el usuario desde el frontend, o None si aún no llegó."""
-    query = f"""
-        SELECT indeed_otp_value
-        FROM `{PROJECT}.{DATASET}.POSTULACIONES_AUTO`
-        WHERE LOWER(id_usuario) = LOWER(@uid)
-          AND indeed_otp_pending = TRUE
-          AND indeed_otp_value IS NOT NULL
-          AND indeed_otp_value != ''
-        LIMIT 1
-    """
-    cfg = bigquery.QueryJobConfig(
-        query_parameters=[bigquery.ScalarQueryParameter("uid", "STRING", user_id)]
-    )
-    rows = list(_query(query, cfg).result())
-    if rows:
-        return rows[0].indeed_otp_value
-    return None
-
-
-def submit_indeed_otp(user_id: str, otp: str) -> None:
-    """
-    El frontend llama esto cuando el usuario ingresa el OTP de Indeed.
-    Escribe el código en BigQuery para que el robot lo tome y continúe.
-    """
-    query = f"""
-        UPDATE `{PROJECT}.{DATASET}.POSTULACIONES_AUTO`
-        SET indeed_otp_value = @otp,
-            indeed_otp_at    = CURRENT_TIMESTAMP()
-        WHERE LOWER(id_usuario) = LOWER(@uid)
-          AND indeed_otp_pending = TRUE
-    """
-    cfg = bigquery.QueryJobConfig(query_parameters=[
-        bigquery.ScalarQueryParameter("uid", "STRING", user_id),
-        bigquery.ScalarQueryParameter("otp", "STRING", otp),
-    ])
-    _query(query, cfg).result()
 
 
 def get_notificaciones(user_id: str, solo_no_leidas: bool = False) -> list[dict]:
@@ -322,6 +287,55 @@ def get_notificaciones(user_id: str, solo_no_leidas: bool = False) -> list[dict]
         query_parameters=[bigquery.ScalarQueryParameter("uid", "STRING", user_id)]
     )
     return [dict(r) for r in _query(query, cfg).result()]
+
+
+_CV_OPT_LIMITS = {"FREE": 10, "PRO": 25, "PREMIUM": 50, "TRIAL": 25}
+
+
+def contar_optimizaciones_hoy(user_id: str) -> int:
+    """Cuántas optimizaciones LLM ha usado el usuario hoy."""
+    query = f"""
+        SELECT COUNT(*) AS total
+        FROM `{PROJECT}.{DATASET}.CV_OPTIMIZACIONES`
+        WHERE id_usuario = @uid AND fecha = CURRENT_DATE()
+    """
+    cfg = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("uid", "STRING", user_id)]
+    )
+    rows = list(_query(query, cfg).result())
+    return int(rows[0].total) if rows else 0
+
+
+def limite_optimizaciones(plan: str) -> int:
+    """Retorna el límite diario de optimizaciones según el plan."""
+    return _CV_OPT_LIMITS.get((plan or "FREE").upper(), _CV_OPT_LIMITS["FREE"])
+
+
+def puede_optimizar(user_id: str, plan: str) -> bool:
+    """True si el usuario no ha alcanzado su límite diario de optimizaciones."""
+    return contar_optimizaciones_hoy(user_id) < limite_optimizaciones(plan)
+
+
+def guardar_optimizacion(user_id: str, tipo: str = "respuesta_formulario",
+                         id_empleo: str = "", portal: str = "",
+                         tokens_usados: int = 0) -> None:
+    """Registra una optimización LLM en CV_OPTIMIZACIONES."""
+    import uuid as _uuid
+    from datetime import datetime, timezone
+    row = {
+        "id":            str(_uuid.uuid4()),
+        "id_usuario":    user_id,
+        "fecha":         datetime.now(timezone.utc).date().isoformat(),
+        "tipo":          tipo,
+        "id_empleo":     id_empleo or None,
+        "portal":        portal or None,
+        "tokens_usados": tokens_usados or None,
+        "created_at":    datetime.now(timezone.utc).isoformat(),
+    }
+    table = client.get_table(f"{PROJECT}.{DATASET}.CV_OPTIMIZACIONES")
+    errors = client.insert_rows_json(table, [row])
+    if errors:
+        print(f"  [bq] CV_OPTIMIZACIONES insert error: {errors}")
 
 
 def save_jobs(rows: list[dict]) -> None:

@@ -2705,6 +2705,15 @@ def _llm_answer_questions(questions: list[dict], user: dict, cv_text: str = "", 
     ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
     if not ANTHROPIC_API_KEY or not questions:
         return {}
+
+    # Verificar límite diario de optimizaciones por plan
+    uid  = str(user.get("ID_USUARIO") or user.get("id_usuario") or "").strip()
+    plan = str(user.get("plan") or user.get("PLAN") or "FREE").upper()
+    if uid and not bq.puede_optimizar(uid, plan):
+        limite = bq.limite_optimizaciones(plan)
+        print(f"    [Claude] Limite diario alcanzado para {uid} [{plan}]: {limite} optimizaciones/dia")
+        return {}
+
     try:
         import anthropic
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -2758,7 +2767,13 @@ Nada más, solo el JSON."""
             return {}
         data  = json.loads(raw[start:end])
         result = {str(i): str(data.get(str(i), data.get(i, ""))) for i in range(len(questions))}
+        tokens = getattr(response.usage, "input_tokens", 0) + getattr(response.usage, "output_tokens", 0)
         print(f"    [Claude] {result}")
+        if uid:
+            try:
+                bq.guardar_optimizacion(uid, tipo="respuesta_formulario", tokens_usados=tokens)
+            except Exception:
+                pass
         return result
     except Exception as e:
         print(f"    [Claude] ERROR: {e}")
