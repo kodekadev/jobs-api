@@ -5,6 +5,16 @@ import { BigQueryService } from '../../shared/infrastructure/services/bigquery.s
 export class PostulacionesService {
   constructor(private readonly bq: BigQueryService) {}
 
+  async getTodayCount(userId: string): Promise<number> {
+    const rows = await this.bq.query<any>(`
+      SELECT COUNT(*) AS total
+      FROM ${this.bq.t('EMPLEOS')}
+      WHERE id_usuario = @id
+        AND DATE(Fecha_Postulacion) = CURRENT_DATE()
+    `, { id: userId });
+    return Number(rows[0]?.total ?? 0);
+  }
+
   async getByUser(userId: string) {
     const pfRows = await this.bq.query<any>(`
       SELECT CARGOS FROM ${this.bq.t('POSTULA_FACIL')}
@@ -13,14 +23,22 @@ export class PostulacionesService {
 
     const cargosUsuario: string[] = pfRows.length ? this.parseJson(pfRows[0].CARGOS) : [];
 
-    const rows = await this.bq.query<any>(`
-      SELECT
-        cargo, Empresa, Fecha_Postulacion, titulo_empleo
-      FROM ${this.bq.t('EMPLEOS')}
-      WHERE id_usuario = @id
-      ORDER BY Fecha_Postulacion DESC
-      LIMIT 200
-    `, { id: userId });
+    const [countRows, rows] = await Promise.all([
+      this.bq.query<any>(`
+        SELECT COUNT(*) as total FROM ${this.bq.t('EMPLEOS')}
+        WHERE id_usuario = @id
+      `, { id: userId }),
+      this.bq.query<any>(`
+        SELECT
+          cargo, Empresa, Fecha_Postulacion, titulo_empleo
+        FROM ${this.bq.t('EMPLEOS')}
+        WHERE id_usuario = @id
+        ORDER BY Fecha_Postulacion DESC
+        LIMIT 5000
+      `, { id: userId }),
+    ]);
+
+    const total = Number(countRows[0]?.total ?? rows.length);
 
     const grouped: Record<string, any[]> = {};
 
@@ -41,7 +59,7 @@ export class PostulacionesService {
       });
     }
 
-    return { postulaciones: grouped, total: rows.length };
+    return { postulaciones: grouped, total };
   }
 
   private relTime(fecha: any): string {
