@@ -249,9 +249,21 @@ def _solve_recaptcha(sitekey: str, page_url: str, action: str = "login") -> str 
 def _make_driver():
     from selenium.webdriver.chrome.service import Service
 
-    chromium_path = "/usr/bin/chromium"
-    driver_path   = "/usr/bin/chromedriver"
-    in_linux      = os.path.exists(chromium_path)
+    # Check multiple paths — Playwright base image uses chromium-browser, others use chromium
+    for candidate in ["/usr/bin/chromium", "/usr/bin/chromium-browser",
+                      "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable"]:
+        if os.path.exists(candidate):
+            chromium_path = candidate
+            break
+    else:
+        chromium_path = "/usr/bin/chromium"  # fallback (will error clearly)
+    for candidate in ["/usr/bin/chromedriver", "/usr/lib/chromium-browser/chromedriver"]:
+        if os.path.exists(candidate):
+            driver_path = candidate
+            break
+    else:
+        driver_path = "/usr/bin/chromedriver"
+    in_linux = os.path.exists(chromium_path)
 
     # En Cloud Run: usar Xvfb (display virtual) para que Chrome corra sin --headless.
     # Esto elimina TODAS las señales de headless que detectan los portales.
@@ -529,6 +541,7 @@ def _llenar_informacion_personal(driver: webdriver.Chrome, user: dict) -> bool:
     Campos: nombre, apellidos, teléfono, cargo/profesión, años de experiencia.
     Solo toca campos vacíos. Siempre intenta Guardar al final.
     """
+    user = {k.lower(): v for k, v in user.items()}
     try:
         profesion   = str(user.get("profesion") or "").strip()
         experiencia = str(user.get("experiencia") or "").strip()
@@ -643,6 +656,7 @@ def _esperar_boton_continuar(driver: webdriver.Chrome, paso: int, timeout: int =
 
 def _paso1_datos_personales(driver: webdriver.Chrome, user: dict) -> None:
     """Rellena paso 1: tipo documento + RUT, ciudad, fecha nacimiento, género."""
+    user = {k.lower(): v for k, v in user.items()}
     # Parsear fecha nacimiento
     fn_raw = str(user.get("fecha_nacimiento") or "").strip()
     fn_dia = fn_mes = fn_ano = ""
@@ -736,6 +750,7 @@ def _paso1_datos_personales(driver: webdriver.Chrome, user: dict) -> None:
 
 def _paso2_experiencia(driver: webdriver.Chrome, user: dict) -> None:
     """Rellena paso 2: cargo, empresa, jornada, actividad, fechas."""
+    user = {k.lower(): v for k, v in user.items()}
     import json as _json
     def _parse(val) -> list:
         if not val:
@@ -882,6 +897,7 @@ def _paso3_generico(driver: webdriver.Chrome, user: dict) -> None:
       5. Anio de termino (select 2026-1957, visible cuando situacion = Titulado/Egresado)
     NO hay campo Pais en este formulario.
     """
+    user = {k.lower(): v for k, v in user.items()}
     import json as _json
     profesion   = str(user.get("profesion") or "").strip()
     cargos      = user.get("cargos") or []
@@ -1118,6 +1134,9 @@ def completar_cv_trabajando(driver: webdriver.Chrome, user: dict) -> bool:
       5. Paso 3 → llenar formación → Finalizar
       6. Llenar #/informacion-personal (cargo, años de experiencia)
     """
+    # Normalizar claves a minúsculas — BigQuery retorna MAYÚSCULAS, el código usa minúsculas
+    user = {k.lower(): v for k, v in user.items()}
+
     try:
         # ── 1. Navegar a /mi-curriculum ───────────────────────────────────────
         driver.get("https://www.trabajando.cl/mi-curriculum")
@@ -1284,6 +1303,15 @@ def upload_cv_trabajando(email: str, password: str, cv_url: str, user: dict = No
             return False
         wait = WebDriverWait(driver, 20)
 
+        # Persistir cookies en BQ para evitar fresh login en próximas ejecuciones
+        uid = (user or {}).get("ID_USUARIO") or (user or {}).get("id_usuario") or ""
+        if uid:
+            try:
+                bq.save_portal_cookies(uid, "trabajando", driver.get_cookies(), email=email, password=password)
+                print(f"  -> Cookies Trabajando guardadas para {uid}")
+            except Exception as _ce:
+                print(f"  -> Error guardando cookies: {_ce}")
+
         # ── Onboarding: el wizard se maneja dentro de completar_cv_trabajando ──
         # (detecta cuenta-creada y hace click en el card correcto)
 
@@ -1341,6 +1369,24 @@ def upload_cv_trabajando(email: str, password: str, cv_url: str, user: dict = No
 
 
 # ─── POSTULACIÓN TRABAJANDO.CL ────────────────────────────────────────────────
+
+_TBJ_SUCCESS_PATHS = ["cuenta-creada", "/mi-cuenta", "/como-quieres", "/mi-curriculum",
+                      "/home", "/empleos", "/perfil", "/buscar", "/dashboard"]
+
+
+def _is_tbj_login_page(url: str) -> bool:
+    """True si la URL ES la pagina de login de Trabajando.cl (no una sub-ruta de exito)."""
+    import re as _re
+    return bool(_re.search(r'/ingresa-a-tu-cuenta/?$', url)) and not any(
+        s in url for s in _TBJ_SUCCESS_PATHS
+    )
+
+
+def _tbj_logged_in(url: str) -> bool:
+    """True si la URL indica sesion activa en Trabajando.cl."""
+    return any(s in url for s in _TBJ_SUCCESS_PATHS) or (
+        "trabajando.cl" in url and "ingresa-a-tu-cuenta" not in url
+    )
 
 
 def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
@@ -1530,7 +1576,7 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
         # ── 7. Esperar hasta 20 segundos a que la URL cambie ──────────────────
         for _ in range(20):
             time.sleep(1)
-            if "ingresa-a-tu-cuenta" not in driver.current_url:
+            if _tbj_logged_in(driver.current_url):
                 break
 
         # Cerrar cookies post-login
@@ -1555,7 +1601,7 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
                     err = entry.get("error", "")
                     req = entry.get("reqBody", "")[:300]
                     if err:
-                        print(f"    [net] ERR  {url} → {err}")
+                        print(f"    [net] ERR  {url} -> {err}")
                     else:
                         print(f"    [net] {st}  {url}")
                         if req:
@@ -1579,8 +1625,8 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
             print(f"  [trabajando] Errores en página login: {errores}")
 
         current = driver.current_url
-        success = "ingresa-a-tu-cuenta" not in current
-        print(f"  [trabajando] Login {'OK' if success else 'FALLÓ'}: {current}")
+        success = _tbj_logged_in(current)
+        print(f"  [trabajando] Login {'OK' if success else 'FALLO'}: {current}")
 
         # ── 9. Fallback: login directo vía requests (diagnóstico + fallback) ───
         if not success:
@@ -1615,7 +1661,7 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
                         "https://api.trabajando.com/login/login",
                         json=body, headers=base_h, timeout=15,
                     )
-                    print(f"  [direct] {list(body.keys())} → {r.status_code}: {r.text[:150]}")
+                    print(f"  [direct] {list(body.keys())} -> {r.status_code}: {r.text[:150]}")
                     if r.status_code in (200, 201):
                         # Inyectar cookies de vuelta en Selenium
                         for name, value in r.cookies.items():
@@ -1627,8 +1673,8 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
                         driver.get("https://www.trabajando.cl/")
                         time.sleep(3)
                         new_url = driver.current_url
-                        success = "ingresa-a-tu-cuenta" not in new_url
-                        print(f"  [direct] Login {'OK' if success else 'FALLÓ'}: {new_url}")
+                        success = _tbj_logged_in(new_url)
+                        print(f"  [direct] Login {'OK' if success else 'FALLO'}: {new_url}")
                         break
             except Exception as _de:
                 print(f"  [direct] error: {_de}")
@@ -1660,9 +1706,9 @@ def _ensure_logged_in(driver: webdriver.Chrome, email: str, password: str) -> bo
         current = driver.current_url
     except Exception:
         return False
-    if "ingresa-a-tu-cuenta" not in current:
+    if _tbj_logged_in(current):
         return True
-    print("  [trabajando] Sesión expirada — re-logueando...")
+    print("  [trabajando] Sesion expirada — re-logueando...")
     return _do_login(driver, email, password)
 
 
@@ -1697,7 +1743,7 @@ def get_trabajando_session(uid: str, email: str, password: str) -> webdriver.Chr
                     pass
             driver.get("https://www.trabajando.cl/mi-curriculum")
             time.sleep(3)
-            if "ingresa-a-tu-cuenta" not in driver.current_url:
+            if _tbj_logged_in(driver.current_url):
                 print(f"  -> Sesion restaurada via cookies OK")
                 with _sessions_lock:
                     _sessions[key] = {"driver": driver, "email": email, "password": password}
@@ -2198,21 +2244,50 @@ def apply_trabajando_playwright(page, job_url: str, user: dict = {}, resumen: st
         except Exception:
             pass
 
-        time.sleep(3)
-
         # ── Verificar resultado ────────────────────────────────────────────────
+        # Esperar hasta 6s a que Vue actualice el estado del botón
+        _EXITO_TEXTS = [
+            "ya postulaste", "ya te postulaste", "postulado", "aplicaste",
+            "postulación enviada", "te has postulado", "gracias por postular",
+            "postulaste exitosamente", "ya postulé", "postulé",
+        ]
+
+        # 1. Esperar selector de texto en #columnaPostular (más confiable que content())
+        for _ in range(6):
+            page.wait_for_timeout(1000)
+            try:
+                columna_text = page.locator("#columnaPostular").inner_text().strip().lower()
+                if any(s in columna_text for s in _EXITO_TEXTS):
+                    print(f"    [trabajando] OK Postulado")
+                    return _ok()
+            except Exception:
+                pass
+
+        # 2. Verificar si el botón está deshabilitado (Trabajando deshabilita btn al postular)
         try:
-            texto_btn = page.locator("#columnaPostular button").first.inner_text().strip().lower()
-            if any(s in texto_btn for s in ["ya postulaste", "postulado", "aplicaste"]):
-                print(f"    [trabajando] OK Postulado")
+            btn = page.locator("#columnaPostular button").first
+            disabled = btn.get_attribute("disabled")
+            btn_text  = btn.inner_text().strip().lower()
+            if disabled is not None or any(s in btn_text for s in _EXITO_TEXTS):
+                print(f"    [trabajando] OK Postulado (btn disabled/texto='{btn_text}')")
                 return _ok()
         except Exception:
             pass
 
+        # 3. Revisar contenido general de la página
         content = page.content().lower()
-        exito = any(s in content for s in [
-            "postulación enviada", "te has postulado", "gracias por postular", "postulaste exitosamente"
-        ])
+        exito = any(s in content for s in _EXITO_TEXTS)
+
+        # 4. Si no hay mensaje de error explícito y se clickeó el botón, asumir éxito
+        #    (la SPA hace la llamada API en el click; si no hay error visible, fue exitoso)
+        if not exito:
+            errores = [
+                "error al postular", "no se pudo", "inténtalo de nuevo",
+                "ha ocurrido un error", "no puedes postular", "límite de postulaciones",
+            ]
+            hay_error = any(s in content for s in errores)
+            exito = not hay_error
+
         print(f"    [trabajando] {'OK Postulado' if exito else 'Sin confirmar exito'} -> {page.url[:60]}")
         return _ok() if exito else False
 
