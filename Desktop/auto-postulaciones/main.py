@@ -4,10 +4,10 @@ Auto-postulaciones Jobs
 Corre como Cloud Run Job, disparado por Cloud Scheduler.
 Flujo:
   1. Lee usuarios activos desde BigQuery
-  2. Por cada usuario: busca empleos con jobspy (LinkedIn + Indeed)
+  2. Por cada usuario: busca empleos en Trabajando.cl y ChileTrabajos
   3. Filtra empleos nuevos (no aplicados antes)
-  4. Si el empleo tiene email → postula por email con CV adjunto
-  5. Guarda todos los empleos encontrados en BigQuery EMPLEOS
+  4. Postula via formulario web en cada portal
+  5. Guarda postulaciones en BigQuery
   6. Envía resumen al usuario por email
 """
 
@@ -16,12 +16,16 @@ import json
 import time
 import random
 import uuid
+import math
 from datetime import datetime, timezone
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, wait
+
+# Timeout máximo por usuario (segundos). Si un usuario cuelga más que esto,
+# se cancela el future y se reporta timeout. Default 20 minutos.
+USER_TIMEOUT_S = int(os.environ.get("USER_TIMEOUT_SECONDS", "1200"))
 
 import bq
 from scraper            import find_jobs
-from emailer            import extract_email, send_application
 from applier            import apply_via_form
 from notifier           import send_summary, send_trial_warning
 from portal_accounts    import get_or_create_account, get_trabajando_session, close_trabajando_session, get_trabajando_pw_session
@@ -32,10 +36,10 @@ MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "3"))
 
 # Límites por plan
 PLAN_LIMITS: dict[str, dict] = {
-    "FREE":    {"jobs_per_cargo": 25,  "max_ubicaciones": 1, "max_postulaciones_dia": 10, "max_email": 5},
-    "PRO":     {"jobs_per_cargo": 50,  "max_ubicaciones": 3, "max_postulaciones_dia": 25, "max_email": 15},
-    "PREMIUM": {"jobs_per_cargo": 100, "max_ubicaciones": 5, "max_postulaciones_dia": 50, "max_email": 25},
-    "TRIAL":   {"jobs_per_cargo": 50,  "max_ubicaciones": 3, "max_postulaciones_dia": 25, "max_email": 15},
+    "FREE":    {"jobs_per_cargo": 25,  "max_ubicaciones": 1,  "max_postulaciones_dia": 10, "max_email": 5},
+    "PRO":     {"jobs_per_cargo": 50,  "max_ubicaciones": 4,  "max_postulaciones_dia": 25, "max_email": 15},
+    "PREMIUM": {"jobs_per_cargo": 100, "max_ubicaciones": 10, "max_postulaciones_dia": 50, "max_email": 25},
+    "TRIAL":   {"jobs_per_cargo": 50,  "max_ubicaciones": 4,  "max_postulaciones_dia": 25, "max_email": 15},
 }
 DEFAULT_LIMITS = PLAN_LIMITS["FREE"]
 
@@ -70,7 +74,6 @@ CAMPOS_REQUERIDOS = {
     "ubicaciones":        "Ubicaciones",
     "profesion":          "Profesión",
     "pretension_general": "Pretensión de renta",
-    "cv_url":             "CV (archivo PDF)",
     "rut":                "RUT",
     "fecha_nacimiento":   "Fecha de nacimiento",
     "experiencia":        "Años de experiencia",
@@ -102,37 +105,54 @@ def process_user(user: dict) -> dict:
     plan   = user.get("plan", "FREE")
     limits = _get_limits(plan)
 
+    print(f"\n[{nombre}] Iniciando proceso — {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC", flush=True)
+
     faltantes = _validar_perfil(user)
     if faltantes:
-        print(f"[{nombre}] Perfil incompleto — omitido. Faltan: {', '.join(faltantes)}")
+        print(f"[{nombre}] Perfil incompleto — omitido. Faltan: {', '.join(faltantes)}", flush=True)
         return {"user": nombre, "found": 0, "applied": 0}
 
     cargos      = _parse_json(user.get("cargos") or user.get("CARGOS"))
     ubicaciones = _parse_json(user.get("ubicaciones") or user.get("UBICACIONES"))
 
-    print(f"\n[{nombre}] Plan: {plan} | cargos: {cargos} / ubicaciones: {ubicaciones}")
-    print(f"  Límites → jobs/cargo: {limits['jobs_per_cargo']} | ubicaciones: {limits['max_ubicaciones']} | emails: {limits['max_email']}")
+    print(f"[{nombre}] Plan: {plan} | cargos: {cargos} / ubicaciones: {ubicaciones}", flush=True)
+    print(f"  Límites → jobs/cargo: {limits['jobs_per_cargo']} | ubicaciones: {limits['max_ubicaciones']} | emails: {limits['max_email']}", flush=True)
 
     # ── 0. Cuentas y sesión (Playwright principal, Selenium fallback) ──────────
+    print(f"[{nombre}] Obteniendo cuentas de portales...", flush=True)
     portal_creds: dict[str, dict | None] = {}
     for portal in ["chiletrabajos", "trabajando"]:
         portal_creds[portal] = get_or_create_account(user, portal)
 
     tbj_creds = portal_creds.get("trabajando")
 
+    # Alerta si las cookies de Trabajando.cl están por vencer (< 24h restantes de las 120h)
+    if tbj_creds:
+        age = bq.get_cookie_age_hours(uid, "trabajando")
+        if age is not None and age >= 96:
+            horas_restantes = max(0, 120 - age)
+            telegram(
+                f"⚠️ [AplicAI] Cookies Trabajando.cl vencen pronto\n"
+                f"Usuario: {nombre} ({uid})\n"
+                f"Quedan ~{horas_restantes:.0f}h (TTL: 120h).\n"
+                f"Ejecutar: python save_trabajando_session.py {uid}"
+            )
+
     # Intentar Playwright primero (más confiable, sin Xvfb)
     tbj_page = None
     tbj_driver = None
     if tbj_creds:
+        print(f"[{nombre}] Iniciando sesión Trabajando.cl (Playwright)...", flush=True)
         tbj_page = get_trabajando_pw_session(uid, tbj_creds["email"], tbj_creds["password"])
         if not tbj_page:
-            # Fallback a Selenium si no hay cookies
+            print(f"[{nombre}] Sin cookies PW — intentando Selenium...", flush=True)
             tbj_driver = get_trabajando_session(uid, tbj_creds["email"], tbj_creds["password"])
 
     # Sesión ChileTrabajos (Selenium) — postular logueado en vez de como invitado
     cht_creds  = portal_creds.get("chiletrabajos")
     cht_driver = None
     if cht_creds:
+        print(f"[{nombre}] Iniciando sesión ChileTrabajos...", flush=True)
         from chiletrabajos.login import get_session as get_cht_session
         cht_driver = get_cht_session(uid, cht_creds["email"], cht_creds["password"])
 
@@ -142,19 +162,29 @@ def process_user(user: dict) -> dict:
         print(f"  -> LinkedIn: {len(linkedin_cookies)} cookies de sesión disponibles")
 
     # ── 1. Descubrir empleos ────────────────────────────────────────────────
+    print(f"[{nombre}] Buscando empleos...", flush=True)
     all_jobs = []
     for cargo in cargos:
         for ubicacion in ubicaciones[:limits["max_ubicaciones"]]:
-            jobs = find_jobs(cargo, ubicacion, n=limits["jobs_per_cargo"], trabajando_driver=tbj_driver, chiletrabajos_driver=cht_driver)
+            print(f"  [{nombre}] Buscando '{cargo}' en '{ubicacion}'...", flush=True)
+            try:
+                jobs = find_jobs(cargo, ubicacion, n=limits["jobs_per_cargo"],
+                                 trabajando_page=tbj_page, trabajando_driver=tbj_driver,
+                                 chiletrabajos_driver=cht_driver)
+            except Exception as e:
+                print(f"  [{nombre}] find_jobs error '{cargo}': {e}", flush=True)
+                jobs = []
             for j in jobs:
                 j["_cargo"] = cargo
             all_jobs.extend(jobs)
+            print(f"  [{nombre}] '{cargo}': {len(jobs)} empleos", flush=True)
             time.sleep(random.uniform(1, 3))
 
     unique_jobs = _dedupe(all_jobs)
-    print(f"[{nombre}] {len(unique_jobs)} empleos únicos encontrados")
+    print(f"[{nombre}] {len(unique_jobs)} empleos únicos encontrados", flush=True)
 
     if not unique_jobs:
+        print(f"[{nombre}] Sin empleos — fin.", flush=True)
         return {"user": nombre, "found": 0, "applied": 0}
 
     # ── 2. Filtrar ya aplicados ─────────────────────────────────────────────
@@ -163,11 +193,11 @@ def process_user(user: dict) -> dict:
         j for j in unique_jobs
         if (j.get("id") or j.get("link")) not in applied_before
     ]
-    print(f"[{nombre}] {len(new_jobs)} empleos nuevos (no aplicados antes)")
+    print(f"[{nombre}] {len(new_jobs)} empleos nuevos (no aplicados antes)", flush=True)
 
     # ── 2b. Filtro de relevancia (keyword + LLM) ────────────────────────────
     new_jobs = filter_jobs(user, new_jobs)
-    print(f"[{nombre}] {len(new_jobs)} empleos tras filtro de relevancia")
+    print(f"[{nombre}] {len(new_jobs)} empleos tras filtro de relevancia", flush=True)
 
     # Mezclar para distribuir equitativamente entre portales (no dejar ChileTrabajos siempre al final)
     random.shuffle(new_jobs)
@@ -179,21 +209,16 @@ def process_user(user: dict) -> dict:
 
     max_dia = limits["max_postulaciones_dia"]
 
-    # Cuota por canal: dividir el límite diario equitativamente entre los 3 canales
-    # Canal email  → empleos de LinkedIn/Indeed (descripciones completas, a veces traen email de contacto)
-    # Canal form   → trabajando.cl y chiletrabajos.cl (formulario web)
-    _num_canales = 3
-    _cuota_base  = max_dia // _num_canales
-    _extra       = max_dia  % _num_canales
+    # Cuota por canal: dividir el límite diario entre Trabajando.cl y ChileTrabajos
+    _cuota_base  = max_dia // 2
+    _extra       = max_dia  % 2
     channel_limits = {
-        "email":         _cuota_base + (1 if _extra > 0 else 0),
-        "trabajando":    _cuota_base + (1 if _extra > 1 else 0),
+        "trabajando":    _cuota_base + _extra,
         "chiletrabajos": _cuota_base,
     }
     channel_counts: dict[str, int] = {k: 0 for k in channel_limits}
-    print(f"[{nombre}] Cuotas por canal: " + " | ".join(f"{k.capitalize()}: {v}" for k, v in channel_limits.items()))
+    print(f"[{nombre}] Cuotas por canal: " + " | ".join(f"{k.capitalize()}: {v}" for k, v in channel_limits.items()), flush=True)
 
-    email_count   = 0
     form_count    = 0
     portal_counts: dict[str, int] = {}
 
@@ -253,37 +278,18 @@ def process_user(user: dict) -> dict:
             print(f"  ! [{label}] Página Playwright muerta ({str(e)[:60]}) — canal deshabilitado")
             return None
 
+    print(f"[{nombre}] Iniciando postulaciones ({len(new_jobs)} candidatos)...", flush=True)
     try:
         for job in new_jobs:
             total_aplicado = sum(channel_counts.values())
             if total_aplicado >= max_dia:
-                print(f"[{nombre}] Límite diario alcanzado ({max_dia}) — plan {plan}")
+                print(f"[{nombre}] Límite diario alcanzado ({max_dia}) — plan {plan}", flush=True)
                 break
 
             fuente = job.get("fuente", "").lower()
 
-            # ── Canal Email: empleos LinkedIn/Indeed con email de contacto ──────
-            # Hard cap: no saturar de emails. Si este canal no rinde (pocos emails),
-            # los slots libres los absorben automáticamente los canales form.
-            if fuente in ("linkedin", "indeed"):
-                if channel_counts["email"] >= channel_limits["email"]:
-                    continue
-                contact_email = extract_email(job.get("descripcion", ""))
-                if not contact_email:
-                    continue
-                ok = send_application(user, job, contact_email)
-                if ok:
-                    applied_jobs.append(job)
-                    email_count += 1
-                    channel_counts["email"] += 1
-                    portal_counts["email"] = portal_counts.get("email", 0) + 1
-                    _save_aplicacion(job, "email", job.get("empresa", ""), job.get("descripcion", ""))
-                    print(f"  OK Email -> {contact_email} ({job['titulo'][:50]})")
-
             # ── Canal Form: trabajando.cl y chiletrabajos.cl ─────────────────
-            # Cuota suave por canal: si uno cae (browser muerto, sin empleos),
-            # el otro absorbe los slots restantes hasta completar max_dia.
-            elif fuente in ("trabajando", "chiletrabajos"):
+            if fuente in ("trabajando", "chiletrabajos"):
                 canal = fuente
 
                 # ── Health check: detectar sesión Selenium/Playwright muerta ──
@@ -299,12 +305,13 @@ def process_user(user: dict) -> dict:
                         continue  # canal tbj completamente muerto
 
                 # Cuota suave: respetar límite propio, pero permitir overflow si
-                # otros canales dejaron slots libres sin usar
+                # el otro canal dejó slots libres sin usar
                 cuota_propia = channel_limits.get(canal, _cuota_base)
                 if channel_counts[canal] >= cuota_propia:
-                    slots_email_libres = max(0, channel_limits["email"] - channel_counts["email"])
-                    if slots_email_libres <= 0:
-                        continue  # email también cubierto, no hay slots que absorber
+                    otro = "chiletrabajos" if canal == "trabajando" else "trabajando"
+                    slots_libres = max(0, channel_limits[otro] - channel_counts[otro])
+                    if slots_libres <= 0:
+                        continue
 
                 result = apply_via_form(
                     user, job,
@@ -323,6 +330,7 @@ def process_user(user: dict) -> dict:
                     job_empresa     = (result.get("empresa")     if isinstance(result, dict) else None) or job.get("empresa", "")
                     job_descripcion = (result.get("descripcion") if isinstance(result, dict) else None) or job.get("descripcion", "")
                     _save_aplicacion(job, fuente, job_empresa, job_descripcion)
+                    print(f"  [{nombre}] ✓ Postulado: {job.get('titulo','')[:50]} ({fuente})", flush=True)
 
     finally:
         close_trabajando_session(uid)
@@ -334,14 +342,14 @@ def process_user(user: dict) -> dict:
 
     # ── 4. Guardar en BigQuery ───────────────────────────────────────────────
     bq.save_jobs(rows_to_save)
-    canal_str = " | ".join(f"{k.capitalize()} {channel_counts[k]}/{channel_limits[k]}" for k in ("email", "trabajando", "chiletrabajos"))
-    print(f"[{nombre}] Guardados {len(rows_to_save)} en BigQuery | {canal_str}")
+    canal_str = " | ".join(f"{k.capitalize()} {channel_counts[k]}/{channel_limits[k]}" for k in ("trabajando", "chiletrabajos"))
+    print(f"[{nombre}] Guardados {len(rows_to_save)} en BigQuery | {canal_str}", flush=True)
 
     # ── 5. Notificar al usuario ─────────────────────────────────────────────
     send_summary(user, new_jobs, applied_jobs)
 
     # ── 6. Resumen Telegram (un solo mensaje al final) ──────────────────────
-    total = email_count + form_count
+    total = form_count
     max_dia = limits["max_postulaciones_dia"]
     if total > 0:
         lineas = [
@@ -357,7 +365,7 @@ def process_user(user: dict) -> dict:
             lineas.append(f"... y {len(applied_jobs) - 30} más")
         lineas.append(f"{'─' * 30}")
         portal_detail = " | ".join(f"{p.capitalize()}: {c}" for p, c in sorted(portal_counts.items()))
-        cuotas_str = " | ".join(f"{k.capitalize()} {channel_counts[k]}/{channel_limits[k]}" for k in ("email", "trabajando", "chiletrabajos"))
+        cuotas_str = " | ".join(f"{k.capitalize()} {channel_counts[k]}/{channel_limits[k]}" for k in ("trabajando", "chiletrabajos"))
         lineas.append(f"Canales: {cuotas_str} | Límite: {max_dia}/día")
         telegram("\n".join(lineas))
     else:
@@ -367,42 +375,59 @@ def process_user(user: dict) -> dict:
             f"Empleos revisados: {len(new_jobs)}"
         )
 
-    return {"user": nombre, "found": len(new_jobs), "applied": email_count + form_count,
-            "email": email_count, "form": form_count, "portales": portal_counts}
+    return {"user": nombre, "found": len(new_jobs), "applied": form_count,
+            "form": form_count, "portales": portal_counts}
 
 
 def main():
     start = datetime.now()
-    print(f"🚀 Auto-postulaciones iniciadas: {start.strftime('%Y-%m-%d %H:%M')} UTC\n")
+    print(f"Auto-postulaciones iniciadas: {start.strftime('%Y-%m-%d %H:%M')} UTC\n", flush=True)
 
     single_user_id = os.environ.get("SINGLE_USER_ID", "").strip()
 
     users = bq.get_active_users()
 
-    # Si se especificó un usuario concreto (trigger inmediato desde el backend),
-    # filtramos solo ese usuario aunque no tenga activo=1 todavía
     if single_user_id:
         users = [u for u in users if u["ID_USUARIO"].lower() == single_user_id.lower()]
         if not users:
-            # Puede que aún no esté en BigQuery como activo, intentar obtenerlo igual
             users = bq.get_user_by_id(single_user_id)
-        print(f"Modo usuario único: {single_user_id} ({len(users)} encontrado)\n")
+        print(f"Modo usuario único: {single_user_id} ({len(users)} encontrado)\n", flush=True)
     else:
-        print(f"Usuarios activos: {len(users)}\n")
+        print(f"Usuarios activos: {len(users)}\n", flush=True)
 
     if not users:
-        print("No hay usuarios para procesar. Fin.")
+        print("No hay usuarios para procesar. Fin.", flush=True)
         return
+
+    # Timeout total: (batches de usuarios) * USER_TIMEOUT_S + buffer de 60s
+    batches = math.ceil(len(users) / max(1, MAX_WORKERS))
+    total_timeout = batches * USER_TIMEOUT_S + 60
+    print(f"Timeout por lote: {USER_TIMEOUT_S}s | Lotes estimados: {batches} | Timeout total: {total_timeout}s", flush=True)
 
     results = []
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {executor.submit(process_user, u): u for u in users}
-        for future in as_completed(futures):
+        done, timed_out = wait(futures, timeout=total_timeout)
+
+        for future in done:
+            u = futures[future]
+            nombre = u.get("NOMBRE", u.get("ID_USUARIO", "?"))
             try:
-                results.append(future.result())
+                results.append(future.result(timeout=10))
             except Exception as e:
-                u = futures[future]
-                print(f"ERROR procesando {u.get('NOMBRE', u.get('ID_USUARIO'))}: {e}")
+                print(f"ERROR [{nombre}]: {e}", flush=True)
+                results.append({"user": nombre, "found": 0, "applied": 0})
+
+        for future in timed_out:
+            u = futures[future]
+            nombre = u.get("NOMBRE", u.get("ID_USUARIO", "?"))
+            future.cancel()
+            print(f"TIMEOUT [{nombre}] — excedió {USER_TIMEOUT_S}s/lote, cancelado", flush=True)
+            results.append({"user": nombre, "found": 0, "applied": 0, "_timeout": True})
+            try:
+                telegram(f"⚠️ [AplicAI] TIMEOUT: usuario {nombre} colgado tras {USER_TIMEOUT_S}s — revisar logs")
+            except Exception:
+                pass
 
     # Avisos de vencimiento de trial (4 días antes)
     if not single_user_id:
@@ -411,31 +436,31 @@ def main():
             for u in expiring:
                 send_trial_warning(u, days_left=4)
             if expiring:
-                print(f"  Avisos de trial enviados: {len(expiring)}")
+                print(f"  Avisos de trial enviados: {len(expiring)}", flush=True)
         except Exception as e:
-            print(f"  ⚠ Error en avisos trial: {e}")
+            print(f"  Error en avisos trial: {e}", flush=True)
 
     elapsed = (datetime.now() - start).seconds
     total_found   = sum(r["found"]      for r in results)
-    total_email   = sum(r.get("email",0) for r in results)
-    total_form    = sum(r.get("form", 0)  for r in results)
+    total_form    = sum(r.get("form", 0) for r in results)
+    timeouts      = sum(1 for r in results if r.get("_timeout"))
 
-    # Aggregate per-portal counts
     all_portals: dict[str, int] = {}
     for r in results:
         for p, c in r.get("portales", {}).items():
             all_portals[p] = all_portals.get(p, 0) + c
 
-    print(f"\n{'─'*50}")
-    print(f"✅ Proceso terminado en {elapsed}s")
-    print(f"   Usuarios procesados  : {len(results)}")
-    print(f"   Empleos descubiertos : {total_found}")
-    print(f"   Postulaciones email  : {total_email}")
-    print(f"   Postulaciones form   : {total_form}")
+    print(f"\n{'─'*50}", flush=True)
+    print(f"Proceso terminado en {elapsed}s", flush=True)
+    print(f"   Usuarios procesados  : {len(results)}", flush=True)
+    if timeouts:
+        print(f"   Timeouts             : {timeouts}", flush=True)
+    print(f"   Empleos descubiertos : {total_found}", flush=True)
+    print(f"   Postulaciones form   : {total_form}", flush=True)
     for portal, cnt in sorted(all_portals.items()):
-        print(f"     └─ {portal.capitalize():<20}: {cnt}")
-    print(f"   Total postulaciones  : {total_email + total_form}")
-    print(f"{'─'*50}")
+        print(f"     └─ {portal.capitalize():<20}: {cnt}", flush=True)
+    print(f"   Total postulaciones  : {total_form}", flush=True)
+    print(f"{'─'*50}", flush=True)
 
 
 if __name__ == "__main__":

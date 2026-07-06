@@ -79,7 +79,6 @@ def get_active_users() -> list[dict]:
           AND pf.UBICACIONES IS NOT NULL
           AND pf.PROFESION IS NOT NULL AND pf.PROFESION != ''
           AND pf.PRETENSION_GENERAL IS NOT NULL AND pf.PRETENSION_GENERAL != ''
-          AND pf.CV_URL IS NOT NULL AND pf.CV_URL != ''
           AND pf.RUT IS NOT NULL AND pf.RUT != ''
     """
     rows = list(_query(query).result())

@@ -1700,7 +1700,8 @@ def _login_driver_trabajando(email: str, password: str) -> webdriver.Chrome | No
     return None
 
 
-def _ensure_logged_in(driver: webdriver.Chrome, email: str, password: str) -> bool:
+def _ensure_logged_in(driver: webdriver.Chrome, email: str, password: str,
+                      uid: str = "") -> bool:
     """Verifica si la sesión sigue activa; re-loguea si no. Retorna True si logueado."""
     try:
         current = driver.current_url
@@ -1709,7 +1710,15 @@ def _ensure_logged_in(driver: webdriver.Chrome, email: str, password: str) -> bo
     if _tbj_logged_in(current):
         return True
     print("  [trabajando] Sesion expirada — re-logueando...")
-    return _do_login(driver, email, password)
+    ok = _do_login(driver, email, password)
+    if ok and uid:
+        try:
+            bq.save_portal_cookies(uid, "trabajando", driver.get_cookies(),
+                                   email=email, password=password)
+            print(f"  [trabajando] Cookies actualizadas en BQ para {uid} (post re-login)")
+        except Exception as e:
+            print(f"  [trabajando] Error guardando cookies post re-login: {e}")
+    return ok
 
 
 def get_trabajando_session(uid: str, email: str, password: str) -> webdriver.Chrome | None:
@@ -3146,7 +3155,8 @@ def apply_trabajando_selenium(driver: webdriver.Chrome, job_url: str, user: dict
         with _sessions_lock:
             sess_data = _sessions.get(f"trabajando_{uid}", {})
         if sess_data:
-            _ensure_logged_in(driver, sess_data.get("email", ""), sess_data.get("password", ""))
+            _ensure_logged_in(driver, sess_data.get("email", ""), sess_data.get("password", ""),
+                              uid=uid)
 
         driver.get(job_url)
         time.sleep(3)
@@ -3154,9 +3164,18 @@ def apply_trabajando_selenium(driver: webdriver.Chrome, job_url: str, user: dict
         # Si la navegación al empleo redirigió a login, re-loguear y reintentar
         if "ingresa-a-tu-cuenta" in driver.current_url and sess_data:
             print(f"    [trabajando] Redirigido a login al navegar al empleo — re-logueando")
-            ok = _do_login(driver, sess_data.get("email", ""), sess_data.get("password", ""))
+            _email    = sess_data.get("email", "")
+            _password = sess_data.get("password", "")
+            ok = _do_login(driver, _email, _password)
             if not ok:
                 return False
+            if uid:
+                try:
+                    bq.save_portal_cookies(uid, "trabajando", driver.get_cookies(),
+                                           email=_email, password=_password)
+                    print(f"    [trabajando] Cookies actualizadas en BQ para {uid} (post redirect-login)")
+                except Exception:
+                    pass
             driver.get(job_url)
             time.sleep(3)
 
