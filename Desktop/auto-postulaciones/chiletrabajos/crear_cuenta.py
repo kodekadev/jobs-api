@@ -546,7 +546,15 @@ def _pw_crear_cuenta_chiletrabajos(user_id: str, user: dict) -> bool:
                     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
                 ),
                 viewport={"width": 1366, "height": 768},
+                locale="es-CL",
+                timezone_id="America/Santiago",
             )
+            ctx.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                Object.defineProperty(navigator, 'languages', {get: () => ['es-CL', 'es', 'en']});
+                Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+                window.chrome = { runtime: {} };
+            """)
             page = ctx.new_page()
 
             for reg_url in [f"{BASE_URL}/chtregister", f"{BASE_URL}/registro", f"{BASE_URL}/crear-cuenta"]:
