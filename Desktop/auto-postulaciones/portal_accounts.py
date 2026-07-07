@@ -299,9 +299,10 @@ def _make_driver():
 
 # ─── TRABAJANDO.CL ────────────────────────────────────────────────────────────
 
-def crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
-                             mail: str, clave: str, uid: str | None = None) -> bool:
-    """Crea cuenta en trabajando.cl con Selenium."""
+def _selenium_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
+                                       mail: str, clave: str, uid: str | None = None,
+                                       user: dict | None = None) -> bool:
+    """Crea cuenta en trabajando.cl con Selenium y completa el wizard CV en la misma sesion."""
     celular_limpio = _clean_phone(celular) or "912345678"
     driver = None
 
@@ -386,9 +387,17 @@ def crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
                            "mi curriculum", "completar perfil", "dashboard"]
         if any(s in content for s in success_signals) or "crea-tu-curriculum" not in current_url:
             print(f"  -> Registrado OK, URL: {current_url}")
+            # Completar wizard CV en la misma sesion (evita segundo login + reCAPTCHA)
+            if user:
+                print(f"  -> Completando wizard CV en misma sesion...")
+                try:
+                    completar_cv_trabajando(driver, user)
+                except Exception as _e:
+                    print(f"  -> Error en wizard CV: {_e}")
             if uid:
                 try:
-                    bq.save_portal_cookies(uid, "trabajando", driver.get_cookies())
+                    bq.save_portal_cookies(uid, "trabajando", driver.get_cookies(),
+                                           email=mail, password=clave)
                     print(f"  -> Cookies Trabajando guardadas para {uid}")
                 except Exception as e:
                     print(f"  -> Error guardando cookies: {e}")
@@ -416,6 +425,510 @@ def crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
             except Exception:
                 pass
         return False
+
+
+# ─── PLAYWRIGHT — TRABAJANDO.CL ──────────────────────────────────────────────
+
+def _pw_make_context(pw):
+    """Contexto Playwright con user-agent realista, headless en Cloud Run."""
+    browser = pw.chromium.launch(
+        headless=_in_cloud_run,
+        args=(["--no-sandbox", "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled"]
+              if _in_cloud_run else
+              ["--disable-blink-features=AutomationControlled", "--start-maximized"]),
+    )
+    ctx = browser.new_context(
+        user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
+        viewport={"width": 1366, "height": 768} if _in_cloud_run else None,
+    )
+    ctx.add_init_script(
+        "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"
+    )
+    return browser, ctx
+
+
+def _pw_vue_set(page, handle, value: str):
+    """Setter nativo de Vue sobre un ElementHandle de Playwright."""
+    page.evaluate("""
+        ([el, v]) => {
+            const s = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')
+                   || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
+            if (s) s.set.call(el, v);
+            el.dispatchEvent(new Event('input',  {bubbles: true}));
+            el.dispatchEvent(new Event('change', {bubbles: true}));
+        }
+    """, [handle, value])
+
+
+def _pw_autocomplete(page, locator, text: str, label: str = "") -> bool:
+    """Escribe en un campo autocomplete y selecciona la primera sugerencia visible."""
+    try:
+        locator.click()
+        locator.fill("")
+        page.wait_for_timeout(200)
+        locator.type(text, delay=40)
+        page.wait_for_timeout(2000)
+        for sel in ["li[role='option']", "ul li.cursor-pointer",
+                    "[class*='suggestion'] li", "[class*='autocomplete'] li", "[class*='dropdown'] li"]:
+            sugs = [s for s in page.locator(sel).all() if s.is_visible() and s.inner_text().strip()]
+            if sugs:
+                exact = [s for s in sugs if s.inner_text().strip().lower() == text.lower()]
+                chosen = exact[0] if exact else sugs[0]
+                txt = chosen.inner_text().strip()[:40]
+                chosen.click()
+                print(f"  [pw] autocomplete '{label}': '{txt}'")
+                return True
+        locator.press("Tab")
+        print(f"  [pw] autocomplete '{label}': sin sugerencias para '{text}', Tab")
+        return False
+    except Exception as e:
+        print(f"  [pw] autocomplete '{label}' error: {e}")
+        return False
+
+
+def _pw_select_option(page, locator, value: str, label: str = "") -> bool:
+    """Selecciona opción en <select> disparando eventos Vue."""
+    try:
+        opts = [o.get_attribute("value") for o in locator.locator("option").all()]
+        target = value if value in opts else next(
+            (v for v in opts if v and v not in ("", "Selecciona", "undefined", "null")), value
+        )
+        locator.select_option(value=target)
+        page.evaluate("""
+            (el) => {
+                el.dispatchEvent(new Event('change', {bubbles: true, composed: true}));
+                el.dispatchEvent(new Event('input',  {bubbles: true, composed: true}));
+            }
+        """, locator.element_handle())
+        print(f"  [pw] select '{label}': {target}")
+        return True
+    except Exception as e:
+        print(f"  [pw] select '{label}' error: {e}")
+        return False
+
+
+def _pw_click_continuar(page, paso: int, timeout: int = 60) -> bool:
+    """Espera y clickea el botón Continuar/Finalizar activo."""
+    for _ in range(timeout):
+        for sel in [
+            "button:not([class*='btn-disabled']):has-text('Continuar')",
+            "button:not([class*='btn-disabled']):has-text('Finalizar')",
+        ]:
+            btns = [b for b in page.locator(sel).all() if b.is_visible()]
+            if btns:
+                btns[0].scroll_into_view_if_needed()
+                btns[0].click()
+                print(f"  [pw-wiz] Paso {paso}: click '{btns[0].inner_text().strip()}'")
+                return True
+        page.wait_for_timeout(1000)
+    print(f"  [pw-wiz] ! Paso {paso}: timeout ({timeout}s)")
+    return False
+
+
+def _pw_paso1_datos_personales(page, user: dict):
+    """Rellena paso 1: RUT, ciudad (autocomplete), fecha nacimiento, género."""
+    rut = str(user.get("rut") or "").strip()
+    fn_raw = str(user.get("fecha_nacimiento") or "").strip()
+    fn_dia = fn_mes = fn_ano = ""
+    if fn_raw:
+        try:
+            p = fn_raw.split("-")
+            fn_ano, fn_mes, fn_dia = p[0], p[1].zfill(2), p[2].zfill(2)
+        except Exception:
+            pass
+    ubicaciones = user.get("ubicaciones") or []
+    if isinstance(ubicaciones, str):
+        try: ubicaciones = json.loads(ubicaciones)
+        except: ubicaciones = [ubicaciones]
+    ciudad = ubicaciones[0].split(",")[0].strip() if ubicaciones else "Santiago"
+
+    # Radio RUN
+    for r in page.locator("input[type='radio'][value='RUN']").all():
+        if not r.is_checked():
+            r.click()
+            print("  [pw-wiz] Radio 'RUN' seleccionado")
+            page.wait_for_timeout(500)
+        break
+
+    # RUT
+    if rut:
+        for sel in ["input[placeholder*='ocumento']", "input[placeholder*='RUT']",
+                    "input[placeholder*='°']", "input[maxlength='20']"]:
+            inps = [i for i in page.locator(sel).all() if i.is_visible()]
+            if inps and not (inps[0].input_value() or "").strip():
+                _pw_vue_set(page, inps[0].element_handle(), rut)
+                print(f"  [pw-wiz] RUT: '{rut}'")
+                break
+
+    # Ciudad autocomplete
+    for inp in page.locator("input[placeholder='Escribe y selecciona una opción']").all():
+        if inp.is_visible() and not (inp.input_value() or "").strip():
+            _pw_autocomplete(page, inp, ciudad, "Ciudad")
+            break
+
+    # Selects: día, mes, año, género
+    dia_set = mes_set = ano_set = False
+    for sel in [s for s in page.locator("select").all() if s.is_visible()]:
+        opts = [o.get_attribute("value") for o in sel.locator("option").all()]
+        cur = sel.input_value() or ""
+        if cur:
+            continue
+        if "PREFIERO_NO_INFORMAR" in opts or "HOMBRE" in opts:
+            _pw_select_option(page, sel, "PREFIERO_NO_INFORMAR", "Género")
+        elif not dia_set and any(v.isdigit() and 1 <= int(v) <= 31 for v in opts if v.isdigit()):
+            val = fn_dia if fn_dia and fn_dia in opts else "15"
+            _pw_select_option(page, sel, val, "Día nacimiento")
+            dia_set = True
+        elif not mes_set and "01" in opts and "12" in opts and len(opts) == 13:
+            val = fn_mes if fn_mes and fn_mes in opts else "06"
+            _pw_select_option(page, sel, val, "Mes nacimiento")
+            mes_set = True
+        elif not ano_set and any(v.isdigit() and 1940 <= int(v) <= 2010 for v in opts if v.isdigit()):
+            anos = [v for v in opts if v.isdigit() and 1940 <= int(v) <= 2010]
+            obj = fn_ano if fn_ano and fn_ano in anos else ("1990" if "1990" in anos else anos[len(anos)//2])
+            _pw_select_option(page, sel, obj, "Año nacimiento")
+            ano_set = True
+
+
+def _pw_paso2_experiencia(page, user: dict):
+    """Rellena paso 2: cargo, empresa, jornada, actividad, logros, fechas."""
+    cargos = user.get("cargos") or []
+    if isinstance(cargos, str):
+        try: cargos = json.loads(cargos)
+        except: cargos = [cargos]
+    cargo     = cargos[0] if cargos else ""
+    empresa   = str(user.get("empresa") or "").strip()
+    actividad = _inferir_actividad(user)
+    anio_ini  = str(user.get("anio_inicio") or "").strip()
+    actualmente = bool(user.get("actualmente_trabajando", True))
+    resumen   = str(user.get("resumen") or "").strip()
+    logros    = (resumen[:400] if resumen else
+                 "Gestión y coordinación de equipos, optimización de procesos "
+                 "y cumplimiento de objetivos estratégicos.")
+
+    # Cargo
+    for sel in ["input[placeholder='Ingresa tu cargo']", "input[placeholder*='cargo']"]:
+        inps = [i for i in page.locator(sel).all() if i.is_visible()]
+        if inps and not (inps[0].input_value() or "").strip() and cargo:
+            _pw_vue_set(page, inps[0].element_handle(), cargo)
+            print(f"  [pw-wiz] Cargo: '{cargo}'")
+            break
+
+    # Empresa
+    if empresa:
+        for kw in ["empresa", "ompañ", "rganiz", "nstituc"]:
+            inps = [i for i in page.locator(f"input[placeholder*='{kw}']").all() if i.is_visible()]
+            if inps and not (inps[0].input_value() or "").strip():
+                _pw_vue_set(page, inps[0].element_handle(), empresa)
+                print(f"  [pw-wiz] Empresa: '{empresa}'")
+                break
+
+    # Selects jornada/jerarquía
+    for sel in [s for s in page.locator("select").all() if s.is_visible()]:
+        opts = [(o.get_attribute("value"), o.inner_text()) for o in sel.locator("option").all()]
+        cur = sel.input_value() or ""
+        if cur in ("", "[object Object]", "Selecciona") and len(opts) >= 2:
+            vals = [o[0] for o in opts]
+            if any("SUPERVISOR" in str(v) or "POSICION" in str(v) for v in vals):
+                _pw_select_option(page, sel, "POSICION_SENIOR", "Jerarquía")
+            elif any("object" in str(v).lower() for v in vals):
+                try:
+                    sel.locator("option").nth(1).click()
+                    page.evaluate("(el)=>el.dispatchEvent(new Event('change',{bubbles:true}));", sel.element_handle())
+                    print("  [pw-wiz] Jornada: opción 1")
+                except Exception: pass
+
+    # Actividad autocomplete
+    for inp in page.locator("input[placeholder='Escribe y selecciona una opción']").all():
+        if inp.is_visible() and not (inp.input_value() or "").strip():
+            _pw_autocomplete(page, inp, actividad, "Actividad")
+            break
+
+    # Checkbox actualmente
+    for chk in page.locator("input[type='checkbox']").all():
+        if chk.is_visible():
+            checked = chk.is_checked()
+            if actualmente and not checked:
+                chk.click(); print("  [pw-wiz] Actualmente: checked")
+            elif not actualmente and checked:
+                chk.click(); print("  [pw-wiz] Actualmente: unchecked")
+                page.wait_for_timeout(1000)
+            break
+
+    # Logros contenteditable
+    for editable in page.locator("div[contenteditable='true']").all():
+        if editable.is_visible() and not (editable.inner_text() or "").strip():
+            try:
+                page.evaluate("""
+                    ([el, text]) => {
+                        el.focus();
+                        document.execCommand('selectAll', false, null);
+                        document.execCommand('insertText', false, text);
+                        el.dispatchEvent(new Event('input', {bubbles: true}));
+                    }
+                """, [editable.element_handle(), logros])
+                print(f"  [pw-wiz] Logros: '{logros[:60]}...'")
+            except Exception as e:
+                print(f"  [pw-wiz] Logros error: {e}")
+            break
+
+    # Fechas inicio (mes + año)
+    fecha_inits = 0
+    for sel in [s for s in page.locator("select").all() if s.is_visible()]:
+        opts = [o.get_attribute("value") for o in sel.locator("option").all()]
+        cur = sel.input_value() or ""
+        if cur: continue
+        is_mes = "01" in opts and "12" in opts and len(opts) == 13
+        is_ano = any(v.isdigit() and 2000 <= int(v) <= 2030 for v in opts if v.isdigit())
+        if is_mes and fecha_inits == 0:
+            _pw_select_option(page, sel, "01", "Mes inicio"); fecha_inits += 1
+        elif is_ano and fecha_inits == 1:
+            anos = [v for v in opts if v.isdigit() and 2000 <= int(v) <= 2030]
+            obj = anio_ini if anio_ini and anio_ini in anos else (anos[-1] if anos else "2023")
+            _pw_select_option(page, sel, obj, "Año inicio"); fecha_inits += 1
+
+
+def _pw_paso3_formacion(page, user: dict):
+    """Rellena paso 3: nivel educativo, institución, carrera, situación, años."""
+    profesion = str(user.get("profesion") or "").strip()
+    cargos    = user.get("cargos") or []
+    if isinstance(cargos, str):
+        try: cargos = json.loads(cargos)
+        except: cargos = [cargos]
+    titulo      = profesion or (cargos[0] if cargos else "Administración de Empresas")
+    institucion = str(user.get("institucion") or "Universidad Diego Portales").strip()
+    nivel_key   = str(user.get("nivel_educativo") or "UNIVERSITARIA")
+    situacion   = str(user.get("situacion_estudios") or "Titulado")
+    anio_ini_e  = str(user.get("anio_inicio_estudios") or "2013")
+    anio_fin_e  = str(user.get("anio_fin") or "") or str(min(int(anio_ini_e) + 5, 2025))
+
+    _NIVELES = {"PRIMARIA","SECUNDARIA","TECNICO_MEDIO","TECNICO_PROFESIONAL_SUPERIOR",
+                "UNIVERSITARIA","DIPLOMADO","POSTGRADO","MAGISTER","DOCTORADO","OTRO"}
+    if nivel_key not in _NIVELES: nivel_key = "UNIVERSITARIA"
+
+    # Select nivel educativo
+    for sel in [s for s in page.locator("select").all() if s.is_visible()]:
+        opts = [o.get_attribute("value") for o in sel.locator("option").all()]
+        if not any(v in _NIVELES for v in opts): continue
+        if (sel.input_value() or "") not in _NIVELES:
+            _pw_select_option(page, sel, nivel_key, "Nivel educativo")
+            page.wait_for_timeout(2000)
+        break
+
+    # Institución autocomplete (busca por palabra específica, no genérica)
+    _GENERICAS = {"universidad","instituto","escuela","centro","pontificia","de","del","la","los"}
+    inst_words = [w for w in institucion.lower().split() if len(w) > 4 and w not in _GENERICAS]
+    inst_search = inst_words[0] if inst_words else institucion.split()[0]
+
+    def _first_active_input():
+        return next((i for i in page.locator("input:not([disabled])").all()
+                     if i.is_visible()
+                     and i.get_attribute("type") not in ("checkbox","radio","hidden","file")
+                     and not (i.input_value() or "").strip()), None)
+
+    for _ in range(5):
+        inp = _first_active_input()
+        if inp:
+            if not _pw_autocomplete(page, inp, inst_search, "Institución"):
+                inp.fill(institucion); inp.press("Tab")
+            print(f"  [pw-wiz] Institución: {institucion} (búsqueda: '{inst_search}')")
+            page.wait_for_timeout(2000)
+            break
+        page.wait_for_timeout(500)
+
+    # Carrera autocomplete
+    for _ in range(10):
+        inp = _first_active_input()
+        if inp:
+            if not _pw_autocomplete(page, inp, titulo, "Carrera"):
+                inp.fill(titulo); inp.press("Tab")
+            print(f"  [pw-wiz] Carrera: {titulo}")
+            page.wait_for_timeout(1000)
+            break
+        page.wait_for_timeout(500)
+
+    # Situación + años de estudios (dos pasadas)
+    def _fill_situation_years():
+        year_count = [0]
+        for sel in [s for s in page.locator("select").all() if s.is_visible()]:
+            opts = [o.get_attribute("value") for o in sel.locator("option").all()]
+            cur  = sel.input_value() or ""
+            if any(v in _NIVELES for v in opts): continue
+            if any(v and v.isdigit() and 1957 <= int(v) <= 2026 for v in opts if v):
+                if cur and cur.isdigit() and 1957 <= int(cur) <= 2026:
+                    year_count[0] += 1; continue
+                anos = [v for v in opts if v and v.isdigit() and 1957 <= int(v) <= 2026]
+                if year_count[0] == 0:
+                    obj = anio_ini_e if anio_ini_e in anos else anos[len(anos)//2]
+                    _pw_select_option(page, sel, obj, "Año inicio estudios")
+                else:
+                    obj = anio_fin_e if anio_fin_e in anos else anos[0]
+                    _pw_select_option(page, sel, obj, "Año término estudios")
+                year_count[0] += 1
+            elif any("[object" in str(v) for v in opts if v):
+                if cur in ("Titulado","Egresado","Estudiando","Incompleto"): continue
+                try:
+                    opts_txt = [o.inner_text().strip() for o in sel.locator("option").all()]
+                    if situacion in opts_txt:
+                        sel.select_option(label=situacion)
+                        page.evaluate("(el)=>{el.dispatchEvent(new Event('change',{bubbles:true}));el.dispatchEvent(new Event('input',{bubbles:true}));}", sel.element_handle())
+                        print(f"  [pw-wiz] Situación: {situacion}")
+                except Exception as e:
+                    print(f"  [pw-wiz] Situación error: {e}")
+
+    _fill_situation_years()
+    page.wait_for_timeout(1500)
+    _fill_situation_years()
+
+
+def _pw_wizard_trabajando(page, user: dict) -> bool:
+    """Completa el wizard de CV de Trabajando.cl usando Playwright."""
+    user_low = {k.lower(): v for k, v in user.items()}
+    try:
+        page.wait_for_timeout(2000)
+        url = page.url
+        print(f"  [pw-wiz] URL inicial: {url}")
+
+        # Click "desde cero" si está en onboarding
+        if "cuenta-creada" in url or "como-quieres" in url:
+            clicked = False
+            for sel in [
+                "[class*='tag-manager-crear-cv-desde-cero']",
+                "div:has(h3:has-text('desde cero'))",
+                "div:has(h3:has-text('Crear mi curr'))",
+            ]:
+                try:
+                    page.click(sel, timeout=3000)
+                    print(f"  [pw-wiz] Click 'desde cero'")
+                    clicked = True; page.wait_for_timeout(3000); break
+                except Exception: continue
+            if not clicked:
+                print("  [pw-wiz] ! No se encontró card 'desde cero'")
+                return False
+
+        # Si ya tiene CV (fuera de wizard) → solo actualizar info-personal
+        url2 = page.url
+        if all(s not in url2 for s in ["cuenta-creada","como-quieres","crea-tu-curriculum"]):
+            btns = [b for b in page.locator("[class*='tag-manager-crear-cv-desde-cero']").all() if b.is_visible()]
+            if not btns:
+                print(f"  [pw-wiz] CV ya existente — OK")
+                return True
+
+        # Esperar wizard
+        page.wait_for_selector(
+            "button:has-text('Continuar'), button:has-text('Finalizar')", timeout=15000
+        )
+        print(f"  [pw-wiz] Wizard cargado: {page.url}")
+
+        if "paso-2" not in page.url and "paso-3" not in page.url:
+            print("  [pw-wiz] === Paso 1: datos personales ===")
+            _pw_paso1_datos_personales(page, user_low)
+            page.wait_for_timeout(1000)
+            _pw_click_continuar(page, 1)
+            page.wait_for_timeout(3000)
+
+        if "paso-3" not in page.url:
+            print("  [pw-wiz] === Paso 2: experiencia ===")
+            _pw_paso2_experiencia(page, user_low)
+            page.wait_for_timeout(1000)
+            _pw_click_continuar(page, 2)
+            page.wait_for_timeout(3000)
+
+        print("  [pw-wiz] === Paso 3: formación ===")
+        _pw_paso3_formacion(page, user_low)
+        page.wait_for_timeout(1000)
+        _pw_click_continuar(page, 3)
+        page.wait_for_timeout(3000)
+
+        print(f"  [pw-wiz] Completado: {page.url}")
+        return True
+
+    except Exception as e:
+        import traceback
+        print(f"  [pw-wiz] Error: {e}"); traceback.print_exc()
+        return False
+
+
+def _pw_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
+                                 mail: str, clave: str, uid: str | None = None,
+                                 user: dict | None = None) -> bool:
+    """Crea cuenta en trabajando.cl con Playwright y completa wizard en misma sesión."""
+    from playwright.sync_api import sync_playwright
+    celular_limpio = _clean_phone(celular) or "912345678"
+
+    with sync_playwright() as pw:
+        browser, ctx = _pw_make_context(pw)
+        page = ctx.new_page()
+        try:
+            page.goto("https://www.trabajando.cl/crea-tu-curriculum", timeout=20000)
+            page.wait_for_load_state("networkidle", timeout=10000)
+            print(f"  [pw-tbj] URL: {page.url}")
+
+            page.wait_for_selector("button:has-text('Crear mi cuenta')", timeout=10000)
+            print(f"  [pw-tbj] Botón 'Crear mi cuenta' encontrado")
+
+            # Llenar form con Vue setter nativo
+            form_inputs = page.locator("form:has(button:has-text('Crear mi cuenta')) input")
+            for i, val in enumerate([nombre, apellido, celular_limpio, mail, clave]):
+                _pw_vue_set(page, form_inputs.nth(i).element_handle(), val)
+                page.wait_for_timeout(400)
+                print(f"  [pw-tbj] Campo {i} llenado")
+
+            page.wait_for_timeout(1500)
+            try: page.click("button:has-text('Acepto')", timeout=2000)
+            except Exception: pass
+
+            page.click("button:has-text('Crear mi cuenta')")
+            page.wait_for_timeout(15000)
+
+            url     = page.url
+            content = page.content().lower()
+            already = ["ya existe","correo registrado","ya está registrado","already registered"]
+            success = ["¡hola ","hola ","cuenta-creada","como-quieres","mi curriculum","completar perfil"]
+
+            if any(s in content for s in already):
+                print(f"  [pw-tbj] Email ya registrado — OK"); return True
+            if not (any(s in content for s in success) or "crea-tu-curriculum" not in url):
+                print(f"  [pw-tbj] ! Formulario no avanzó: {url}"); return False
+
+            print(f"  [pw-tbj] Registrado OK: {url}")
+
+            if user:
+                print(f"  [pw-tbj] Completando wizard CV...")
+                _pw_wizard_trabajando(page, user)
+
+            if uid:
+                cookies = ctx.cookies()
+                bq.save_portal_cookies(uid, "trabajando", cookies, email=mail, password=clave)
+                print(f"  [pw-tbj] Cookies guardadas para {uid}")
+
+            return True
+
+        except Exception as e:
+            import traceback
+            print(f"  [pw-tbj] Error: {e}"); traceback.print_exc()
+            return False
+        finally:
+            browser.close()
+
+
+def crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
+                             mail: str, clave: str, uid: str | None = None,
+                             user: dict | None = None) -> bool:
+    """Crea cuenta en trabajando.cl. Intenta Playwright primero, Selenium como fallback."""
+    try:
+        print(f"  [tbj] Intentando Playwright...")
+        if _pw_crear_cuenta_trabajando(nombre, apellido, celular, mail, clave, uid=uid, user=user):
+            return True
+        print(f"  [tbj] Playwright no tuvo éxito — fallback a Selenium...")
+    except Exception as e:
+        print(f"  [tbj] Playwright error: {e} — fallback a Selenium...")
+
+    return _selenium_crear_cuenta_trabajando(nombre, apellido, celular, mail, clave, uid=uid, user=user)
 
 
 # ─── CV INTERNO TRABAJANDO.CL ────────────────────────────────────────────────
@@ -953,8 +1466,10 @@ def _paso3_generico(driver: webdriver.Chrome, user: dict) -> None:
 
     # ── 2. Institucion (primer autocomplete activo tras nivel) ────────────────
     # Terminos de busqueda: palabras mas especificas del nombre (ej "Portales" para Diego Portales)
-    _inst_words = [w for w in institucion.split() if len(w) > 4]
-    inst_search = _inst_words[-1] if _inst_words else institucion[:10]
+    # Buscar por la palabra más específica del nombre (excluir genéricas como "de", "del", "universidad")
+    _GENERICAS = {"universidad", "instituto", "escuela", "centro", "pontificia", "de", "del", "la", "los"}
+    _inst_words = [w for w in institucion.lower().split() if len(w) > 4 and w not in _GENERICAS]
+    inst_search = _inst_words[0] if _inst_words else institucion.split()[0]
 
     inp = _first_active_input()
     if inp:
@@ -3469,7 +3984,7 @@ def get_or_create_account(user: dict, portal: str) -> dict | None:
     ok = False
     if portal == "trabajando":
         print(f"  -> Creando cuenta en Trabajando.cl para {nombre} {apellido} ({portal_email})")
-        ok = crear_cuenta_trabajando(nombre, apellido, celular, portal_email, clave, uid=uid)
+        ok = crear_cuenta_trabajando(nombre, apellido, celular, portal_email, clave, uid=uid, user=user)
 
     elif portal == "chiletrabajos":
         # El módulo genera email/clave y guarda en CUENTAS_PORTALES por sí mismo

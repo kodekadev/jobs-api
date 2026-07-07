@@ -113,7 +113,7 @@ def _js_set(driver, el, value: str):
 
 # ── función principal ─────────────────────────────────────────────────────────
 
-def crear_cuenta_chiletrabajos(user_id: str, user: dict) -> bool:
+def _selenium_crear_cuenta_chiletrabajos(user_id: str, user: dict) -> bool:
     """
     Crea una cuenta en ChileTrabajos para el usuario dado.
     Guarda email y contraseña en BigQuery CUENTAS_PORTALES.
@@ -260,6 +260,186 @@ def crear_cuenta_chiletrabajos(user_id: str, user: dict) -> bool:
             except Exception:
                 pass
         return False
+
+
+# ── Playwright ────────────────────────────────────────────────────────────────
+
+def _cht_in_cloud_run() -> bool:
+    return bool(os.environ.get("K_SERVICE") or os.environ.get("CLOUD_RUN_JOB"))
+
+
+def _pw_js_set(page, handle, value: str):
+    page.evaluate("""
+        ([el, v]) => {
+            var tag = el.tagName.toUpperCase();
+            var proto = tag === 'TEXTAREA'
+                ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+            var s = Object.getOwnPropertyDescriptor(proto, 'value');
+            if (s) s.set.call(el, v); else el.value = v;
+            el.dispatchEvent(new Event('input', {bubbles: true}));
+            el.dispatchEvent(new Event('change', {bubbles: true}));
+        }
+    """, [handle, value])
+
+
+def _pw_fill(page, selector: str, value: str, label: str) -> bool:
+    try:
+        loc = page.locator(selector).first
+        loc.wait_for(state="visible", timeout=3000)
+        handle = loc.element_handle()
+        _pw_js_set(page, handle, value)
+        print(f"  [cht-pw] {label}: '{value[:40]}'")
+        return True
+    except Exception:
+        return False
+
+
+def _pw_crear_cuenta_chiletrabajos(user_id: str, user: dict) -> bool:
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return False
+
+    nombre_completo = str(user.get("NOMBRE") or user.get("nombre") or "")
+    partes   = nombre_completo.split()
+    nombre   = partes[0] if partes else "Usuario"
+    apellido = partes[1] if len(partes) > 1 else "Apellido"
+
+    nombre_slug   = re.sub(r"[^a-z0-9]", "", nombre.lower())
+    apellido_slug = re.sub(r"[^a-z0-9]", "", apellido.lower())[:3]
+    codigo        = secrets.token_hex(3)
+    email         = f"{nombre_slug}.{apellido_slug}{codigo}@gmail.com"
+    clave         = _generar_clave()
+
+    cloud = _cht_in_cloud_run()
+
+    try:
+        with sync_playwright() as pw:
+            args = ["--no-sandbox", "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled"]
+            if cloud:
+                args.append("--single-process")
+            browser = pw.chromium.launch(headless=True, args=args)
+            ctx = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1366, "height": 768},
+            )
+            page = ctx.new_page()
+
+            for reg_url in [f"{BASE_URL}/chtregister", f"{BASE_URL}/registro", f"{BASE_URL}/crear-cuenta"]:
+                page.goto(reg_url, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(2000)
+                if "404" not in page.title().lower() and "login" not in page.url.lower():
+                    print(f"  [cht-pw] Registro en: {page.url}")
+                    break
+
+            # Llenar campos
+            _pw_fill(page,
+                "input[name*='nombre' i]:visible, input[placeholder*='nombre' i]:visible, "
+                "input[id*='nombre' i]:visible",
+                nombre, "nombre")
+            _pw_fill(page,
+                "input[name*='apellido' i]:visible, input[placeholder*='apellido' i]:visible, "
+                "input[id*='apellido' i]:visible",
+                apellido, "apellido")
+            _pw_fill(page,
+                "input[type='email']:visible, input[name*='email' i]:visible, "
+                "input[placeholder*='email' i]:visible",
+                email, "email")
+
+            for pwd_loc in page.locator("input[type='password']:visible").all():
+                try:
+                    _pw_js_set(page, pwd_loc.element_handle(), clave)
+                except Exception:
+                    pass
+            pwd_count = page.locator("input[type='password']:visible").count()
+            if pwd_count:
+                print(f"  [cht-pw] password: {pwd_count} campo(s)")
+
+            page.wait_for_timeout(400)
+
+            for chk in page.locator("input[type='checkbox']:visible").all():
+                try:
+                    if not chk.is_checked():
+                        chk.check()
+                except Exception:
+                    pass
+
+            submitted = False
+            for sel in [
+                "button[type='submit']:visible",
+                "input[type='submit']:visible",
+                "button:has-text('Registrar'):visible",
+                "button:has-text('Crear'):visible",
+                "button:visible",
+            ]:
+                try:
+                    btn = page.locator(sel).first
+                    if btn.count() > 0:
+                        txt = btn.inner_text()[:40]
+                        btn.click()
+                        print(f"  [cht-pw] Submit: '{txt}'")
+                        submitted = True
+                        break
+                except Exception:
+                    pass
+
+            if not submitted:
+                print("  [cht-pw] ! No se encontró botón submit")
+                browser.close()
+                return False
+
+            page.wait_for_timeout(5000)
+            content = page.content().lower()
+            cur = page.url
+
+            error_signals = ["ya existe", "already registered", "ya está registrado", "correo en uso"]
+            success_signals = [
+                "cuenta creada", "registro exitoso", "bienvenido", "welcome",
+                "tu cuenta", "verificar", "dashboard", "mi perfil", email.lower(),
+            ]
+
+            if any(s in content for s in error_signals):
+                print(f"  [cht-pw] Email ya registrado — guardando credencial")
+                bq.save_portal_account(user_id, PORTAL_ID, email, clave)
+                browser.close()
+                return True
+
+            if any(s in content for s in success_signals) or "chtlogin" not in cur:
+                print(f"  [cht-pw] Cuenta creada OK para {user_id} ({email})")
+                bq.save_portal_account(user_id, PORTAL_ID, email, clave)
+                browser.close()
+                return True
+
+            print(f"  [cht-pw] ! No confirmado. URL: {cur}")
+            browser.close()
+            return False
+
+    except Exception as e:
+        import traceback
+        print(f"  [cht-pw] Error: {e}")
+        traceback.print_exc()
+        return False
+
+
+def crear_cuenta_chiletrabajos(user_id: str, user: dict) -> bool:
+    """Crea cuenta en ChileTrabajos. Playwright primero, Selenium como fallback."""
+    cuenta = bq.get_portal_account(user_id, PORTAL_ID)
+    if cuenta:
+        print(f"  [cht] Cuenta ya existente para {user_id}: {cuenta['email']}")
+        return True
+
+    try:
+        print(f"  [cht] Intentando Playwright...")
+        if _pw_crear_cuenta_chiletrabajos(user_id, user):
+            return True
+        print(f"  [cht] Playwright sin éxito — fallback a Selenium...")
+    except Exception as e:
+        print(f"  [cht] Playwright error: {e} — fallback a Selenium...")
+    return _selenium_crear_cuenta_chiletrabajos(user_id, user)
 
 
 if __name__ == "__main__":

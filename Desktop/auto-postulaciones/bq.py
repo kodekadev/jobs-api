@@ -88,7 +88,7 @@ def get_active_users() -> list[dict]:
 def get_user_by_id(user_id: str) -> list[dict]:
     """Retorna perfil completo de un usuario desde POSTULA_FACIL."""
     query = f"""
-        SELECT {_pf_select('pf')}, u.EMAIL
+        SELECT {_pf_select('pf')}, u.EMAIL, u.NOMBRE, u.CELULAR
         FROM `{PROJECT}.{DATASET}.POSTULA_FACIL` pf
         LEFT JOIN `{PROJECT}.{DATASET}.USUARIOS` u
             ON LOWER(u.ID_USUARIO) = LOWER(pf.ID_USUARIO)

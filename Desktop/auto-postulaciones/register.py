@@ -34,7 +34,9 @@ def register_user(user: dict) -> dict:
     for portal in PORTALES:
         label = PORTAL_LABELS.get(portal, portal)
         # ── 1. Crear cuenta ───────────────────────────────────────────────────
+        cuenta_preexistia = bq.get_portal_account(uid, portal) is not None
         cuenta = get_or_create_account(user, portal)
+        cuenta_nueva = not cuenta_preexistia and cuenta is not None
         if not cuenta:
             resultados[portal] = "ERROR"
             print(f"  [{portal}] no se pudo crear cuenta")
@@ -76,12 +78,17 @@ def register_user(user: dict) -> dict:
             )
             continue
 
-        # ── 2. Subir CV archivo ───────────────────────────────────────────────
+        # ── 2. Subir CV / wizard ─────────────────────────────────────────────
         cv_ok = False
         cv_interno_ok = False
         if portal == "trabajando":
-            if cv_url:
-                print(f"  [{portal}] Subiendo CV archivo...")
+            if cuenta_nueva:
+                # Wizard ya completado por crear_cuenta_trabajando en la misma sesion
+                cv_ok = True
+                cv_interno_ok = True
+                print(f"  [{portal}] Wizard CV completado durante creacion de cuenta")
+            elif cv_url:
+                print(f"  [{portal}] Subiendo CV archivo (cuenta pre-existente)...")
                 cv_ok = upload_cv_trabajando(cuenta["email"], cuenta["password"], cv_url, user=user)
                 cv_interno_ok = cv_ok
                 telegram(
@@ -91,7 +98,6 @@ def register_user(user: dict) -> dict:
                     f"Formato Trabajando.com: {'OK' if cv_interno_ok else 'ERROR'}"
                 )
             else:
-                # Sin PDF, completar wizard con datos del perfil
                 print(f"  [{portal}] Sin CV archivo — completando CV interno...")
                 cv_interno_ok = crear_cv_interno_trabajando(cuenta["email"], cuenta["password"], user=user)
                 telegram(
