@@ -528,24 +528,27 @@ def _pw_completar_perfil_chiletrabajos(user_id: str, user: dict) -> bool:
             )
             page = ctx.new_page()
 
-            # Login — ChileTrabajos usa id="username" e id="password"
+            # Login — ChileTrabajos form clásico HTML, usar fill() no js setter
             page.goto(f"{BASE_URL}/chtlogin", wait_until="domcontentloaded", timeout=30000)
             page.wait_for_timeout(2000)
             try:
                 page.locator("#username").wait_for(state="visible", timeout=10000)
-                _pw_js_set(page, page.locator("#username").element_handle(), cuenta["email"])
-                _pw_js_set(page, page.locator("#password").element_handle(), cuenta["password"])
+                page.locator("#username").fill(cuenta["email"])
+                page.locator("#password").fill(cuenta["password"])
+                print(f"  [cht-pw-perfil] Credenciales llenadas")
             except Exception as _e:
                 print(f"  [cht-pw-perfil] Error llenando login: {_e}")
                 browser.close()
                 return False
+            # Click submit — XPath cubre input[@value=] y button[@type=submit]
             try:
-                page.locator("input[value='Iniciar Sesión'], button[type='submit']").first.click()
-            except Exception:
-                pass
-            page.wait_for_timeout(4000)
+                page.locator("xpath=//input[@value='Iniciar Sesión'] | //button[@type='submit']").first.click()
+            except Exception as _e:
+                print(f"  [cht-pw-perfil] Error click submit: {_e}")
+            page.wait_for_timeout(5000)
+            print(f"  [cht-pw-perfil] URL tras login: {page.url}")
             if "chtlogin" in page.url:
-                print(f"  [cht-pw-perfil] Login falló en {page.url}")
+                print(f"  [cht-pw-perfil] Login falló")
                 browser.close()
                 return False
             print(f"  [cht-pw-perfil] Login OK: {page.url}")
