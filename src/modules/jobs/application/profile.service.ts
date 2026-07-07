@@ -151,9 +151,12 @@ export class ProfileService {
     `, { id: userId, activo: activoInt, now });
 
     if (activo) {
-      this.triggerAutoJob(userId).catch((e) =>
-        console.error('trigger auto job error:', e.message),
-      );
+      const DELAY_MS = 5 * 60 * 1000; // 5 min — da tiempo a register.py y el usuario percibe acción rápida
+      setTimeout(() => {
+        this.triggerAutoJob(userId).catch((e) =>
+          console.error('trigger auto job error:', e.message),
+        );
+      }, DELAY_MS);
     }
 
     return { success: true, activo };
