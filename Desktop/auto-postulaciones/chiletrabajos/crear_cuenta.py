@@ -347,21 +347,50 @@ def _pw_select_sec(panel, field_id: str, value: str, candidates: list | None = N
             pass
 
 
-def _pw_perfil_misma_sesion(page, user: dict, user_id: str):
+def _pw_perfil_misma_sesion(page, user: dict, user_id: str, email: str = "", clave: str = ""):
     """Completa secciones del perfil de ChileTrabajos en la sesión activa."""
     import json as _json, re as _re
 
     EDITAR_CV = f"{BASE_URL}/dashboard/editar-cv"
+
+    # ChileTrabajos no hace auto-login tras registro — intentamos navegar al
+    # dashboard y, si redirige al login, hacemos login explícito con type()
     try:
         page.goto(EDITAR_CV, wait_until="domcontentloaded", timeout=30000)
-        page.wait_for_timeout(3000)
-        if "dashboard" not in page.url and "editar-cv" not in page.url:
-            print(f"  [cht-pw] ! No se pudo navegar al dashboard: {page.url}")
-            return
-        print(f"  [cht-pw] Perfil: {page.url}")
+        page.wait_for_timeout(2000)
     except Exception as e:
         print(f"  [cht-pw] Error navegando al perfil: {e}")
         return
+
+    if "chtlogin" in page.url or ("dashboard" not in page.url and "editar-cv" not in page.url):
+        print(f"  [cht-pw] Sin sesion activa ({page.url}) — intentando login...")
+        try:
+            if "chtlogin" not in page.url:
+                page.goto(f"{BASE_URL}/chtlogin", wait_until="domcontentloaded", timeout=20000)
+                page.wait_for_timeout(2000)
+            page.locator("#username").wait_for(state="visible", timeout=10000)
+            page.locator("#username").type(email, delay=80)
+            page.wait_for_timeout(400)
+            page.locator("#password").type(clave, delay=80)
+            page.wait_for_timeout(400)
+            page.locator("xpath=//input[@value='Iniciar Sesión'] | //button[@type='submit']").first.click()
+            page.wait_for_timeout(5000)
+            if "chtlogin" in page.url:
+                print(f"  [cht-pw] ! Login falló — perfil sin completar")
+                return
+            print(f"  [cht-pw] Login OK: {page.url}")
+            # Navegar al editor
+            page.goto(EDITAR_CV, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(2000)
+        except Exception as e:
+            print(f"  [cht-pw] ! Error login: {e}")
+            return
+
+    if "dashboard" not in page.url and "editar-cv" not in page.url:
+        print(f"  [cht-pw] ! No se pudo acceder al dashboard: {page.url}")
+        return
+
+    print(f"  [cht-pw] Perfil: {page.url}")
 
     rut     = str(user.get("RUT") or user.get("rut") or "")
     cel_raw = str(user.get("CELULAR") or user.get("celular") or "")
@@ -541,14 +570,14 @@ def _pw_crear_cuenta_chiletrabajos(user_id: str, user: dict) -> bool:
                 "input[placeholder*='email' i]:visible",
                 email, "email")
 
-            for pwd_loc in page.locator("input[type='password']:visible").all():
+            pwd_locs = page.locator("input[type='password']:visible").all()
+            for pl in pwd_locs:
                 try:
-                    _pw_js_set(page, pwd_loc.element_handle(), clave)
+                    pl.fill(clave)
                 except Exception:
                     pass
-            pwd_count = page.locator("input[type='password']:visible").count()
-            if pwd_count:
-                print(f"  [cht-pw] password: {pwd_count} campo(s)")
+            if pwd_locs:
+                print(f"  [cht-pw] password: {len(pwd_locs)} campo(s)")
 
             page.wait_for_timeout(400)
 
@@ -601,9 +630,9 @@ def _pw_crear_cuenta_chiletrabajos(user_id: str, user: dict) -> bool:
 
             if any(s in content for s in success_signals) or "chtlogin" not in cur:
                 print(f"  [cht-pw] Cuenta creada OK para {user_id} ({email})")
-                # Completar perfil en misma sesion (evita segundo login)
+                # Completar perfil en misma sesion
                 if user:
-                    _pw_perfil_misma_sesion(page, user, user_id)
+                    _pw_perfil_misma_sesion(page, user, user_id, email=email, clave=clave)
                 bq.save_portal_cookies(user_id, PORTAL_ID, ctx.cookies(), email=email, password=clave)
                 browser.close()
                 return True
