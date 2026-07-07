@@ -528,25 +528,23 @@ def _pw_completar_perfil_chiletrabajos(user_id: str, user: dict) -> bool:
             )
             page = ctx.new_page()
 
-            # Login
+            # Login — ChileTrabajos usa id="username" e id="password"
             page.goto(f"{BASE_URL}/chtlogin", wait_until="domcontentloaded", timeout=30000)
             page.wait_for_timeout(2000)
-            for sel, val in [
-                ("input[type='email'], input[name*='email' i], input[name*='usuario' i]", cuenta["email"]),
-                ("input[type='password']", cuenta["password"]),
-            ]:
-                try:
-                    loc = page.locator(sel).first
-                    loc.wait_for(state="visible", timeout=5000)
-                    _pw_js_set(page, loc.element_handle(), val)
-                except Exception:
-                    pass
             try:
-                page.locator("button[type='submit']:visible, input[type='submit']:visible").first.click()
+                page.locator("#username").wait_for(state="visible", timeout=10000)
+                _pw_js_set(page, page.locator("#username").element_handle(), cuenta["email"])
+                _pw_js_set(page, page.locator("#password").element_handle(), cuenta["password"])
+            except Exception as _e:
+                print(f"  [cht-pw-perfil] Error llenando login: {_e}")
+                browser.close()
+                return False
+            try:
+                page.locator("input[value='Iniciar Sesión'], button[type='submit']").first.click()
             except Exception:
                 pass
             page.wait_for_timeout(4000)
-            if "dashboard" not in page.url and "login" in page.url.lower():
+            if "chtlogin" in page.url:
                 print(f"  [cht-pw-perfil] Login falló en {page.url}")
                 browser.close()
                 return False
