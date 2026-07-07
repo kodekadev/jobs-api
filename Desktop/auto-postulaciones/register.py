@@ -60,12 +60,17 @@ def register_user(user: dict) -> dict:
         # ── 1b. Onboarding ChileTrabajos: completar perfil + CV ───────────────
         if portal == "chiletrabajos":
             perfil_ok = False
-            try:
-                from chiletrabajos.completar_perfil import completar_perfil_chiletrabajos
-                print(f"  [{portal}] Completando perfil...")
-                perfil_ok = completar_perfil_chiletrabajos(uid, user)
-            except Exception as e:
-                print(f"  [{portal}] Error completando perfil: {e}")
+            if cuenta_nueva:
+                # El perfil fue completado en la misma sesion de creacion de cuenta
+                perfil_ok = True
+                print(f"  [{portal}] Perfil completado durante creacion de cuenta")
+            else:
+                try:
+                    from chiletrabajos.completar_perfil import completar_perfil_chiletrabajos
+                    print(f"  [{portal}] Completando perfil...")
+                    perfil_ok = completar_perfil_chiletrabajos(uid, user)
+                except Exception as e:
+                    print(f"  [{portal}] Error completando perfil: {e}")
             telegram(
                 f"[PostulAI] Onboarding completado\n"
                 f"{'─' * 22}\n"

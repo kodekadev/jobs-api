@@ -294,6 +294,197 @@ def _pw_fill(page, selector: str, value: str, label: str) -> bool:
         return False
 
 
+def _pw_abrir_sec(page, texto: str):
+    """Abre offcanvas de sección y retorna locator del panel."""
+    try:
+        page.locator(f"button:has-text('{texto[:20]}')").first.click()
+        page.wait_for_timeout(2000)
+        panel = page.locator(".offcanvas.show, .modal.show").first
+        ok = panel.count() > 0
+        print(f"  [cht-pw] Sección '{texto}': {'abierta' if ok else 'sin panel'}")
+        return panel if ok else None
+    except Exception as e:
+        print(f"  [cht-pw] Error abriendo '{texto}': {e}")
+        return None
+
+
+def _pw_guardar_sec(page, panel):
+    if panel is None:
+        return
+    for sel in ["button[type='submit']", "button:has-text('Guardar')", "button:has-text('Actualizar')"]:
+        try:
+            btn = panel.locator(sel).first
+            if btn.count() > 0 and btn.is_visible():
+                print(f"  [cht-pw] Guardado: '{btn.inner_text()[:25]}'")
+                btn.click()
+                page.wait_for_timeout(3000)
+                return
+        except Exception:
+            pass
+
+
+def _pw_fill_sec(page, panel, field_id: str, value: str):
+    if not value or panel is None:
+        return
+    try:
+        el = panel.locator(f"#{field_id}").first
+        el.wait_for(state="visible", timeout=3000)
+        el.fill(value)
+        print(f"  [cht-pw]   {field_id} = '{value[:30]}'")
+    except Exception:
+        pass
+
+
+def _pw_select_sec(panel, field_id: str, value: str, candidates: list | None = None):
+    if not value or panel is None:
+        return
+    for v in ([value] + (candidates or [])):
+        try:
+            panel.locator(f"#{field_id}").select_option(value=v)
+            print(f"  [cht-pw]   {field_id} = {v}")
+            return
+        except Exception:
+            pass
+
+
+def _pw_perfil_misma_sesion(page, user: dict, user_id: str):
+    """Completa secciones del perfil de ChileTrabajos en la sesión activa."""
+    import json as _json, re as _re
+
+    EDITAR_CV = f"{BASE_URL}/dashboard/editar-cv"
+    try:
+        page.goto(EDITAR_CV, wait_until="domcontentloaded", timeout=30000)
+        page.wait_for_timeout(3000)
+        if "dashboard" not in page.url and "editar-cv" not in page.url:
+            print(f"  [cht-pw] ! No se pudo navegar al dashboard: {page.url}")
+            return
+        print(f"  [cht-pw] Perfil: {page.url}")
+    except Exception as e:
+        print(f"  [cht-pw] Error navegando al perfil: {e}")
+        return
+
+    rut     = str(user.get("RUT") or user.get("rut") or "")
+    cel_raw = str(user.get("CELULAR") or user.get("celular") or "")
+    cel     = _re.sub(r"\D", "", cel_raw)[-9:] if cel_raw else ""
+    fn_raw  = str(user.get("FECHA_NACIMIENTO") or user.get("fecha_nacimiento") or "")
+    try:
+        ubs = user.get("UBICACIONES") or user.get("ubicaciones") or []
+        if isinstance(ubs, str):
+            ubs = _json.loads(ubs)
+        ciudad = ubs[0].split(",")[0].strip() if ubs else "Santiago"
+    except Exception:
+        ciudad = "Santiago"
+
+    profesion = str(user.get("PROFESION") or user.get("profesion") or "")
+    resumen   = str(user.get("RESUMEN") or user.get("resumen") or "")
+    exp_raw   = str(user.get("EXPERIENCIA") or user.get("experiencia") or "5")
+    exp_num   = _re.sub(r"[^\d]", "", exp_raw) or "5"
+    nivel     = str(user.get("NIVEL_EDUCATIVO") or user.get("nivel_educativo") or "")
+    pret_raw  = str(user.get("PRETENSION_GENERAL") or user.get("pretension_general") or "")
+    pret_num  = _re.sub(r"[^\d]", "", pret_raw) or ""
+    try:
+        cargos = user.get("CARGOS") or user.get("cargos") or []
+        if isinstance(cargos, str):
+            cargos = _json.loads(cargos)
+        intereses = ", ".join(cargos[:3]) if cargos else ""
+    except Exception:
+        intereses = ""
+    cv_url = str(user.get("CV_URL") or user.get("cv_url") or "")
+
+    # ── Datos Personales ──────────────────────────────────────────────────────
+    panel = _pw_abrir_sec(page, "Datos Personales")
+    if panel:
+        _pw_fill_sec(page, panel, "rut", rut)
+        _pw_fill_sec(page, panel, "cel", cel)
+        _pw_fill_sec(page, panel, "ciu", ciudad)
+        if fn_raw:
+            try:
+                parts = fn_raw.split("-")
+                ano, mes, dia = parts[0], parts[1].zfill(2), parts[2].zfill(2)
+                _pw_select_sec(panel, "day",   dia,  [dia.lstrip("0"), str(int(dia))])
+                _pw_select_sec(panel, "month", mes,  [mes.lstrip("0"), str(int(mes))])
+                _pw_select_sec(panel, "year",  ano,  [])
+            except Exception:
+                pass
+        _pw_guardar_sec(page, panel)
+
+    # ── Educación y experiencia ───────────────────────────────────────────────
+    panel = _pw_abrir_sec(page, "Educación y experiencia")
+    if panel:
+        exp_texto = resumen or f"Profesional con {exp_num} años de experiencia en {profesion}."
+        _pw_fill_sec(page, panel, "exp", exp_texto[:500])
+        carrera = str(user.get("CARRERA") or user.get("carrera") or profesion)
+        _pw_fill_sec(page, panel, "resumen", carrera[:300])
+        # anioexp: mayor valor <= exp_num
+        try:
+            opts = panel.locator("#anioexp option").all()
+            vals = [o.get_attribute("value") for o in opts]
+            target = exp_num if exp_num in vals else next(
+                (v for v in reversed(vals) if v and v.isdigit() and int(v) <= int(exp_num)),
+                vals[-1] if vals else "5"
+            )
+            panel.locator("#anioexp").select_option(value=target)
+            print(f"  [cht-pw]   anioexp = {target}")
+        except Exception:
+            pass
+        if nivel:
+            try:
+                opts = panel.locator("#nivel option").all()
+                match = next(
+                    (o.get_attribute("value") for o in opts
+                     if nivel.upper() in o.inner_text().strip().upper()
+                     or o.inner_text().strip().upper() in nivel.upper()), None
+                )
+                if match:
+                    panel.locator("#nivel").select_option(value=match)
+                    print(f"  [cht-pw]   nivel = {match}")
+            except Exception:
+                pass
+        _pw_guardar_sec(page, panel)
+
+    # ── Disponibilidad ────────────────────────────────────────────────────────
+    panel = _pw_abrir_sec(page, "Disponibilidad y preferencias")
+    if panel:
+        if pret_num:
+            _pw_fill_sec(page, panel, "pretensiones", pret_num)
+        _pw_fill_sec(page, panel, "trabajociu", ciudad)
+        if intereses:
+            _pw_fill_sec(page, panel, "intereses", intereses[:200])
+        _pw_guardar_sec(page, panel)
+
+    # ── CV adjunto ────────────────────────────────────────────────────────────
+    if cv_url:
+        panel = _pw_abrir_sec(page, "Agregar / Editar CV")
+        if panel:
+            try:
+                import tempfile, requests as _req, os as _os
+                tmp_dir  = tempfile.mkdtemp()
+                tmp_path = _os.path.join(tmp_dir, "CV.pdf")
+                if "storage.googleapis.com" in cv_url or cv_url.startswith("gs://"):
+                    from google.cloud import storage as gcs
+                    parts = cv_url.replace("https://storage.googleapis.com/", "").split("/", 1)
+                    gcs.Client().bucket(parts[0]).blob(parts[1]).download_to_filename(tmp_path)
+                else:
+                    r = _req.get(cv_url, timeout=30)
+                    r.raise_for_status()
+                    with open(tmp_path, "wb") as f:
+                        f.write(r.content)
+                print(f"  [cht-pw]   CV descargado ({_os.path.getsize(tmp_path)//1024} KB)")
+                file_loc = panel.locator("input[type='file']").first
+                if file_loc.count() == 0:
+                    file_loc = page.locator("input[type='file']").first
+                page.evaluate("el => { el.style.display='block'; el.style.visibility='visible'; }",
+                              file_loc.element_handle())
+                file_loc.set_input_files(tmp_path)
+                page.wait_for_timeout(3000)
+                print(f"  [cht-pw]   CV enviado")
+                _pw_guardar_sec(page, panel)
+            except Exception as e:
+                print(f"  [cht-pw]   CV error: {e}")
+
+    print(f"  [cht-pw] Perfil completado para {user_id}")
+
+
 def _pw_crear_cuenta_chiletrabajos(user_id: str, user: dict) -> bool:
     try:
         from playwright.sync_api import sync_playwright
@@ -404,13 +595,16 @@ def _pw_crear_cuenta_chiletrabajos(user_id: str, user: dict) -> bool:
 
             if any(s in content for s in error_signals):
                 print(f"  [cht-pw] Email ya registrado — guardando credencial")
-                bq.save_portal_account(user_id, PORTAL_ID, email, clave)
+                bq.save_portal_cookies(user_id, PORTAL_ID, ctx.cookies(), email=email, password=clave)
                 browser.close()
                 return True
 
             if any(s in content for s in success_signals) or "chtlogin" not in cur:
                 print(f"  [cht-pw] Cuenta creada OK para {user_id} ({email})")
-                bq.save_portal_account(user_id, PORTAL_ID, email, clave)
+                # Completar perfil en misma sesion (evita segundo login)
+                if user:
+                    _pw_perfil_misma_sesion(page, user, user_id)
+                bq.save_portal_cookies(user_id, PORTAL_ID, ctx.cookies(), email=email, password=clave)
                 browser.close()
                 return True
 
