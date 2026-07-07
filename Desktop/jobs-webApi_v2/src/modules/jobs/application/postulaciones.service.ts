@@ -43,9 +43,11 @@ export class PostulacionesService {
     const grouped: Record<string, any[]> = {};
 
     for (const r of rows) {
-      const cargo = cargosUsuario.find(
-        (c) => c.toLowerCase() === (r.CARGO || '').toLowerCase(),
-      ) || 'Otros';
+      const rCargo = (r.CARGO || r.titulo_empleo || '').toLowerCase();
+      const cargo = cargosUsuario.find((c) => {
+        const cLow = c.toLowerCase();
+        return cLow === rCargo || rCargo.includes(cLow) || cLow.includes(rCargo);
+      }) || 'Otros';
 
       if (!grouped[cargo]) grouped[cargo] = [];
 

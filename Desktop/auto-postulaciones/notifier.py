@@ -1,4 +1,4 @@
-"""Envía resumen diario al usuario con los empleos encontrados/postulados."""
+"""Envía resumen diario consolidado al usuario (portales + email directo LinkedIn)."""
 
 import os
 import smtplib
@@ -8,6 +8,26 @@ from email.mime.text import MIMEText
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 FROM_DOMAIN    = os.environ.get("FROM_DOMAIN", "jobs.ko-deka.com")
 APP_URL        = os.environ.get("APP_URL", "https://postulai.com")
+
+
+def _get_email_directo_hoy(uid: str) -> list[dict]:
+    """Consulta BigQuery para traer postulaciones de email directo de hoy para este usuario."""
+    try:
+        import bq
+        from google.cloud.bigquery import QueryJobConfig, ScalarQueryParameter
+        query = f"""
+            SELECT titulo_empleo AS titulo, Empresa AS empresa
+            FROM `{bq.PROJECT}.{bq.DATASET}.EMPLEOS`
+            WHERE id_usuario = @uid
+              AND DATE(Fecha_Postulacion, 'America/Santiago') = CURRENT_DATE('America/Santiago')
+              AND STARTS_WITH(COALESCE(Descripcion, ''), '[email_directo]')
+        """
+        cfg  = QueryJobConfig(query_parameters=[ScalarQueryParameter("uid", "STRING", uid)])
+        rows = bq.client.query(query, job_config=cfg).result()
+        return [{"titulo": r.titulo or "", "empresa": r.empresa or ""} for r in rows]
+    except Exception as e:
+        print(f"  ! No se pudo traer email_directo desde BQ: {e}")
+        return []
 
 
 def _send_smtp(from_addr: str, to: str, subject: str, html: str) -> bool:
@@ -34,33 +54,37 @@ def send_summary(user: dict, jobs_found: list[dict], applied: list[dict]) -> Non
 
     nombre = user.get("NOMBRE", "")
     to     = user.get("EMAIL")
+    uid    = user.get("ID_USUARIO") or user.get("id") or ""
 
-    if not applied:
-        return  # Solo notificar cuando realmente se postulo en nombre del usuario
+    # Postulaciones en portales (pasadas por parámetro)
+    portales = applied or []
 
-    applied_count = len(applied)
+    # Postulaciones por email directo (LinkedIn scraper) — consulta BQ
+    email_directo = _get_email_directo_hoy(uid) if uid else []
 
-    rows_applied = "".join(
-        f"<tr>"
-        f"<td style='padding:8px 10px;border-bottom:1px solid #eee;font-weight:500'>{j.get('titulo','')}</td>"
-        f"<td style='padding:8px 10px;border-bottom:1px solid #eee;color:#555'>{j.get('empresa','')}</td>"
-        f"</tr>"
-        for j in applied[:15]
-    )
+    total = len(portales) + len(email_directo)
+    if total == 0:
+        return
 
-    html = f"""
-    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#333">
-      <div style="background:linear-gradient(135deg,#1E6E82,#2A8FA5);padding:32px;text-align:center;border-radius:12px 12px 0 0">
-        <h1 style="color:white;margin:0;font-size:24px">¡Postulamos por ti hoy!</h1>
-        <p style="color:rgba(255,255,255,.85);margin:10px 0 0;font-size:15px">
-          Hola {nombre}, enviamos <strong style="color:white">{applied_count} postulacion{'es' if applied_count != 1 else ''}</strong> en tu nombre
-        </p>
-      </div>
+    def tabla(jobs: list[dict], limit: int = 15) -> str:
+        if not jobs:
+            return "<tr><td colspan='2' style='padding:10px;color:#94a3b8;font-style:italic'>Ninguna hoy</td></tr>"
+        return "".join(
+            f"<tr>"
+            f"<td style='padding:8px 10px;border-bottom:1px solid #eee;font-weight:500'>{j.get('titulo','')[:60]}</td>"
+            f"<td style='padding:8px 10px;border-bottom:1px solid #eee;color:#555'>{j.get('empresa','')[:40]}</td>"
+            f"</tr>"
+            for j in jobs[:limit]
+        )
 
-      <div style="background:#f8fafc;padding:24px;border-radius:0 0 12px 12px;border:1px solid #e2e8f0">
-
-        <div style="background:white;border-radius:10px;padding:20px;border:1px solid #e2e8f0;margin-bottom:20px">
-          <p style="margin:0 0 14px;font-weight:700;font-size:15px;color:#1e293b">Cargos a los que postulamos</p>
+    def seccion(titulo: str, icono: str, jobs: list[dict]) -> str:
+        count = len(jobs)
+        color = "#2A8FA5" if count > 0 else "#94a3b8"
+        return f"""
+        <div style="background:white;border-radius:10px;padding:20px;border:1px solid #e2e8f0;margin-bottom:16px">
+          <p style="margin:0 0 12px;font-weight:700;font-size:15px;color:{color}">
+            {icono} {titulo} <span style="font-weight:400;color:#64748b;font-size:13px">({count})</span>
+          </p>
           <table style="width:100%;border-collapse:collapse">
             <thead>
               <tr style="background:#f1f5f9">
@@ -68,33 +92,43 @@ def send_summary(user: dict, jobs_found: list[dict], applied: list[dict]) -> Non
                 <th style="padding:8px 10px;text-align:left;font-size:12px;color:#64748b;font-weight:600">Empresa</th>
               </tr>
             </thead>
-            <tbody>{rows_applied}</tbody>
+            <tbody>{tabla(jobs)}</tbody>
           </table>
-        </div>
+        </div>"""
+
+    html = f"""
+    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#333">
+      <div style="background:linear-gradient(135deg,#1E6E82,#2A8FA5);padding:32px;text-align:center;border-radius:12px 12px 0 0">
+        <h1 style="color:white;margin:0;font-size:24px">¡Postulamos por ti hoy!</h1>
+        <p style="color:rgba(255,255,255,.85);margin:10px 0 0;font-size:15px">
+          Hola {nombre}, enviamos <strong style="color:white">{total} postulacion{'es' if total != 1 else ''}</strong> en tu nombre
+        </p>
+      </div>
+
+      <div style="background:#f8fafc;padding:24px;border-radius:0 0 12px 12px;border:1px solid #e2e8f0">
+
+        {seccion("Portales (Trabajando.cl / ChileTrabajos)", "🌐", portales)}
+        {seccion("Email directo a empleadores (LinkedIn)", "📧", email_directo)}
 
         <div style="text-align:center;margin:24px 0">
-          <a href="{APP_URL}/mis-postulaciones"
+          <a href="{APP_URL}/dashboard"
              style="background:#2A8FA5;color:white;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:700;font-size:16px;display:inline-block">
-            Revisa tus postulaciones
+            Ver todas mis postulaciones
           </a>
         </div>
 
-        <p style="color:#64748b;font-size:14px;text-align:center;margin:0">
-          Ve en detalle todo lo que postulamos por ti en la plataforma.
-        </p>
-
         <p style="margin-top:20px;font-size:12px;color:#94a3b8;text-align:center">
-          Postulai · <a href="{APP_URL}" style="color:#2A8FA5">{APP_URL}</a>
+          AplicAI · <a href="{APP_URL}" style="color:#2A8FA5">aplicai.cl</a>
         </p>
       </div>
     </div>
     """
 
     from_addr = f"AplicAI <postulaciones@{FROM_DOMAIN}>"
-    subject   = f"✅ Postulamos {applied_count} {'vez' if applied_count == 1 else 'veces'} por ti hoy — revisa tus postulaciones"
+    subject   = f"✅ {total} postulacion{'es' if total != 1 else ''} enviadas hoy — AplicAI"
     try:
         _send_smtp(from_addr, to, subject, html)
-        print(f"  ✓ Resumen enviado a {to}")
+        print(f"  ✓ Resumen consolidado enviado a {to} ({len(portales)} portales + {len(email_directo)} email directo)")
     except Exception as e:
         print(f"  ⚠ Error enviando resumen a {to}: {e}")
 
