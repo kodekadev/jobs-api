@@ -20,6 +20,7 @@ export class PostulaFacilService {
     experiencia: string;
     ubicaciones: string[];
     pretension_general: string;
+    busqueda_activa?: boolean;
     rut?: string;
     fecha_nacimiento?: string;
     empresa?: string;
@@ -32,6 +33,12 @@ export class PostulaFacilService {
     situacion_estudios?: string;
     anio_inicio_estudios?: string;
   }) {
+    // Detectar si el CV cambió para actualizar portales
+    const prev = await this.bq.query<any>(`
+      SELECT CV_URL FROM ${this.bq.t('POSTULA_FACIL')} WHERE ID_USUARIO = @id LIMIT 1
+    `, { id: body.id_usuario }).catch(() => []);
+    const cvCambio = body.cv_url && prev.length && prev[0].CV_URL !== body.cv_url;
+
     await this.bq.query(`
       MERGE ${this.bq.t('POSTULA_FACIL')} T
       USING (SELECT @id AS ID_USUARIO) S
@@ -51,11 +58,12 @@ export class PostulaFacilService {
         CARRERA = COALESCE(NULLIF(@carrera, ''), T.CARRERA),
         SITUACION_ESTUDIOS = COALESCE(NULLIF(@situacion_estudios, ''), T.SITUACION_ESTUDIOS),
         ANIO_INICIO_ESTUDIOS = IF(@anio_inicio_estudios != '', SAFE_CAST(@anio_inicio_estudios AS INT64), T.ANIO_INICIO_ESTUDIOS),
+        BUSQUEDA_ACTIVA = @busqueda_activa,
         FECHA_ACTUALIZACION = CURRENT_TIMESTAMP()
       WHEN NOT MATCHED THEN INSERT
-        (ID_USUARIO, PLAN, PROFESION, RESUMEN, CV_URL, CARGOS, EXPERIENCIA, UBICACIONES, PRETENSION_GENERAL, RUT, FECHA_NACIMIENTO, EMPRESA, ANIO_INICIO, ACTUALMENTE_TRABAJANDO, ANIO_FIN, NIVEL_EDUCATIVO, INSTITUCION, CARRERA, SITUACION_ESTUDIOS, ANIO_INICIO_ESTUDIOS, FECHA_ACTUALIZACION)
+        (ID_USUARIO, PLAN, PROFESION, RESUMEN, CV_URL, CARGOS, EXPERIENCIA, UBICACIONES, PRETENSION_GENERAL, BUSQUEDA_ACTIVA, RUT, FECHA_NACIMIENTO, EMPRESA, ANIO_INICIO, ACTUALMENTE_TRABAJANDO, ANIO_FIN, NIVEL_EDUCATIVO, INSTITUCION, CARRERA, SITUACION_ESTUDIOS, ANIO_INICIO_ESTUDIOS, FECHA_ACTUALIZACION)
       VALUES
-        (@id, @plan, @prof, @resumen, @cv, @cargos, @exp, @ubic, @pretension, @rut, @fn, NULLIF(@empresa, ''), SAFE_CAST(NULLIF(@anio_inicio, '') AS INT64), @actualmente, IF(@actualmente, NULL, SAFE_CAST(NULLIF(@anio_fin, '') AS INT64)), NULLIF(@nivel_educativo, ''), NULLIF(@institucion, ''), NULLIF(@carrera, ''), NULLIF(@situacion_estudios, ''), SAFE_CAST(NULLIF(@anio_inicio_estudios, '') AS INT64), CURRENT_TIMESTAMP())
+        (@id, @plan, @prof, @resumen, @cv, @cargos, @exp, @ubic, @pretension, @busqueda_activa, @rut, @fn, NULLIF(@empresa, ''), SAFE_CAST(NULLIF(@anio_inicio, '') AS INT64), @actualmente, IF(@actualmente, NULL, SAFE_CAST(NULLIF(@anio_fin, '') AS INT64)), NULLIF(@nivel_educativo, ''), NULLIF(@institucion, ''), NULLIF(@carrera, ''), NULLIF(@situacion_estudios, ''), SAFE_CAST(NULLIF(@anio_inicio_estudios, '') AS INT64), CURRENT_TIMESTAMP())
     `, {
       id: body.id_usuario,
       plan: body.plan,
@@ -77,6 +85,7 @@ export class PostulaFacilService {
       carrera: body.carrera || '',
       situacion_estudios: body.situacion_estudios || '',
       anio_inicio_estudios: body.anio_inicio_estudios || '',
+      busqueda_activa: body.busqueda_activa ?? false,
     });
 
     // Send confirmation email once per user (track via correo_guardar_info flag)
@@ -113,6 +122,14 @@ export class PostulaFacilService {
     this.triggerRegisterJob(body.id_usuario).catch((e) =>
       console.error('[postula-facil] register job error:', e.message),
     );
+
+    // Si el CV cambió, actualizar el CV en ChileTrabajos y Trabajando.cl
+    if (cvCambio) {
+      console.log(`[postula-facil] CV cambió para ${body.id_usuario} — disparando update-cv`);
+      this.triggerUpdateCvJob(body.id_usuario).catch((e) =>
+        console.error('[postula-facil] update-cv job error:', e.message),
+      );
+    }
 
     return { success: true };
   }
@@ -177,6 +194,40 @@ export class PostulaFacilService {
     console.log(`[postula-facil] Jenkins job disparado para ${userId}`);
   }
 
+  private async triggerUpdateCvJob(userId: string): Promise<void> {
+    const tokenRes = await fetch(
+      'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token',
+      { headers: { 'Metadata-Flavor': 'Google' } },
+    ).catch(() => null);
+
+    if (tokenRes?.ok) {
+      const { access_token } = await tokenRes.json();
+      const { gcpProjectId: project, gcpRegion: region, autoJobName: job } = env;
+
+      const res = await fetch(
+        `https://run.googleapis.com/v2/projects/${project}/locations/${region}/jobs/${job}:run`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            overrides: {
+              containerOverrides: [{
+                args: ['python', 'main.py', '--update-cv'],
+                env: [{ name: 'SINGLE_USER_ID', value: userId }],
+              }],
+              taskCount: 1,
+            },
+          }),
+        },
+      );
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(`Cloud Run update-cv ${res.status}: ${err.slice(0, 200)}`);
+      }
+      console.log(`[postula-facil] update-cv Cloud Run disparado para ${userId}`);
+    }
+  }
+
   async get(userId: string) {
     const rows = await this.bq.query<any>(`
       SELECT * FROM ${this.bq.t('POSTULA_FACIL')}
@@ -205,6 +256,7 @@ export class PostulaFacilService {
       carrera: r.CARRERA || '',
       situacion_estudios: r.SITUACION_ESTUDIOS || '',
       anio_inicio_estudios: r.ANIO_INICIO_ESTUDIOS ? String(r.ANIO_INICIO_ESTUDIOS) : '',
+      busqueda_activa: r.BUSQUEDA_ACTIVA ?? false,
     };
   }
 
