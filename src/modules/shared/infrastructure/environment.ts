@@ -18,10 +18,11 @@ const env = {
   jenkinsJob: process.env.JENKINS_JOB || 'crear-cuenta-portal',
   jenkinsUser: process.env.JENKINS_USER || '',
   jenkinsToken: process.env.JENKINS_TOKEN || '',
-  fromEmail: process.env.FROM_EMAIL || 'Jobs <contacto@ko-deka.com>',
+  fromEmail: process.env.FROM_EMAIL || 'AplicAI <postulaciones@aplicai.cl>',
   gcsBucketImages: process.env.GCS_BUCKET_IMAGES || 'jobs-profile-images',
   gcsBucketCv: process.env.GCS_BUCKET_CV || 'jobs-profile-cv',
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
+  adminSecret: process.env.ADMIN_SECRET || '',
 };
 
 export default env;

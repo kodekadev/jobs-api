@@ -113,6 +113,12 @@ export class AuthService {
 
     await this.insertTrialPlan(id);
 
+    this.email.send(
+      emailNorm,
+      '¡Bienvenido/a a AplicAI! 🎉',
+      this.email.welcomeHtml(nombre),
+    ).catch((e) => console.error('[loginGoogle] Welcome email error:', e.message));
+
     const newUser = { ID_USUARIO: id, NOMBRE: nombre, EMAIL: emailNorm, PLAN: 'PRO', PLAN_ESTADO: 'TRIAL', AUTO_ACTIVO: false };
     return this.buildResponse(newUser);
   }
@@ -154,6 +160,12 @@ export class AuthService {
     `, { id, nombre: body.nombre, email: emailNorm, celular: body.celular, password: hash, terminos: body.terminos ? 1 : 0 });
 
     await this.insertTrialPlan(id);
+
+    this.email.send(
+      emailNorm,
+      '¡Bienvenido/a a AplicAI! 🎉',
+      this.email.welcomeHtml(body.nombre),
+    ).catch((e) => console.error('[register] Welcome email error:', e.message));
 
     return { success: true };
   }
@@ -329,6 +341,27 @@ export class AuthService {
     } catch (e: any) {
       console.error(`[insertTrialPlan] Error for user ${userId}:`, e.message);
     }
+  }
+
+  async deactivateUser(userId: string) {
+    await this.bq.query(
+      `UPDATE ${this.bq.t('USUARIOS')} SET ACTIVO = FALSE WHERE ID_USUARIO = @id`,
+      { id: userId },
+    );
+    // Invalida el cache del guard para que el bloqueo sea inmediato
+    const { JwtAuthGuard } = await import('../../shared/infrastructure/guards/jwt-auth.guard');
+    JwtAuthGuard.invalidateCache(userId);
+    return { success: true };
+  }
+
+  async reactivateUser(userId: string) {
+    await this.bq.query(
+      `UPDATE ${this.bq.t('USUARIOS')} SET ACTIVO = TRUE WHERE ID_USUARIO = @id`,
+      { id: userId },
+    );
+    const { JwtAuthGuard } = await import('../../shared/infrastructure/guards/jwt-auth.guard');
+    JwtAuthGuard.invalidateCache(userId);
+    return { success: true };
   }
 
   private parseJson(val: any): any[] {

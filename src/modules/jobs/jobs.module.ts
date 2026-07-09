@@ -15,9 +15,10 @@ import { PlanController } from './infrastructure/controllers/plan.controller';
 import { ApplicationsController } from './infrastructure/controllers/applications.controller';
 import { IndeedController } from './infrastructure/controllers/indeed.controller';
 import { AiController } from './infrastructure/controllers/ai.controller';
+import { JwtAuthGuard } from '../shared/infrastructure/guards/jwt-auth.guard';
 
 @Module({
-  providers: [AuthService, ProfileService, PostulaFacilService, PostulacionesService, PlanService, ApplicationsService, IndeedService, AiService],
+  providers: [AuthService, ProfileService, PostulaFacilService, PostulacionesService, PlanService, ApplicationsService, IndeedService, AiService, JwtAuthGuard],
   controllers: [AuthController, ProfileController, PostulaFacilController, PostulacionesController, PlanController, ApplicationsController, IndeedController, AiController],
 })
 export class JobsModule {}

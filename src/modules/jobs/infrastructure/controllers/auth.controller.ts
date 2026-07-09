@@ -1,5 +1,6 @@
-import { Controller, Post, Body, HttpCode } from '@nestjs/common';
+import { Controller, Post, Body, HttpCode, Headers, UnauthorizedException } from '@nestjs/common';
 import { AuthService } from '../../application/auth.service';
+import env from '../../../shared/infrastructure/environment';
 
 @Controller('auth')
 export class AuthController {
@@ -47,5 +48,21 @@ export class AuthController {
   @HttpCode(200)
   changePassword(@Body() body: { id: string; currentPassword: string; newPassword: string }) {
     return this.authService.changePassword(body.id, body.currentPassword, body.newPassword);
+  }
+
+  // ── Admin: desactivar / reactivar cuenta ──────────────────────────────────
+  // Protegido por cabecera x-admin-secret (no expuesto al frontend)
+  @Post('admin/deactivate')
+  @HttpCode(200)
+  deactivate(@Headers('x-admin-secret') secret: string, @Body() body: { userId: string }) {
+    if (!env.adminSecret || secret !== env.adminSecret) throw new UnauthorizedException();
+    return this.authService.deactivateUser(body.userId);
+  }
+
+  @Post('admin/reactivate')
+  @HttpCode(200)
+  reactivate(@Headers('x-admin-secret') secret: string, @Body() body: { userId: string }) {
+    if (!env.adminSecret || secret !== env.adminSecret) throw new UnauthorizedException();
+    return this.authService.reactivateUser(body.userId);
   }
 }
