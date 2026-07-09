@@ -13,15 +13,24 @@ export class PostulacionesService {
 
     const cargosUsuario: string[] = pfRows.length ? this.parseJson(pfRows[0].CARGOS) : [];
 
-    const rows = await this.bq.query<any>(`
-      SELECT
-        CARGO, TITULO_EMPLEO, EMPRESA, DESCRIPCION, LINK, FECHA_POSTULACION
-      FROM ${this.bq.t('EMPLEOS')}
-      WHERE ID_USUARIO = @id
-      ORDER BY FECHA_POSTULACION DESC
-      LIMIT 200
-    `, { id: userId });
+    const [countRows, rows] = await Promise.all([
+      this.bq.query<any>(`
+        SELECT COUNT(*) AS total FROM ${this.bq.t('EMPLEOS')}
+        WHERE ID_USUARIO = @id
+          AND FECHA_POSTULACION >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
+      `, { id: userId }),
+      this.bq.query<any>(`
+        SELECT
+          CARGO, TITULO_EMPLEO, EMPRESA, DESCRIPCION, LINK, FECHA_POSTULACION
+        FROM ${this.bq.t('EMPLEOS')}
+        WHERE ID_USUARIO = @id
+          AND FECHA_POSTULACION >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
+        ORDER BY FECHA_POSTULACION DESC
+        LIMIT 200
+      `, { id: userId }),
+    ]);
 
+    const total = Number(countRows[0]?.total ?? 0);
     const grouped: Record<string, any[]> = {};
 
     for (const r of rows) {
@@ -42,7 +51,7 @@ export class PostulacionesService {
       });
     }
 
-    return { postulaciones: grouped, total: rows.length };
+    return { postulaciones: grouped, total };
   }
 
   async getNotificaciones(userId: string) {
