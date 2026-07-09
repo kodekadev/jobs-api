@@ -67,23 +67,33 @@ export class AuthService {
   }
 
   // ─── GOOGLE LOGIN ─────────────────────────────────────────────────────────
-  async loginGoogle(credential: string) {
-    const client = new OAuth2Client(env.googleClientId);
-    let payload: any;
-    try {
-      const ticket = await client.verifyIdToken({
-        idToken: credential,
-        audience: env.googleClientId,
-      });
-      payload = ticket.getPayload();
-    } catch {
+  async loginGoogle(credential?: string, emailLegacy?: string, nombreLegacy?: string) {
+    let emailNorm: string;
+    let nombre: string;
+
+    if (credential) {
+      // Nuevo flujo: verificar token firmado por Google
+      const client = new OAuth2Client(env.googleClientId);
+      let payload: any;
+      try {
+        const ticket = await client.verifyIdToken({
+          idToken: credential,
+          audience: env.googleClientId,
+        });
+        payload = ticket.getPayload();
+      } catch {
+        throw new UnauthorizedException('Token de Google inválido');
+      }
+      if (!payload?.email) throw new UnauthorizedException('Token de Google inválido');
+      emailNorm = payload.email.trim().toLowerCase();
+      nombre    = payload.name || emailNorm;
+    } else if (emailLegacy) {
+      // Flujo legado (frontend anterior) — acepta email/nombre directo
+      emailNorm = emailLegacy.trim().toLowerCase();
+      nombre    = nombreLegacy || emailNorm;
+    } else {
       throw new UnauthorizedException('Token de Google inválido');
     }
-
-    if (!payload?.email) throw new UnauthorizedException('Token de Google inválido');
-
-    const emailNorm = payload.email.trim().toLowerCase();
-    const nombre    = payload.name || emailNorm;
 
     const existing = await this.bq.query<any>(`
       SELECT

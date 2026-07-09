@@ -14,8 +14,8 @@ export class AuthController {
 
   @Post('google')
   @HttpCode(200)
-  loginGoogle(@Body() body: { credential: string }) {
-    return this.authService.loginGoogle(body.credential);
+  loginGoogle(@Body() body: { credential?: string; email?: string; nombre?: string }) {
+    return this.authService.loginGoogle(body.credential, body.email, body.nombre);
   }
 
   @Post('register')
