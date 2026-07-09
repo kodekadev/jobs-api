@@ -56,45 +56,22 @@ def send_summary(user: dict, jobs_found: list[dict], applied: list[dict]) -> Non
     to     = user.get("EMAIL")
     uid    = user.get("ID_USUARIO") or user.get("id") or ""
 
-    # Postulaciones en portales (pasadas por parámetro)
-    portales = applied or []
-
-    # Postulaciones por email directo (LinkedIn scraper) — consulta BQ
+    portales      = applied or []
     email_directo = _get_email_directo_hoy(uid) if uid else []
 
-    total = len(portales) + len(email_directo)
+    total         = len(portales) + len(email_directo)
     if total == 0:
         return
 
-    def tabla(jobs: list[dict], limit: int = 15) -> str:
-        if not jobs:
-            return "<tr><td colspan='2' style='padding:10px;color:#94a3b8;font-style:italic'>Ninguna hoy</td></tr>"
-        return "".join(
-            f"<tr>"
-            f"<td style='padding:8px 10px;border-bottom:1px solid #eee;font-weight:500'>{j.get('titulo','')[:60]}</td>"
-            f"<td style='padding:8px 10px;border-bottom:1px solid #eee;color:#555'>{j.get('empresa','')[:40]}</td>"
-            f"</tr>"
-            for j in jobs[:limit]
-        )
+    n_portales = len(portales)
+    n_email    = len(email_directo)
 
-    def seccion(titulo: str, icono: str, jobs: list[dict]) -> str:
-        count = len(jobs)
-        color = "#2A8FA5" if count > 0 else "#94a3b8"
-        return f"""
-        <div style="background:white;border-radius:10px;padding:20px;border:1px solid #e2e8f0;margin-bottom:16px">
-          <p style="margin:0 0 12px;font-weight:700;font-size:15px;color:{color}">
-            {icono} {titulo} <span style="font-weight:400;color:#64748b;font-size:13px">({count})</span>
-          </p>
-          <table style="width:100%;border-collapse:collapse">
-            <thead>
-              <tr style="background:#f1f5f9">
-                <th style="padding:8px 10px;text-align:left;font-size:12px;color:#64748b;font-weight:600">Cargo</th>
-                <th style="padding:8px 10px;text-align:left;font-size:12px;color:#64748b;font-weight:600">Empresa</th>
-              </tr>
-            </thead>
-            <tbody>{tabla(jobs)}</tbody>
-          </table>
-        </div>"""
+    detalle_parts = []
+    if n_portales:
+        detalle_parts.append(f"<strong>{n_portales}</strong> en portales (ChileTrabajos / Trabajando.cl)")
+    if n_email:
+        detalle_parts.append(f"<strong>{n_email}</strong> por email directo a empleadores (LinkedIn)")
+    detalle_html = " y ".join(detalle_parts)
 
     html = f"""
     <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#333">
@@ -105,19 +82,24 @@ def send_summary(user: dict, jobs_found: list[dict], applied: list[dict]) -> Non
         </p>
       </div>
 
-      <div style="background:#f8fafc;padding:24px;border-radius:0 0 12px 12px;border:1px solid #e2e8f0">
+      <div style="background:#f8fafc;padding:32px;border-radius:0 0 12px 12px;border:1px solid #e2e8f0;text-align:center">
 
-        {seccion("Portales (Trabajando.cl / ChileTrabajos)", "🌐", portales)}
-        {seccion("Email directo a empleadores (LinkedIn)", "📧", email_directo)}
-
-        <div style="text-align:center;margin:24px 0">
-          <a href="{APP_URL}/dashboard"
-             style="background:#2A8FA5;color:white;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:700;font-size:16px;display:inline-block">
-            Ver todas mis postulaciones
-          </a>
+        <div style="background:white;border-radius:12px;padding:24px;border:1px solid #e2e8f0;margin-bottom:24px">
+          <p style="font-size:48px;font-weight:900;color:#1E6E82;margin:0">{total}</p>
+          <p style="font-size:15px;color:#555;margin:8px 0 0">postulacion{'es enviadas' if total != 1 else ' enviada'} hoy</p>
+          <p style="font-size:13px;color:#94a3b8;margin:10px 0 0">{detalle_html}</p>
         </div>
 
-        <p style="margin-top:20px;font-size:12px;color:#94a3b8;text-align:center">
+        <p style="color:#555;font-size:14px;margin:0 0 24px">
+          Entrá a tu cuenta para ver el detalle completo de cada postulación.
+        </p>
+
+        <a href="{APP_URL}/mis-postulaciones"
+           style="background:#2A8FA5;color:white;padding:14px 36px;border-radius:8px;text-decoration:none;font-weight:700;font-size:16px;display:inline-block">
+          Ver mis postulaciones
+        </a>
+
+        <p style="margin-top:28px;font-size:12px;color:#94a3b8">
           AplicAI · <a href="{APP_URL}" style="color:#2A8FA5">aplicai.cl</a>
         </p>
       </div>
@@ -128,7 +110,7 @@ def send_summary(user: dict, jobs_found: list[dict], applied: list[dict]) -> Non
     subject   = f"✅ {total} postulacion{'es' if total != 1 else ''} enviadas hoy — AplicAI"
     try:
         _send_smtp(from_addr, to, subject, html)
-        print(f"  ✓ Resumen consolidado enviado a {to} ({len(portales)} portales + {len(email_directo)} email directo)")
+        print(f"  ✓ Resumen enviado a {to} ({n_portales} portales + {n_email} email directo)")
     except Exception as e:
         print(f"  ⚠ Error enviando resumen a {to}: {e}")
 

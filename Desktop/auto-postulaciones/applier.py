@@ -721,12 +721,12 @@ def _answer_common_questions(page, user: dict) -> None:
 
 def apply_via_form(user: dict, job: dict, credentials: dict | None = None,
                    trabajando_driver=None, trabajando_page=None,
-                   chiletrabajos_driver=None,
+                   chiletrabajos_driver=None, chiletrabajos_page=None,
                    linkedin_cookies: list | None = None) -> "dict | bool":
     """
     Intenta postular al empleo usando el formulario del portal.
     Para Trabajando.cl usa Playwright (page) si está disponible, Selenium como fallback.
-    Para otros portales usa Playwright.
+    Para ChileTrabajos usa Playwright (page) si está disponible.
     """
     from portal_accounts import apply_trabajando_selenium, apply_trabajando_playwright
 
@@ -753,25 +753,23 @@ def apply_via_form(user: dict, job: dict, credentials: dict | None = None,
             ok = apply_computrabajo(user, url)
 
         elif "chiletrabajos" in url or fuente == "chiletrabajos":
-            if chiletrabajos_driver:
-                from chiletrabajos.postular import _postular_empleo
-                ok = _postular_empleo(chiletrabajos_driver, url, user, job.get("titulo", ""))
+            if chiletrabajos_page:
+                from chiletrabajos.postular import _postular_empleo_pw
+                ok = _postular_empleo_pw(chiletrabajos_page, url, user, job.get("titulo", ""))
             else:
                 ok = apply_chiletrabajos(user, url)
 
         elif fuente == "linkedin" or "linkedin.com" in url:
             ok = apply_linkedin(user, url, direct_url=direct_url, cookies=linkedin_cookies)
 
-        elif fuente == "indeed" or "indeed.com" in url:
-            ok = apply_indeed(user, url)
-
         else:
             print(f"  ⚠ Fuente sin handler de postulación: [{fuente}] {job.get('titulo', '')[:50]}")
             return False
 
-        if ok:
+        success = ok.get("ok", False) if isinstance(ok, dict) else bool(ok)
+        if success:
             print(f"  ✓ Postulado [{fuente}] → {job.get('titulo', '')[:50]}")
-        return ok
+        return ok if isinstance(ok, dict) else success
 
     except Exception as e:
         print(f"  ⚠ apply_via_form [{fuente}]: {e}")

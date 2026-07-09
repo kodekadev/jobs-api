@@ -1,91 +1,95 @@
 """
-ChileTrabajos — Postulaciones automáticas.
+ChileTrabajos — Postulaciones automáticas con Playwright.
 
-Flujo por usuario:
-  1. Login con cookies (BigQuery) o formulario
-  2. Por cada cargo + ubicación: busca empleos en /encuentra-un-empleo
-  3. Por cada empleo: click Postular → responder preguntas → enviar
-  4. Guarda cada empleo en BigQuery EMPLEOS
-
-Uso:
-    from chiletrabajos.postular import postular_empleos_cht
-    count = postular_empleos_cht(user_id="jobs2", user=perfil_dict)
+Flujo:
+  1. Obtiene sesión Playwright desde cookies guardadas en BigQuery
+  2. Busca empleos en /encuentra-un-empleo por cargo y ubicación
+  3. Por cada empleo: navega, click Postular, responde preguntas, envía
+  4. Guarda cada postulación en BigQuery EMPLEOS
 """
 import os
 import sys
 import re
 import time
 import json
-
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.keys import Keys
+import unicodedata
+import datetime
 
 _ROOT = os.path.dirname(os.path.dirname(__file__))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 import bq
-from portal_accounts import _standard_answer, _llm_answer_questions, _extract_cv_text, _save_answers_to_cache
-from chiletrabajos.login import make_driver, _do_login
+from portal_accounts import (
+    get_chiletrabajos_pw_session,
+    close_chiletrabajos_pw_session,
+    _standard_answer,
+    _llm_answer_questions,
+    _extract_cv_text,
+    _save_answers_to_cache,
+)
 
 BASE_URL  = "https://www.chiletrabajos.cl"
 PORTAL_ID = "chiletrabajos"
 
+_NUMERIC_KWS = {"PRETENSION", "SUELDO", "RENTA", "SALARIO", "ANOS DE EXP",
+                "AÑOS DE EXP", "EXPERIENCIA", "CUANTOS ANOS"}
+
 
 def _norm(texto: str) -> str:
-    import unicodedata
-    t = (texto or "").upper().strip().replace("?","").replace("¿","")
+    t = (texto or "").upper().strip().replace("?", "").replace("¿", "")
     nfkd = unicodedata.normalize("NFKD", t)
     return unicodedata.normalize("NFKC", nfkd.translate({0x0301: None, 0x0308: None}))
 
 
-def _get_label(driver: webdriver.Chrome, el) -> str:
-    """Extrae el texto de la pregunta más cercana al elemento."""
-    try:
-        return driver.execute_script("""
-            var el = arguments[0];
-            function isGeneric(t) {
-                return /^(pregunta|question|respuesta|answer|campo|field)\\s*\\d*$/i.test(t.trim());
+_GET_LABEL_JS = """(el) => {
+    function isGeneric(t) {
+        return /^(pregunta|question|respuesta|answer|campo|field)\\s*\\d*$/i.test(t.trim());
+    }
+    var al = el.getAttribute('aria-label');
+    if (al && al.trim().length > 3 && !isGeneric(al)) return al.trim();
+    if (el.id) {
+        var lbl = document.querySelector('label[for="' + el.id + '"]');
+        if (lbl && lbl.innerText && lbl.innerText.trim().length > 3) return lbl.innerText.trim();
+    }
+    var node = el.parentElement;
+    for (var i = 0; i < 10; i++) {
+        if (!node) break;
+        for (var j = 0; j < node.childNodes.length; j++) {
+            var c = node.childNodes[j];
+            var tag = (c.tagName || '').toUpperCase();
+            if (['P','LABEL','SPAN','H3','H4','H5','STRONG','B','LI'].indexOf(tag) >= 0) {
+                var txt = (c.innerText || c.textContent || '').trim();
+                if (txt.length > 5 && !c.contains(el) && !isGeneric(txt)) return txt;
             }
-            var al = el.getAttribute('aria-label');
-            if (al && al.trim().length > 3 && !isGeneric(al)) return al.trim();
-            if (el.id) {
-                var lbl = document.querySelector('label[for="' + el.id + '"]');
-                if (lbl && lbl.innerText && lbl.innerText.trim().length > 3) return lbl.innerText.trim();
+            if (c.nodeType === 3) {
+                var t3 = c.textContent.trim();
+                if (t3.length > 5 && !isGeneric(t3)) return t3;
             }
-            var node = el.parentElement;
-            for (var i = 0; i < 10; i++) {
-                if (!node) break;
-                for (var j = 0; j < node.childNodes.length; j++) {
-                    var c = node.childNodes[j];
-                    var tag = (c.tagName || '').toUpperCase();
-                    if (['P','LABEL','SPAN','H3','H4','H5','STRONG','B','LI'].indexOf(tag) >= 0) {
-                        var txt = (c.innerText || c.textContent || '').trim();
-                        if (txt.length > 5 && !c.contains(el) && !isGeneric(txt)) return txt;
-                    }
-                    if (c.nodeType === 3) {
-                        var t3 = c.textContent.trim();
-                        if (t3.length > 5 && !isGeneric(t3)) return t3;
-                    }
-                }
-                node = node.parentElement;
-            }
-            var ph = el.getAttribute('placeholder');
-            if (ph && ph.trim().length > 10 && !isGeneric(ph)) return ph.trim();
-            return '';
-        """, el)
-    except Exception:
-        return ""
+        }
+        node = node.parentElement;
+    }
+    var ph = el.getAttribute('placeholder');
+    if (ph && ph.trim().length > 10 && !isGeneric(ph)) return ph.trim();
+    return '';
+}"""
+
+_SET_VALUE_JS = """(el, v) => {
+    var tag = el.tagName;
+    var proto = (tag === 'TEXTAREA')
+        ? window.HTMLTextAreaElement.prototype
+        : window.HTMLInputElement.prototype;
+    var s = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (s) s.set.call(el, v);
+    el.dispatchEvent(new Event('input', {bubbles: true}));
+    el.dispatchEvent(new Event('change', {bubbles: true}));
+    el.dispatchEvent(new FocusEvent('blur', {bubbles: true}));
+}"""
 
 
-def _responder_preguntas_cht(driver: webdriver.Chrome, user: dict, job_title: str = ""):
-    """Responde el formulario de preguntas del modal de postulación."""
+def _responder_preguntas_cht_pw(page, user: dict, job_title: str = "") -> None:
+    """Responde formulario de preguntas de postulación en ChileTrabajos."""
     _EXCL = {"hidden", "radio", "checkbox", "submit", "button", "file", "image", "reset"}
-    _NUMERIC_KWS = {"PRETENSION", "SUELDO", "RENTA", "SALARIO", "ANOS DE EXP", "AÑOS DE EXP",
-                    "EXPERIENCIA", "CUANTOS ANOS"}
 
     def _is_numeric(item: dict) -> bool:
         if item.get("type") == "number":
@@ -95,41 +99,43 @@ def _responder_preguntas_cht(driver: webdriver.Chrome, user: dict, job_title: st
         lbl = _norm((item.get("label") or "") + " " + (item.get("placeholder") or ""))
         return any(k in lbl for k in _NUMERIC_KWS)
 
-    # --- Radios: siempre seleccionar "Sí" ---
-    radios = [r for r in driver.find_elements(By.CSS_SELECTOR, "input[type='radio']")
-              if r.is_displayed()]
+    # ── Radios: preferir "Sí" ─────────────────────────────────────────────────
+    radios = page.locator("input[type='radio']:visible").all()
     grupos: dict = {}
     for r in radios:
-        name = r.get_attribute("name") or r.get_attribute("id") or str(id(r))
-        grupos.setdefault(name, []).append(r)
+        try:
+            name = r.get_attribute("name") or r.get_attribute("id") or str(id(r))
+            grupos.setdefault(name, []).append(r)
+        except Exception:
+            pass
 
     for name, grupo in grupos.items():
         try:
             elegido = grupo[0]
             for r in grupo:
-                lbl = _norm(_get_label(driver, r) or r.get_attribute("value") or "")
-                if any(k in lbl for k in ("SI", "YES", "SÍ", "TRUE")):
-                    elegido = r
-                    break
-            driver.execute_script(
-                "arguments[0].checked=true;"
-                "arguments[0].dispatchEvent(new Event('change',{bubbles:true}));",
-                elegido
+                try:
+                    lbl = _norm(r.evaluate(_GET_LABEL_JS) or r.get_attribute("value") or "")
+                    if any(k in lbl for k in ("SI", "YES", "SÍ", "TRUE")):
+                        elegido = r
+                        break
+                except Exception:
+                    pass
+            elegido.evaluate(
+                "(el) => { el.checked=true; el.dispatchEvent(new Event('change',{bubbles:true})); }"
             )
         except Exception:
             pass
 
-    # --- Inputs y textareas ---
+    # ── Inputs y textareas vacíos ─────────────────────────────────────────────
     pending = []
-    for inp in driver.find_elements(By.TAG_NAME, "input"):
+    for inp in page.locator("input:visible").all():
         try:
             inp_type = (inp.get_attribute("type") or "text").lower()
-            if (inp.is_displayed() and not inp.get_attribute("disabled")
-                    and inp_type not in _EXCL
-                    and not (inp.get_attribute("value") or "").strip()):
+            if (not inp.is_disabled() and inp_type not in _EXCL
+                    and not (inp.input_value() or "").strip()):
                 pending.append({
                     "el": inp, "kind": "input",
-                    "label": _get_label(driver, inp),
+                    "label": inp.evaluate(_GET_LABEL_JS),
                     "type": inp_type,
                     "inputmode": (inp.get_attribute("inputmode") or "").lower(),
                     "placeholder": inp.get_attribute("placeholder") or "",
@@ -137,26 +143,25 @@ def _responder_preguntas_cht(driver: webdriver.Chrome, user: dict, job_title: st
         except Exception:
             pass
 
-    for ta in driver.find_elements(By.TAG_NAME, "textarea"):
+    for ta in page.locator("textarea:visible").all():
         try:
-            if ta.is_displayed() and not (ta.get_attribute("value") or "").strip():
+            if not (ta.input_value() or "").strip():
                 pending.append({
                     "el": ta, "kind": "textarea",
-                    "label": _get_label(driver, ta),
+                    "label": ta.evaluate(_GET_LABEL_JS),
                     "type": "textarea", "inputmode": "",
                     "placeholder": ta.get_attribute("placeholder") or "",
                 })
         except Exception:
             pass
 
-    # Paso 1: respuesta desde perfil
+    # ── Respuestas del perfil + Claude ────────────────────────────────────────
     answers: dict = {}
     for idx, item in enumerate(pending):
         resp = _standard_answer(item, user)
         if resp is not None:
             answers[idx] = (resp, "perfil")
 
-    # Paso 2: Claude para las sin respuesta
     sin_resp = [item for idx, item in enumerate(pending) if idx not in answers]
     if sin_resp:
         cv_url  = user.get("cv_url") or ""
@@ -169,10 +174,10 @@ def _responder_preguntas_cht(driver: webdriver.Chrome, user: dict, job_title: st
             if resp:
                 answers[gi] = (resp, "Claude")
 
-    # Paso 3: escribir respuestas
     def _fallback(it: dict) -> str:
         if _is_numeric(it):
-            return re.sub(r"[^\d]", "", str(user.get("pretension_general") or "")) or str(user.get("experiencia") or "5")
+            return re.sub(r"[^\d]", "", str(user.get("pretension_general") or "")) \
+                   or str(user.get("experiencia") or "5")
         if it.get("type") == "textarea":
             rv = str(user.get("resumen") or "")
             return rv[:400] if rv else f"Profesional con {user.get('experiencia','5')} años de experiencia."
@@ -181,132 +186,151 @@ def _responder_preguntas_cht(driver: webdriver.Chrome, user: dict, job_title: st
     for idx, item in enumerate(pending):
         try:
             el   = item["el"]
-            kind = item["kind"]
             resp, source = answers.get(idx, (_fallback(item), "fallback"))
             if _is_numeric(item):
                 resp = re.sub(r"[^\d]", "", resp) or resp
-
             print(f"    [preg/{source}] [{idx}] '{(item['label'] or item['type'])[:40]}' -> '{resp[:40]}'")
-
-            proto = "window.HTMLTextAreaElement.prototype" if kind == "textarea" else "window.HTMLInputElement.prototype"
-            driver.execute_script(f"""
-                var el=arguments[0], v=arguments[1];
-                var s=Object.getOwnPropertyDescriptor({proto},'value');
-                if(s) s.set.call(el,v);
-                el.dispatchEvent(new Event('input',{{bubbles:true}}));
-                el.dispatchEvent(new Event('change',{{bubbles:true}}));
-                el.dispatchEvent(new FocusEvent('blur',{{bubbles:true}}));
-            """, el, resp)
+            el.evaluate(_SET_VALUE_JS, resp)
         except Exception:
             pass
 
-    print(f"    [cht] Preguntas respondidas: {len(grupos)} radios, {len(pending)} inputs")
+    print(f"    [cht] Preguntas: {len(grupos)} radios, {len(pending)} inputs")
 
 
-# ── postular a un empleo ──────────────────────────────────────────────────────
-
-def _click_fresh(driver: webdriver.Chrome, xpaths: list, label: str = "") -> str:
-    """Re-busca y clickea el primer elemento visible. Evita StaleElementReferenceException."""
-    for xp in xpaths:
+def _extraer_descripcion_cht(page) -> str:
+    """Extrae el texto de descripción del empleo desde la página de detalle."""
+    for sel in [
+        "[class*='descripcion-oferta']", "[class*='descripcion-empleo']",
+        "#descripcion", "[class*='descripcion']", ".detalle-oferta",
+        "#detalle-oferta", ".job-description",
+    ]:
         try:
-            els = driver.find_elements(By.XPATH, xp)
-            for el in els:
-                try:
-                    if el.is_displayed():
-                        txt = ""
-                        try:
-                            txt = el.text.strip()[:40] or el.get_attribute("value") or ""
-                        except Exception:
-                            pass
-                        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                        driver.execute_script("arguments[0].click();", el)
-                        print(f"    [cht] {label}: '{txt}'")
-                        return txt
-                except Exception:
-                    continue
+            el = page.locator(sel).first
+            if el.count() and el.is_visible():
+                txt = el.inner_text().strip()
+                if len(txt) > 50:
+                    return txt[:5000]
         except Exception:
             continue
     return ""
 
 
-def _postular_empleo(driver: webdriver.Chrome, job_url: str, user: dict, titulo: str) -> bool:
-    """Navega al empleo y postula. Retorna True si fue exitoso."""
-    wait = WebDriverWait(driver, 10)
+def _postular_empleo_pw(page, job_url: str, user: dict, titulo: str) -> "dict | bool":
+    """Navega al empleo y postula vía Playwright. Retorna dict con ok y descripcion, o False."""
     try:
-        driver.get(job_url)
-        time.sleep(4)
+        page.goto(job_url, wait_until="domcontentloaded", timeout=20000)
+        page.wait_for_timeout(3000)
 
-        # Verificar si ya postulé o redirigió a login
-        cur = driver.current_url
-        if "chtlogin" in cur or "/login" in cur:
-            print(f"    [cht] Redirigido a login — re-logueando")
+        if "chtlogin" in page.url:
+            print(f"    [cht] Redirigido a login — sesión expirada")
             return False
 
-        content = driver.page_source.lower()
+        content = page.content().lower()
         if any(s in content for s in ["ya postulaste", "ya te postulaste", "postulado anteriormente"]):
-            print(f"    [cht] Ya postulado anteriormente")
+            print(f"    [cht] Ya postulado")
             return False
 
-        # Click en "Postular" — re-busca fresh para evitar stale
-        txt = _click_fresh(driver, [
-            "//a[contains(translate(.,'POSTULAR','postular'),'postular') and not(contains(.,'de nuevo'))]",
-            "//*[@id='detalle-oferta']//a[contains(@href,'postular')]",
-            "//*[@id='detalle-oferta']//a[2]",
-            "//a[contains(@href,'postular')]",
-        ], label="Click postular")
+        descripcion = _extraer_descripcion_cht(page)
 
-        if not txt:
+        # Click "Postular"
+        postular_selectors = [
+            "xpath=//a[contains(translate(.,'POSTULAR','postular'),'postular') and not(contains(.,'de nuevo'))]",
+            "xpath=//*[@id='detalle-oferta']//a[contains(@href,'postular')]",
+            "xpath=//a[contains(@href,'postular')]",
+        ]
+        clicked = False
+        for sel in postular_selectors:
+            for el in page.locator(sel).all():
+                try:
+                    if el.is_visible():
+                        txt = ""
+                        try:
+                            txt = el.inner_text()[:40]
+                        except Exception:
+                            pass
+                        el.click()
+                        print(f"    [cht] Click postular: '{txt}'")
+                        clicked = True
+                        break
+                except Exception:
+                    continue
+            if clicked:
+                break
+
+        if not clicked:
             print(f"    [cht] Sin botón postular en {job_url[:60]}")
             return False
 
-        time.sleep(3)
-        if "chtlogin" in driver.current_url:
-            print(f"    [cht] Redirigido a login tras click — sesión expirada")
+        page.wait_for_timeout(3000)
+        if "chtlogin" in page.url:
+            print(f"    [cht] Redirigido a login tras click")
             return False
 
-        # Formulario de preguntas (re-buscar fresh)
-        forms = driver.find_elements(By.XPATH,
-            "//form[contains(@id,'postular')] | //form[.//input[@class[contains(.,'enviar-postulacion')]]]"
-        )
-        if any(f.is_displayed() for f in forms):
-            _responder_preguntas_cht(driver, user, job_title=titulo)
-            time.sleep(1)
+        # Update description after the detail page fully loads (post-click may have more content)
+        if not descripcion:
+            descripcion = _extraer_descripcion_cht(page)
 
-        # Submit — re-busca fresh
-        enviado = _click_fresh(driver, [
-            "//input[contains(@class,'enviar-postulacion')]",
-            "//input[@value='Enviar postulación']",
-            "//input[@value='Enviar postulacion']",
-            "//button[contains(translate(.,'ENVIAR','enviar'),'enviar') and not(@disabled)]",
-            "//input[@type='submit' and not(@disabled)]",
-            "//button[@type='submit' and not(@disabled)]",
-        ], label="Submit")
+        # Formulario de preguntas
+        form_loc = page.locator(
+            "form[id*='postular'], form:has(input.enviar-postulacion)"
+        )
+        if form_loc.count() > 0:
+            try:
+                if form_loc.first.is_visible():
+                    _responder_preguntas_cht_pw(page, user, job_title=titulo)
+                    page.wait_for_timeout(1000)
+            except Exception:
+                pass
+
+        # Submit
+        submit_selectors = [
+            "xpath=//input[contains(@class,'enviar-postulacion')]",
+            "xpath=//input[@value='Enviar postulación']",
+            "xpath=//input[@value='Enviar postulacion']",
+            "xpath=//button[contains(translate(.,'ENVIAR','enviar'),'enviar') and not(@disabled)]",
+            "xpath=//input[@type='submit' and not(@disabled)]",
+            "xpath=//button[@type='submit' and not(@disabled)]",
+        ]
+        enviado = ""
+        for sel in submit_selectors:
+            for el in page.locator(sel).all():
+                try:
+                    if el.is_visible():
+                        try:
+                            enviado = el.get_attribute("value") or el.inner_text() or "submit"
+                        except Exception:
+                            enviado = "submit"
+                        el.click()
+                        print(f"    [cht] Submit: '{enviado[:30]}'")
+                        break
+                except Exception:
+                    continue
+            if enviado:
+                break
 
         if not enviado:
             print(f"    [cht] Sin botón submit")
             return False
 
-        time.sleep(4)
-
-        content = driver.page_source.lower()
+        page.wait_for_timeout(4000)
+        content = page.content().lower()
         confirmed = any(s in content for s in [
             "postulación enviada", "postulacion enviada", "gracias por postular",
             "aplicación enviada", "te has postulado", "exitoso", "hemos recibido",
         ])
-        # Error explícito del sitio
         error = any(s in content for s in [
             "ha ocurrido un error", "error al postular", "no pudimos", "inténtalo de nuevo",
         ])
-        ok = confirmed or (not error)  # si no hay error visible, asumir éxito
+        ok = confirmed or (not error)
         print(f"    [cht] {'OK Postulado' if confirmed else ('Error en envio' if error else 'Enviado sin confirmar')}")
-        return ok
+        if not ok:
+            return False
+        return {"ok": True, "descripcion": descripcion}
 
     except Exception as e:
         print(f"    [cht] Error postular: {e}")
         return False
 
-
-# ── función principal ─────────────────────────────────────────────────────────
 
 def postular_empleos_cht(user_id: str, user: dict) -> int:
     """
@@ -314,7 +338,7 @@ def postular_empleos_cht(user_id: str, user: dict) -> int:
 
     Args:
         user_id : ID del usuario en BigQuery
-        user    : dict con datos de PostulaFacil (cargos, ubicaciones, pretension, cv_url, etc.)
+        user    : dict con datos del perfil (cargos, ubicaciones, pretension, cv_url, etc.)
 
     Returns:
         Número de postulaciones guardadas.
@@ -327,7 +351,6 @@ def postular_empleos_cht(user_id: str, user: dict) -> int:
     email    = cuenta["email"]
     password = cuenta["password"]
 
-    # Parsear cargos y ubicaciones (BigQuery devuelve en mayúsculas)
     cargos = user.get("CARGOS") or user.get("cargos") or []
     if isinstance(cargos, str):
         try:
@@ -342,82 +365,78 @@ def postular_empleos_cht(user_id: str, user: dict) -> int:
         except Exception:
             ubicaciones = [ubicaciones]
 
-    driver = None
-    count  = 0
+    page = get_chiletrabajos_pw_session(user_id, email, password)
+    if not page:
+        print(f"[cht] Sin sesión Playwright para {user_id} — cookies expiradas o faltantes")
+        return 0
 
+    count = 0
     try:
-        driver = make_driver()
-
-        # Login con email/password (las cookies solo dan acceso de lectura,
-        # no son suficientes para postular)
-        logged = _do_login(driver, email, password)
-        if not logged:
-            print(f"[cht] Login fallido para {user_id}")
-            driver.quit()
-            return 0
-
-        bq.save_portal_cookies(user_id, PORTAL_ID, driver.get_cookies())
         print(f"[cht] Iniciando postulaciones para {user_id}")
-
         applied_ids = bq.get_applied_job_ids(user_id)
 
         for cargo in cargos:
             for ubicacion in ubicaciones:
                 print(f"[cht] Buscando: '{cargo}' en '{ubicacion}'")
 
-                # Buscar empleos
-                driver.get(f"{BASE_URL}/encuentra-un-empleo")
-                time.sleep(3)
+                page.goto(f"{BASE_URL}/encuentra-un-empleo", wait_until="domcontentloaded")
+                page.wait_for_timeout(3000)
+
+                # Campo de búsqueda
                 try:
-                    inp_trabajo = WebDriverWait(driver, 8).until(
-                        EC.presence_of_element_located((By.ID, "trabajo"))
-                    )
-                    inp_trabajo.clear()
-                    inp_trabajo.send_keys(cargo)
+                    page.wait_for_selector("#trabajo", timeout=8000)
+                    page.fill("#trabajo", cargo)
                 except Exception:
                     print(f"[cht] ! Sin campo de búsqueda")
                     continue
 
                 # Seleccionar región
                 try:
-                    sel = driver.find_element(
-                        By.XPATH,
-                        "//select[.//option[contains(translate(.,'SANTIAGO','santiago'),'santiago')]]"
-                    )
-                    from selenium.webdriver.support.ui import Select as _Sel
-                    opts = _Sel(sel).options
-                    for opt in opts:
-                        if ubicacion.lower() in opt.text.lower():
-                            opt.click()
-                            break
+                    selects = page.locator("select").all()
+                    for sel in selects:
+                        opts = sel.locator("option").all()
+                        for opt in opts:
+                            opt_text = ""
+                            try:
+                                opt_text = opt.inner_text() or ""
+                            except Exception:
+                                pass
+                            if ubicacion.lower() in opt_text.lower():
+                                sel.select_option(label=opt_text.strip())
+                                break
                 except Exception:
                     pass
 
                 # Submit búsqueda
                 try:
-                    driver.find_element(By.XPATH, "//button[@type='submit'] | //input[@type='submit']").click()
-                    time.sleep(4)
+                    page.locator(
+                        "button[type='submit'], input[type='submit']"
+                    ).first.click()
+                    page.wait_for_timeout(4000)
                 except Exception:
                     pass
 
-                # Recopilar links — solo URLs de empleo reales (con /trabajo/ o id numérico)
-                jobs = []
-                seen = set()
-                for a in driver.find_elements(By.CSS_SELECTOR,
-                    "h2 a, h3 a, .job-item h2 a, .job-item h3 a, "
-                    "a.font-weight-bold, a[href*='/trabajo/'], a[href*='/empleo/']"
-                ):
-                    try:
-                        href  = a.get_attribute("href") or ""
-                        title = a.text.strip()
-                        if (href and title and href not in seen
-                                and any(k in href for k in ["/trabajo/", "/empleo/"])
-                                and not any(k in href for k in ["/ciudad/", "/empresa/", "/encuentra-", "/categoria/"])
-                                and len(title) > 5):
-                            jobs.append({"titulo": title, "link": href})
-                            seen.add(href)
-                    except Exception:
-                        continue
+                # Recopilar links de empleos
+                jobs: list = []
+                seen: set = set()
+                for sel_css in [
+                    "h2 a", "h3 a", ".job-item h2 a", ".job-item h3 a",
+                    "a.font-weight-bold", "a[href*='/trabajo/']", "a[href*='/empleo/']",
+                ]:
+                    for a in page.locator(sel_css).all():
+                        try:
+                            href  = a.get_attribute("href") or ""
+                            title = a.inner_text().strip()
+                            if (href and title and href not in seen
+                                    and any(k in href for k in ["/trabajo/", "/empleo/"])
+                                    and not any(k in href for k in [
+                                        "/ciudad/", "/empresa/", "/encuentra-", "/categoria/"
+                                    ])
+                                    and len(title) > 5):
+                                jobs.append({"titulo": title, "link": href})
+                                seen.add(href)
+                        except Exception:
+                            continue
 
                 print(f"[cht] Empleos encontrados: {len(jobs)}")
 
@@ -428,7 +447,7 @@ def postular_empleos_cht(user_id: str, user: dict) -> int:
                         continue
 
                     print(f"[cht] {j+1}/{len(jobs)} {job['titulo'][:50]}")
-                    ok = _postular_empleo(driver, job["link"], user, job["titulo"])
+                    ok = _postular_empleo_pw(page, job["link"], user, job["titulo"])
 
                     if ok:
                         bq.save_jobs([{
@@ -436,7 +455,7 @@ def postular_empleos_cht(user_id: str, user: dict) -> int:
                             "id_usuario":        user_id,
                             "titulo_empleo":     job["titulo"],
                             "cargo":             cargo,
-                            "Fecha_Postulacion": __import__("datetime").datetime.utcnow().isoformat(),
+                            "Fecha_Postulacion": datetime.datetime.utcnow().isoformat(),
                             "empresa":           "",
                             "link":              job["link"],
                             "portal":            PORTAL_ID,
@@ -445,12 +464,9 @@ def postular_empleos_cht(user_id: str, user: dict) -> int:
                         count += 1
                         print(f"[cht] Guardado ({count})")
                     else:
-                        # Volver a búsqueda si el driver quedó en otro lugar
                         try:
-                            driver.back()
-                            time.sleep(2)
-                            driver.back()
-                            time.sleep(1)
+                            page.go_back()
+                            page.wait_for_timeout(2000)
                         except Exception:
                             pass
 
@@ -459,27 +475,19 @@ def postular_empleos_cht(user_id: str, user: dict) -> int:
         print(f"[cht] Error general: {e}")
         traceback.print_exc()
     finally:
-        if driver:
-            try:
-                driver.quit()
-            except Exception:
-                pass
+        close_chiletrabajos_pw_session(user_id)
 
     print(f"[cht] Finalizado {user_id} — {count} postulaciones")
     return count
 
 
 if __name__ == "__main__":
-    import os, sys
-    _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    sys.path.insert(0, _ROOT)
     os.environ.setdefault(
         "GOOGLE_APPLICATION_CREDENTIALS",
         r"C:\Users\bastian\Desktop\Script_Python\jobs-425301-ba25295bbbd0.json",
     )
     from dotenv import load_dotenv
     load_dotenv(os.path.join(_ROOT, ".env"))
-    import bq
     users = bq.get_active_users()
     for u in users:
         postular_empleos_cht(u["ID_USUARIO"], u)

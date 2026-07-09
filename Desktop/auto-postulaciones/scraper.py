@@ -74,11 +74,10 @@ def _scrape_jobspy(cargo: str, ubicacion: str, n: int) -> list[dict]:
     jobs = []
     try:
         df = scrape_jobs(
-            site_name=["linkedin", "indeed"],
+            site_name=["linkedin"],
             search_term=cargo,
             location=f"{ubicacion}, Chile",
             results_wanted=n,
-            country_indeed="Chile",
             linkedin_fetch_description=True,
             hours_old=48,
         )
@@ -98,6 +97,129 @@ def _scrape_jobspy(cargo: str, ubicacion: str, n: int) -> list[dict]:
     except Exception as e:
         print(f"  ⚠ jobspy '{cargo}' en '{ubicacion}': {e}")
     return jobs
+
+
+# ---------------------------------------------------------------------------
+# Trabajando.cl — Playwright (SPA Vue, fetch API con timeout)
+# ---------------------------------------------------------------------------
+def _scrape_trabajando_playwright(page, cargo: str, ubicacion: str, n: int) -> list[dict]:
+    """
+    Scraper de Trabajando.cl usando Playwright page ya autenticada.
+    Navega a la página, descubre el endpoint de la API via performance entries,
+    luego llama a ese endpoint paginado con fetch() (con AbortController para timeout).
+    NO usa page.on('response') para evitar bloqueos del event loop.
+    """
+    import sys
+    jobs: list[dict] = []
+    cargo_enc     = urllib.parse.quote(cargo)
+    ubicacion_enc = urllib.parse.quote(ubicacion)
+    nav_url = f"https://www.trabajando.cl/trabajo-empleo/{cargo_enc}?ubicacion={ubicacion_enc}"
+
+    try:
+        page.goto(nav_url, wait_until="domcontentloaded", timeout=20000)
+        page.wait_for_timeout(3500)  # dejar que Vue dispare las API calls
+
+        # Descubrir endpoint de búsqueda (no-bloqueante, corre JS)
+        api_urls: list[str] = page.evaluate("""
+            () => {
+                try {
+                    return window.performance.getEntriesByType('resource')
+                        .filter(function(e) {
+                            return (e.initiatorType === 'fetch' || e.initiatorType === 'xmlhttprequest')
+                                && (e.name.indexOf('api.trabajando') !== -1 || e.name.indexOf('trabajando.cl/api') !== -1)
+                                && e.name.indexOf('candidato') === -1
+                                && e.name.indexOf('postulacion') === -1
+                                && e.name.indexOf('estadistica') === -1
+                                && e.name.indexOf('configportal') === -1
+                                && e.name.indexOf('login') === -1;
+                        })
+                        .map(function(e) { return e.name; });
+                } catch(ex) { return []; }
+            }
+        """) or []
+
+        search_base: str | None = None
+        for u in api_urls:
+            if any(kw in u for kw in ("oferta", "busqueda", "search", "empleo", "cargo")):
+                search_base = u
+                break
+        if not search_base and api_urls:
+            search_base = api_urls[0]
+
+        if not search_base:
+            print(f"    [tbj-pw] Sin endpoint API para '{cargo}' ({len(api_urls)} resources)", flush=True)
+            return []
+
+        # Paginar con fetch+AbortController (timeout 10s por página)
+        for pagina in range(1, 4):
+            if len(jobs) >= n:
+                break
+            page_url = re.sub(r"pagina=\d+", f"pagina={pagina}", search_base)
+            if "pagina=" not in page_url:
+                page_url += ("&" if "?" in page_url else "?") + f"pagina={pagina}"
+            page_url = re.sub(r"cantidadResultados=\d+", f"cantidadResultados={min(n, 50)}", page_url)
+
+            try:
+                result = page.evaluate("""
+                    async (url) => {
+                        var ctrl = new AbortController();
+                        var timer = setTimeout(function() { ctrl.abort(); }, 10000);
+                        try {
+                            var r = await fetch(url, {credentials: 'include', signal: ctrl.signal});
+                            clearTimeout(timer);
+                            if (!r.ok) return {ok: false, status: r.status};
+                            return {ok: true, data: await r.json()};
+                        } catch(e) {
+                            clearTimeout(timer);
+                            return {ok: false, error: String(e)};
+                        }
+                    }
+                """, page_url)
+            except Exception as e:
+                print(f"    [tbj-pw] evaluate error p{pagina}: {e}", flush=True)
+                break
+
+            if not result or not result.get("ok"):
+                err = result.get("error", result.get("status", "?")) if result else "null"
+                print(f"    [tbj-pw] fetch fail p{pagina}: {err}", flush=True)
+                break
+
+            data = result.get("data") or {}
+            ofertas = (
+                data.get("ofertas") or
+                (data.get("data") or {}).get("ofertas") or
+                data.get("results") or data.get("items") or []
+            )
+            if not ofertas:
+                break
+
+            for o in ofertas:
+                id_o   = o.get("idOferta") or o.get("id") or o.get("ofertaId")
+                titulo = o.get("nombreCargo") or o.get("titulo") or o.get("cargo") or ""
+                empr   = o.get("nombreEmpresa") or o.get("empresa") or ""
+                url_o  = o.get("urlFicha") or o.get("url") or ""
+                if not (id_o and titulo):
+                    continue
+                if url_o and url_o.startswith("http"):
+                    link = url_o
+                elif url_o:
+                    link = f"https://www.trabajando.cl{url_o}"
+                else:
+                    link = f"https://www.trabajando.cl/trabajo-empleo/{cargo_enc}/trabajo/{id_o}-j"
+                jobs.append({
+                    "id": link, "titulo": titulo, "empresa": empr,
+                    "descripcion": "", "link": link,
+                    "ubicacion": ubicacion, "fuente": "trabajando",
+                })
+
+            time.sleep(0.5)
+
+        print(f"    [tbj-pw] {len(jobs)} empleos para '{cargo}' en '{ubicacion}'", flush=True)
+
+    except Exception as e:
+        print(f"    [tbj-pw] Error: {e}", flush=True)
+
+    return jobs[:n]
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +479,7 @@ def _scrape_chiletrabajos_selenium(driver, cargo: str, ubicacion: str, n: int) -
         descripcion = ""
         if desc_m:
             raw = re.sub(r'<[^>]+>', ' ', desc_m.group(1))
-            descripcion = _clean(raw)[:500]
+            descripcion = _clean(raw)[:5000]
 
         jobs.append({
             "id":          link,
@@ -372,17 +494,66 @@ def _scrape_chiletrabajos_selenium(driver, cargo: str, ubicacion: str, n: int) -
     return jobs
 
 
-def _scrape_chiletrabajos(cargo: str, ubicacion: str, n: int, driver=None) -> list[dict]:
+def _scrape_chiletrabajos_pw(page, cargo: str, ubicacion: str, n: int) -> list[dict]:
+    """Scraper de ChileTrabajos usando Playwright Page autenticada."""
+    cargo_enc = urllib.parse.quote_plus(cargo)
+    url = f"https://www.chiletrabajos.cl/encuentra-un-empleo?2={cargo_enc}&f=2"
+    page.goto(url, wait_until="domcontentloaded", timeout=20000)
+    try:
+        page.wait_for_selector(".job-item a[href*='/trabajo/']", timeout=10000)
+    except Exception:
+        page.wait_for_timeout(3000)
+
+    html = page.content()
+    jobs = []
+
+    blocks = re.findall(
+        r'<div[^>]+class="[^"]*job[_-]?item[^"]*"[^>]*>(.*?)</div>\s*</div>',
+        html, re.DOTALL
+    )
+    for block in blocks:
+        if len(jobs) >= n:
+            break
+        link_m = re.search(r'href="(https://www\.chiletrabajos\.cl/trabajo/[^"]+)"', block)
+        if not link_m:
+            continue
+        link = link_m.group(1)
+        titulo_m = re.search(r'href="' + re.escape(link) + r'"[^>]*>([^<]{3,100})', block)
+        if not titulo_m:
+            titulo_m = re.search(r'<(?:strong|h[2-4])[^>]*>([^<]{3,100})</(?:strong|h[2-4])>', block)
+        titulo = _clean(titulo_m.group(1)) if titulo_m else ""
+        if not titulo or titulo.lower() in ("ver más", "ver mas", "postular"):
+            continue
+        emp_m = (
+            re.search(r'<span[^>]+class="[^"]*empresa[^"]*"[^>]*>([^<]+)', block)
+            or re.search(r'class="[^"]*company[^"]*"[^>]*>([^<]{3,60})', block)
+        )
+        empresa = _clean(emp_m.group(1)) if emp_m else ""
+        desc_m = re.search(r'<p[^>]*style="[^"]*break-all[^"]*"[^>]*>(.*?)</p>', block, re.DOTALL)
+        if not desc_m:
+            desc_m = re.search(r'<p[^>]*class="[^"]*descripcion[^"]*"[^>]*>(.*?)</p>', block, re.DOTALL)
+        descripcion = ""
+        if desc_m:
+            raw = re.sub(r'<[^>]+>', ' ', desc_m.group(1))
+            descripcion = _clean(raw)[:5000]
+        jobs.append({
+            "id": link, "titulo": titulo, "empresa": empresa,
+            "descripcion": descripcion, "link": link,
+            "ubicacion": ubicacion, "fuente": "chiletrabajos",
+        })
+    return jobs
+
+
+def _scrape_chiletrabajos(cargo: str, ubicacion: str, n: int, driver=None, page=None) -> list[dict]:
     """
-    Scraper de ChileTrabajos.
-    Si se pasa driver (Selenium logueado), se usa para cargar resultados con JS.
-    Sin driver, no funciona bien (resultados no cargados via JS).
+    Scraper de ChileTrabajos. Usa Playwright page (preferido) o Selenium driver.
+    Sin sesión, devuelve lista vacía (ChileTrabajos requiere JS).
     """
+    if page is not None:
+        return _scrape_chiletrabajos_pw(page, cargo, ubicacion, n)
     if driver is not None:
         return _scrape_chiletrabajos_selenium(driver, cargo, ubicacion, n)
-
-    # Sin driver: devolver lista vacía (ChileTrabajos requiere JS)
-    print("    [ChileTrabajos] Sin driver Selenium — omitiendo")
+    print("    [ChileTrabajos] Sin sesión — omitiendo")
     return []
 
 
@@ -426,19 +597,27 @@ def _scrape_computrabajo(cargo: str, ubicacion: str, n: int) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Función principal — combina todos los portales
 # ---------------------------------------------------------------------------
-def find_jobs(cargo: str, ubicacion: str, n: int = 40, trabajando_driver=None, chiletrabajos_driver=None) -> list[dict]:
+def find_jobs(cargo: str, ubicacion: str, n: int = 40, trabajando_driver=None,
+              chiletrabajos_driver=None, trabajando_page=None,
+              chiletrabajos_page=None) -> list[dict]:
     """
     Busca empleos en todos los portales configurados.
-    trabajando_driver: Selenium driver logueado en trabajando.cl.
-    chiletrabajos_driver: Selenium driver logueado en chiletrabajos.cl.
+    trabajando_page:    Playwright Page autenticada (preferida).
+    trabajando_driver:  Selenium driver (fallback).
+    chiletrabajos_page: Playwright Page autenticada (preferida).
+    chiletrabajos_driver: Selenium driver (fallback, sin uso en Cloud Run).
     Retorna lista de dicts con: id, titulo, empresa, descripcion, link, ubicacion, fuente.
     """
     all_jobs: list[dict] = []
 
+    def _tbj():
+        if trabajando_page is not None:
+            return _scrape_trabajando_playwright(trabajando_page, cargo, ubicacion, n)
+        return _scrape_trabajando(cargo, ubicacion, n, driver=trabajando_driver)
+
     scrapers = [
-        ("Trabajando.cl", lambda: _scrape_trabajando(cargo, ubicacion, n, driver=trabajando_driver)),
-        ("ChileTrabajos",  lambda: _scrape_chiletrabajos(cargo, ubicacion, n, driver=chiletrabajos_driver)),
-        ("LinkedIn/Indeed", lambda: _scrape_jobspy(cargo, ubicacion, n)),
+        ("Trabajando.cl", _tbj),
+        ("ChileTrabajos",  lambda: _scrape_chiletrabajos(cargo, ubicacion, n, driver=chiletrabajos_driver, page=chiletrabajos_page)),
     ]
 
     for nombre, fn in scrapers:

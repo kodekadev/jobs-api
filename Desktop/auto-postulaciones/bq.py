@@ -61,7 +61,9 @@ def _pf_select(alias: str = "pf") -> str:
         {a}.CARRERA,
         {a}.SITUACION_ESTUDIOS,
         {a}.ANIO_INICIO_ESTUDIOS,
-        COALESCE(UPPER({a}.PLAN), 'FREE') AS plan
+        COALESCE(UPPER({a}.PLAN), 'FREE') AS plan,
+        {a}.EMPRESAS_EXCLUIDAS,
+        {a}.BUSQUEDA_ACTIVA
     """
 
 

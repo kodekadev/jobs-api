@@ -28,7 +28,11 @@ import bq
 from scraper            import find_jobs
 from applier            import apply_via_form
 from notifier           import send_summary, send_trial_warning
-from portal_accounts    import get_or_create_account, get_trabajando_session, close_trabajando_session, get_trabajando_pw_session
+from portal_accounts    import (
+    get_or_create_account,
+    get_trabajando_session, close_trabajando_session, get_trabajando_pw_session,
+    get_chiletrabajos_pw_session, close_chiletrabajos_pw_session,
+)
 from matcher            import filter_jobs
 from telegram_notify    import enviar as telegram
 
@@ -148,13 +152,12 @@ def process_user(user: dict) -> dict:
             print(f"[{nombre}] Sin cookies PW — intentando Selenium...", flush=True)
             tbj_driver = get_trabajando_session(uid, tbj_creds["email"], tbj_creds["password"])
 
-    # Sesión ChileTrabajos (Selenium) — postular logueado en vez de como invitado
-    cht_creds  = portal_creds.get("chiletrabajos")
-    cht_driver = None
+    # Sesión ChileTrabajos (Playwright via cookies BQ)
+    cht_creds = portal_creds.get("chiletrabajos")
+    cht_page  = None
     if cht_creds:
-        print(f"[{nombre}] Iniciando sesión ChileTrabajos...", flush=True)
-        from chiletrabajos.login import get_session as get_cht_session
-        cht_driver = get_cht_session(uid, cht_creds["email"], cht_creds["password"])
+        print(f"[{nombre}] Iniciando sesión ChileTrabajos (Playwright)...", flush=True)
+        cht_page = get_chiletrabajos_pw_session(uid, cht_creds["email"], cht_creds["password"])
 
     # Cookies LinkedIn (guardadas por sesión manual previa)
     linkedin_cookies = bq.get_portal_cookies(uid, "linkedin") or []
@@ -170,7 +173,7 @@ def process_user(user: dict) -> dict:
             try:
                 jobs = find_jobs(cargo, ubicacion, n=limits["jobs_per_cargo"],
                                  trabajando_page=tbj_page, trabajando_driver=tbj_driver,
-                                 chiletrabajos_driver=cht_driver)
+                                 chiletrabajos_page=cht_page)
             except Exception as e:
                 print(f"  [{nombre}] find_jobs error '{cargo}': {e}", flush=True)
                 jobs = []
@@ -198,6 +201,18 @@ def process_user(user: dict) -> dict:
     # ── 2b. Filtro de relevancia (keyword + LLM) ────────────────────────────
     new_jobs = filter_jobs(user, new_jobs)
     print(f"[{nombre}] {len(new_jobs)} empleos tras filtro de relevancia", flush=True)
+
+    # ── 2c. Filtro lista negra de empresas ──────────────────────────────────
+    excluidas_raw = user.get("EMPRESAS_EXCLUIDAS") or user.get("empresas_excluidas") or "[]"
+    try:
+        import json as _json
+        excluidas = [e.strip().lower() for e in (_json.loads(excluidas_raw) if isinstance(excluidas_raw, str) else excluidas_raw) if e]
+    except Exception:
+        excluidas = []
+    if excluidas:
+        antes = len(new_jobs)
+        new_jobs = [j for j in new_jobs if j.get("empresa", "").strip().lower() not in excluidas]
+        print(f"[{nombre}] Lista negra: {antes - len(new_jobs)} empleos excluidos — quedan {len(new_jobs)}", flush=True)
 
     # Mezclar para distribuir equitativamente entre portales (no dejar ChileTrabajos siempre al final)
     random.shuffle(new_jobs)
@@ -294,8 +309,8 @@ def process_user(user: dict) -> dict:
 
                 # ── Health check: detectar sesión Selenium/Playwright muerta ──
                 if fuente == "chiletrabajos":
-                    cht_driver = _check_selenium_driver(cht_driver, "cht")
-                    if cht_driver is None:
+                    cht_page = _check_playwright_page(cht_page, "cht-pw")
+                    if cht_page is None:
                         continue  # canal cht muerto, próxima iteración puede ser tbj
                 elif fuente == "trabajando":
                     tbj_page   = _check_playwright_page(tbj_page, "tbj-pw")
@@ -317,11 +332,12 @@ def process_user(user: dict) -> dict:
                     user, job,
                     credentials=portal_creds.get(fuente),
                     trabajando_driver=tbj_driver if fuente == "trabajando" else None,
-                    trabajando_page=tbj_page   if fuente == "trabajando" else None,
-                    chiletrabajos_driver=cht_driver if fuente == "chiletrabajos" else None,
+                    trabajando_page=tbj_page    if fuente == "trabajando" else None,
+                    chiletrabajos_page=cht_page if fuente == "chiletrabajos" else None,
                     linkedin_cookies=None,
                 )
-                if result:
+                success = result.get("ok", True) if isinstance(result, dict) else bool(result)
+                if success:
                     applied_jobs.append(job)
                     form_count += 1
                     channel_counts[canal] += 1
@@ -334,11 +350,7 @@ def process_user(user: dict) -> dict:
 
     finally:
         close_trabajando_session(uid)
-        if cht_driver:
-            try:
-                cht_driver.quit()
-            except Exception:
-                pass
+        close_chiletrabajos_pw_session(uid)
 
     # ── 4. Guardar en BigQuery ───────────────────────────────────────────────
     bq.save_jobs(rows_to_save)
@@ -463,5 +475,43 @@ def main():
     print(f"{'─'*50}", flush=True)
 
 
-if __name__ == "__main__":
-    main()
+def update_cv_user(user: dict) -> dict:
+    """Actualiza el CV en ChileTrabajos y Trabajando.cl para un usuario."""
+    uid    = user.get("ID_USUARIO") or user.get("id_usuario", "")
+    nombre = user.get("NOMBRE", uid)
+    ok_cht = ok_tbj = False
+
+    try:
+        from chiletrabajos.completar_perfil import _pw_completar_perfil_chiletrabajos
+        ok_cht = _pw_completar_perfil_chiletrabajos(uid, user)
+        print(f"  [{nombre}] ChileTrabajos CV update: {'OK' if ok_cht else 'SKIP'}", flush=True)
+    except Exception as e:
+        print(f"  [{nombre}] ChileTrabajos CV error: {e}", flush=True)
+
+    try:
+        from trabajando.completar_perfil import completar_perfil_trabajando
+        ok_tbj = completar_perfil_trabajando(uid, user)
+        print(f"  [{nombre}] Trabajando.cl CV update: {'OK' if ok_tbj else 'SKIP'}", flush=True)
+    except Exception as e:
+        print(f"  [{nombre}] Trabajando.cl CV error: {e}", flush=True)
+
+    return {"user": nombre, "cht": ok_cht, "tbj": ok_tbj}
+
+
+def main():
+    update_cv_mode = "--update-cv" in __import__("sys").argv
+    start = datetime.now()
+
+    if update_cv_mode:
+        print(f"Modo --update-cv: {start.strftime('%Y-%m-%d %H:%M')} UTC\n", flush=True)
+        single_user_id = os.environ.get("SINGLE_USER_ID", "").strip()
+        users = bq.get_user_by_id(single_user_id) if single_user_id else bq.get_active_users()
+        if not users:
+            print("Sin usuarios para actualizar CV.", flush=True)
+            return
+        for u in users:
+            update_cv_user(u)
+        print(f"\nCV actualizado para {len(users)} usuario(s).", flush=True)
+        return
+
+    print(f"Auto-postulaciones iniciadas: {start.strftime('%Y-%m-%d %H:%M')} UTC\n", flush=True)
