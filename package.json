@@ -33,6 +33,7 @@
     "@types/multer": "^2.1.0",
     "bcrypt": "^6.0.0",
     "dotenv": "^17.4.2",
+    "google-auth-library": "^10.9.0",
     "jsonwebtoken": "^9.0.3",
     "reflect-metadata": "^0.1.13",
     "resend": "^6.12.3",

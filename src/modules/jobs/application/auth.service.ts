@@ -2,6 +2,7 @@ import { Injectable, UnauthorizedException, BadRequestException } from '@nestjs/
 import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
 import * as crypto from 'crypto';
+import { OAuth2Client } from 'google-auth-library';
 import { BigQueryService } from '../../shared/infrastructure/services/bigquery.service';
 import { EmailService } from '../../shared/infrastructure/services/email.service';
 import env from '../../shared/infrastructure/environment';
@@ -66,8 +67,21 @@ export class AuthService {
   }
 
   // ─── GOOGLE LOGIN ─────────────────────────────────────────────────────────
-  async loginGoogle(emailRaw: string, nombre: string) {
-    const emailNorm = emailRaw.trim().toLowerCase();
+  async loginGoogle(credential: string) {
+    const client = new OAuth2Client(env.googleClientId);
+    let payload: any;
+    try {
+      const ticket = await client.verifyIdToken({
+        idToken: credential,
+        audience: env.googleClientId,
+      });
+      payload = ticket.getPayload();
+    } catch {
+      throw new UnauthorizedException('Token de Google inválido');
+    }
+
+    const emailNorm = (payload.email as string).trim().toLowerCase();
+    const nombre    = (payload.name as string) || emailNorm;
 
     const existing = await this.bq.query<any>(`
       SELECT
