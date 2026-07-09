@@ -11,6 +11,9 @@ async function bootstrap() {
     /\.run\.app$/,
     /\.vercel\.app$/,
     /^chrome-extension:\/\//,
+    /\.aplicai\.cl$/,
+    'https://aplicai.cl',
+    'https://www.aplicai.cl',
   ];
 
   app.enableCors({
