@@ -80,8 +80,10 @@ export class AuthService {
       throw new UnauthorizedException('Token de Google inválido');
     }
 
-    const emailNorm = (payload.email as string).trim().toLowerCase();
-    const nombre    = (payload.name as string) || emailNorm;
+    if (!payload?.email) throw new UnauthorizedException('Token de Google inválido');
+
+    const emailNorm = payload.email.trim().toLowerCase();
+    const nombre    = payload.name || emailNorm;
 
     const existing = await this.bq.query<any>(`
       SELECT
