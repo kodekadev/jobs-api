@@ -26,12 +26,18 @@ def register_user(user: dict) -> dict:
     nombre = user.get("NOMBRE") or user.get("nombre") or uid
     resultados = {}
 
-    print(f"\n[{nombre}] Registrando en portales: {PORTALES}")
+    # Filtrar portales donde ya existe cuenta (evita ejecuciones paralelas duplicadas)
+    portales_pendientes = [p for p in PORTALES if not bq.get_portal_account(uid, p)]
+    if not portales_pendientes:
+        print(f"\n[{nombre}] Cuenta ya existe en todos los portales — nada que hacer")
+        return {p: "YA_EXISTE" for p in PORTALES}
+
+    print(f"\n[{nombre}] Registrando en portales: {portales_pendientes}")
     t_inicio = time.time()
 
     cv_url = user.get("cv_url") or user.get("CV_URL") or ""
 
-    for portal in PORTALES:
+    for portal in portales_pendientes:
         label = PORTAL_LABELS.get(portal, portal)
         # ── 1. Crear cuenta ───────────────────────────────────────────────────
         cuenta_preexistia = bq.get_portal_account(uid, portal) is not None
