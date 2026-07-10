@@ -2415,6 +2415,184 @@ def _close_pw_session(uid: str) -> None:
             del _pw_sessions[key]
 
 
+# ── ChileTrabajos Playwright session ─────────────────────────────────────────
+
+_cht_pw_sessions: dict[str, dict] = {}
+_cht_pw_lock = threading.Lock()
+
+
+def _cht_cookies_to_playwright(cookies: list[dict]) -> list[dict]:
+    result = []
+    for c in cookies:
+        pc = {"name": c["name"], "value": c["value"], "path": c.get("path", "/")}
+        domain = c.get("domain", "")
+        if domain:
+            pc["domain"] = domain
+        else:
+            pc["url"] = "https://www.chiletrabajos.cl"
+        if c.get("secure"):
+            pc["secure"] = True
+        if c.get("httpOnly"):
+            pc["httpOnly"] = True
+        expiry = c.get("expiry") or c.get("expires")
+        if expiry and float(expiry) > 0:
+            pc["expires"] = float(expiry)
+        result.append(pc)
+    return result
+
+
+def get_chiletrabajos_pw_session(uid: str, email: str = "", password: str = ""):
+    """
+    Retorna Playwright Page autenticado para ChileTrabajos.
+    Estrategia:
+      1. Cookies BQ (si existen y no expiraron)
+      2. Login Playwright con email/password (fallback — funciona en Cloud Run)
+    Reutiliza la instancia Playwright de Trabajando.cl para evitar conflicto
+    de sync_playwright en el mismo thread.
+    """
+    from playwright.sync_api import sync_playwright
+
+    key = f"cht_{uid}"
+    with _cht_pw_lock:
+        if key in _cht_pw_sessions:
+            try:
+                page = _cht_pw_sessions[key]["page"]
+                _ = page.url
+                return page
+            except Exception:
+                try:
+                    _cht_pw_sessions[key]["browser"].close()
+                    if _cht_pw_sessions[key].get("_owns_pw"):
+                        _cht_pw_sessions[key]["pw"].stop()
+                except Exception:
+                    pass
+                del _cht_pw_sessions[key]
+
+    # Reutilizar la instancia Playwright de Trabajando.cl si existe en este thread
+    tbj_key = f"tbj_{uid}"
+    owns_pw = False
+    with _pw_lock:
+        existing_pw = _pw_sessions.get(tbj_key, {}).get("pw")
+
+    if existing_pw is not None:
+        pw = existing_pw
+    else:
+        pw = sync_playwright().start()
+        owns_pw = True
+
+    browser = pw.chromium.launch(
+        headless=_in_cloud_run,
+        args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+              "--disable-blink-features=AutomationControlled"],
+    )
+    context = browser.new_context(
+        user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
+        locale="es-CL",
+        viewport={"width": 1366, "height": 768},
+    )
+    context.add_init_script("""
+        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+        Object.defineProperty(navigator, 'languages', {get: () => ['es-CL', 'es', 'en']});
+        Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+        window.chrome = { runtime: {} };
+    """)
+
+    def _cleanup():
+        try:
+            browser.close()
+        except Exception:
+            pass
+        if owns_pw:
+            try:
+                pw.stop()
+            except Exception:
+                pass
+
+    page = context.new_page()
+
+    # ── 1. Intentar cookies BQ ────────────────────────────────────────────────
+    cookies = bq.get_portal_cookies(uid, "chiletrabajos")
+    if cookies:
+        try:
+            context.add_cookies(_cht_cookies_to_playwright(cookies))
+        except Exception as e:
+            print(f"  -> Error inyectando cookies CHT: {e}")
+
+        page.goto("https://www.chiletrabajos.cl/dashboard",
+                  wait_until="domcontentloaded", timeout=30000)
+        time.sleep(3)
+
+        if "chtlogin" not in page.url:
+            print(f"  -> Sesión CHT via cookies OK para {uid}")
+            with _cht_pw_lock:
+                _cht_pw_sessions[key] = {
+                    "pw": pw, "browser": browser, "context": context,
+                    "page": page, "_owns_pw": owns_pw,
+                }
+            return page
+        print(f"  -> Cookies CHT expiradas para {uid} — intentando login Playwright")
+    else:
+        print(f"  -> Sin cookies CHT para {uid} — intentando login Playwright")
+
+    # ── 2. Login Playwright con credenciales ──────────────────────────────────
+    if not email or not password:
+        # Intentar leer de BQ si no fueron pasados
+        cuenta = bq.get_portal_account(uid, "chiletrabajos")
+        if cuenta:
+            email    = cuenta.get("email", "")
+            password = cuenta.get("password", "")
+
+    if not email or not password:
+        print(f"  -> CHT: sin credenciales para {uid}")
+        _cleanup()
+        return None
+
+    try:
+        page.goto("https://www.chiletrabajos.cl/chtlogin",
+                  wait_until="domcontentloaded", timeout=30000)
+        time.sleep(2)
+        page.locator("#username").wait_for(state="visible", timeout=10000)
+        page.locator("#username").fill(email)
+        page.locator("#password").fill(password)
+        page.locator(
+            "xpath=//input[@value='Iniciar Sesión'] | //button[@type='submit']"
+        ).first.click()
+        time.sleep(5)
+    except Exception as e:
+        print(f"  -> CHT login Playwright error: {e}")
+        _cleanup()
+        return None
+
+    if "chtlogin" in page.url:
+        print(f"  -> CHT login Playwright falló para {uid}")
+        _cleanup()
+        return None
+
+    print(f"  -> CHT login Playwright OK para {uid}: {page.url[:60]}")
+    with _cht_pw_lock:
+        _cht_pw_sessions[key] = {
+            "pw": pw, "browser": browser, "context": context,
+            "page": page, "_owns_pw": owns_pw,
+        }
+    return page
+
+
+def close_chiletrabajos_pw_session(uid: str) -> None:
+    key = f"cht_{uid}"
+    with _cht_pw_lock:
+        if key in _cht_pw_sessions:
+            try:
+                _cht_pw_sessions[key]["browser"].close()
+                if _cht_pw_sessions[key].get("_owns_pw"):
+                    _cht_pw_sessions[key]["pw"].stop()
+            except Exception:
+                pass
+            del _cht_pw_sessions[key]
+
+
 def _responder_preguntas_playwright(page, user: dict = {}, job_title: str = "") -> None:
     """Responde preguntas del modal de postulación usando Playwright + Claude + CV."""
     import unicodedata

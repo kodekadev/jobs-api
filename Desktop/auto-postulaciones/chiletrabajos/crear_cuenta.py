@@ -180,8 +180,8 @@ def _selenium_crear_cuenta_chiletrabajos(user_id: str, user: dict) -> bool:
                 _js_set(driver, inps[0], value)
                 print(f"  [cht] {label} (fallback): '{value[:30]}'")
 
-        _fill(["nombre", "first", "name"],     nombre,   "nombre")
-        _fill(["apellido", "last", "surname"],  apellido, "apellido")
+        _fill(["firstname", "nombre", "first", "name"],        nombre,   "nombre")
+        _fill(["lastname", "apellido", "last", "surname"],  apellido, "apellido")
         _fill(["email", "correo", "mail", "usuario", "username"], email, "email")
 
         # Contraseña (puede haber dos campos: password + confirm)
@@ -240,7 +240,7 @@ def _selenium_crear_cuenta_chiletrabajos(user_id: str, user: dict) -> bool:
             driver.quit()
             return True
 
-        if any(s in content for s in success_signals) or "chtlogin" not in driver.current_url:
+        if any(s in content for s in success_signals) or ("chtlogin" not in driver.current_url and "chtregister" not in driver.current_url):
             print(f"  [cht] Cuenta creada OK para {user_id} ({email})")
             bq.save_portal_account(user_id, PORTAL_ID, email, clave)
             driver.quit()
@@ -376,7 +376,12 @@ def _pw_perfil_misma_sesion(page, user: dict, user_id: str, email: str = "", cla
             page.locator("xpath=//input[@value='Iniciar Sesión'] | //button[@type='submit']").first.click()
             page.wait_for_timeout(5000)
             if "chtlogin" in page.url:
-                print(f"  [cht-pw] ! Login falló — perfil sin completar")
+                snippet = page.content()[:3000].lower()
+                if any(k in snippet for k in ["verificar", "confirmar", "verifica", "correo", "email"]):
+                    print(f"  [cht-pw] ! Login falló — ChileTrabajos exige verificación de email")
+                else:
+                    print(f"  [cht-pw] ! Login falló — credenciales incorrectas o captcha")
+                print(f"  [cht-pw] ! URL: {page.url} | Snippet: {snippet[:300]}")
                 return
             print(f"  [cht-pw] Login OK: {page.url}")
             # Navegar al editor
@@ -539,7 +544,7 @@ def _pw_crear_cuenta_chiletrabajos(user_id: str, user: dict) -> bool:
                     "--disable-blink-features=AutomationControlled"]
             if cloud:
                 args.append("--single-process")
-            browser = pw.chromium.launch(headless=True, args=args)
+            browser = pw.chromium.launch(headless=cloud, args=args)
             ctx = browser.new_context(
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -564,18 +569,17 @@ def _pw_crear_cuenta_chiletrabajos(user_id: str, user: dict) -> bool:
                     print(f"  [cht-pw] Registro en: {page.url}")
                     break
 
-            # Llenar campos
+            # Llenar campos (ChileTrabajos usa IDs en inglés: firstName, LastName, Email)
             _pw_fill(page,
-                "input[name*='nombre' i]:visible, input[placeholder*='nombre' i]:visible, "
-                "input[id*='nombre' i]:visible",
+                "#firstName:visible, input[name='FirstName']:visible, "
+                "input[name*='nombre' i]:visible, input[placeholder*='nombre' i]:visible",
                 nombre, "nombre")
             _pw_fill(page,
-                "input[name*='apellido' i]:visible, input[placeholder*='apellido' i]:visible, "
-                "input[id*='apellido' i]:visible",
+                "#LastName:visible, input[name='LastName']:visible, "
+                "input[name*='apellido' i]:visible, input[placeholder*='apellido' i]:visible",
                 apellido, "apellido")
             _pw_fill(page,
-                "input[type='email']:visible, input[name*='email' i]:visible, "
-                "input[placeholder*='email' i]:visible",
+                "#Email:visible, input[type='email']:visible, input[name='Email']:visible",
                 email, "email")
 
             pwd_locs = page.locator("input[type='password']:visible").all()
@@ -630,13 +634,16 @@ def _pw_crear_cuenta_chiletrabajos(user_id: str, user: dict) -> bool:
                 "tu cuenta", "verificar", "dashboard", "mi perfil", email.lower(),
             ]
 
+            print(f"  [cht-pw] Post-submit URL: {cur}")
+            print(f"  [cht-pw] Post-submit snippet: {content[:400]}")
+
             if any(s in content for s in error_signals):
                 print(f"  [cht-pw] Email ya registrado — guardando credencial")
                 bq.save_portal_cookies(user_id, PORTAL_ID, ctx.cookies(), email=email, password=clave)
                 browser.close()
                 return True
 
-            if any(s in content for s in success_signals) or "chtlogin" not in cur:
+            if any(s in content for s in success_signals) or ("chtlogin" not in cur and "chtregister" not in cur):
                 print(f"  [cht-pw] Cuenta creada OK para {user_id} ({email})")
                 # Completar perfil en misma sesion
                 if user:
