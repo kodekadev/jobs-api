@@ -100,9 +100,8 @@ export class PlanService {
       amount: String(amount),
       currency: 'CLP',
       email: userEmail,
-      merchantId: env.flowApiKey,
       orderId,
-      subject: `Plan ${plan} — Jobs`,
+      subject: `Plan ${plan} — AplicAI`,
       urlConfirmation,
       urlReturn,
     };
@@ -118,7 +117,10 @@ export class PlanService {
     });
 
     const data: any = await res.json();
-    if (!data.token) throw new Error('Error creando pago Flow');
+    if (!data.token) {
+      console.error('Flow error response:', JSON.stringify(data));
+      throw new Error(data?.message || data?.code ? `Flow: ${data.code} - ${data.message}` : 'Error creando pago Flow');
+    }
 
     // Store pending payment
     await this.bq.query(`
