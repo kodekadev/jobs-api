@@ -79,7 +79,7 @@ export class EmailService {
         </a>
       </div>
 
-      <a href="${env.frontendUrl}/perfil"
+      <a href="${env.frontendUrl}/postula-facil"
         style="display:inline-block;background:linear-gradient(135deg,#1E6E82,#2A8FA5);color:white;padding:14px 28px;border-radius:10px;text-decoration:none;font-weight:700;font-size:15px">
         Completar mi perfil →
       </a>
