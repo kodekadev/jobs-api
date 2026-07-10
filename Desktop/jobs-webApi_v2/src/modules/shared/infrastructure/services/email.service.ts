@@ -54,14 +54,13 @@ export class EmailService {
       </p>
 
       <div style="background:#F0F9FF;border-radius:12px;padding:20px;margin-bottom:24px">
-        <p style="color:#0F172A;font-weight:700;font-size:14px;margin:0 0 12px">Para comenzar en 3 pasos:</p>
+        <p style="color:#0F172A;font-weight:700;font-size:14px;margin:0 0 12px">Para comenzar en 2 pasos:</p>
         ${[
-          ['1', 'Completa tu perfil', 'Agrega tus cargos, CV y experiencia para que podamos postular por ti.'],
-          ['2', 'Instala la extensión Chrome', 'La extensión postula automáticamente en LinkedIn mientras navegas.'],
-          ['3', 'Activa el Autopilot', 'Una vez activo, postulamos por ti todos los días de forma automática.'],
+          ['1', 'Completa tu perfil', 'Agrega tus cargos, CV, ubicación y pretensión de renta. Sin esto no podemos postular.'],
+          ['2', 'Activa el Autopilot', 'Desde ese momento buscamos y postulamos empleos por ti en portales de empleo todos los días hábiles.'],
         ].map(([n, t, d]) => `
           <div style="display:flex;gap:12px;margin-bottom:12px;align-items:flex-start">
-            <div style="width:24px;height:24px;border-radius:50%;background:#2A8FA5;color:white;font-weight:700;font-size:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0;text-align:center;line-height:24px">${n}</div>
+            <div style="width:24px;height:24px;border-radius:50%;background:#2A8FA5;color:white;font-weight:700;font-size:12px;flex-shrink:0;text-align:center;line-height:24px">${n}</div>
             <div>
               <p style="color:#0F172A;font-weight:700;font-size:14px;margin:0 0 2px">${t}</p>
               <p style="color:#64748B;font-size:13px;margin:0">${d}</p>
@@ -69,9 +68,20 @@ export class EmailService {
           </div>`).join('')}
       </div>
 
-      <a href="${env.frontendUrl}/dashboard"
+      <div style="background:#F0FDF4;border-radius:12px;padding:16px;margin-bottom:24px;border:1px solid #BBF7D0">
+        <p style="color:#166534;font-weight:700;font-size:13px;margin:0 0 4px">💡 ¿Usas LinkedIn?</p>
+        <p style="color:#15803D;font-size:13px;margin:0 0 10px">
+          Instala la extensión Chrome de AplicAI y postulamos también en LinkedIn automáticamente mientras navegas.
+        </p>
+        <a href="${env.frontendUrl}/extension"
+          style="color:#166534;font-size:13px;font-weight:600;text-decoration:underline">
+          Ver cómo instalar la extensión →
+        </a>
+      </div>
+
+      <a href="${env.frontendUrl}/perfil"
         style="display:inline-block;background:linear-gradient(135deg,#1E6E82,#2A8FA5);color:white;padding:14px 28px;border-radius:10px;text-decoration:none;font-weight:700;font-size:15px">
-        Ir al dashboard →
+        Completar mi perfil →
       </a>
 
       <p style="color:#94A3B8;font-size:13px;margin-top:24px;line-height:1.5">

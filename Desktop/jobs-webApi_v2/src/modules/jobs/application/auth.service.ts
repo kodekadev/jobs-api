@@ -3,6 +3,7 @@ import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
 import * as crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
+import { OAuth2Client } from 'google-auth-library';
 import { BigQueryService } from '../../shared/infrastructure/services/bigquery.service';
 import { EmailService } from '../../shared/infrastructure/services/email.service';
 import env from '../../shared/infrastructure/environment';
@@ -54,8 +55,31 @@ export class AuthService {
   }
 
   // ─── GOOGLE LOGIN ─────────────────────────────────────────────────────────
-  async loginGoogle(emailRaw: string, nombre: string) {
-    const emailNorm = emailRaw.trim().toLowerCase();
+  async loginGoogle(credential?: string, emailLegacy?: string, nombreLegacy?: string) {
+    let emailNorm: string;
+    let nombre: string;
+
+    if (credential) {
+      const client = new OAuth2Client('994947687832-oqbi6lnmdv96m5jcsqcajr0d7u9f22th.apps.googleusercontent.com');
+      let payload: any;
+      try {
+        const ticket = await client.verifyIdToken({
+          idToken: credential,
+          audience: '994947687832-oqbi6lnmdv96m5jcsqcajr0d7u9f22th.apps.googleusercontent.com',
+        });
+        payload = ticket.getPayload();
+      } catch {
+        throw new UnauthorizedException('Token de Google inválido');
+      }
+      if (!payload?.email) throw new UnauthorizedException('Token de Google inválido');
+      emailNorm = payload.email.trim().toLowerCase();
+      nombre    = payload.name || emailNorm;
+    } else if (emailLegacy) {
+      emailNorm = emailLegacy.trim().toLowerCase();
+      nombre    = nombreLegacy || emailNorm;
+    } else {
+      throw new UnauthorizedException('Token de Google inválido');
+    }
 
     const existing = await this.bq.query<any>(`
       SELECT

@@ -2,7 +2,7 @@ import { Controller, Post, Headers, UnauthorizedException } from '@nestjs/common
 import { PlanService } from '../../application/plan.service';
 import env from '../../../shared/infrastructure/environment';
 
-@Controller('api/cron')
+@Controller('cron')
 export class CronController {
   constructor(private readonly planService: PlanService) {}
 
