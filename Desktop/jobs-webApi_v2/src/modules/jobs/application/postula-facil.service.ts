@@ -101,6 +101,23 @@ export class PostulaFacilService {
       jornada: body.jornada || '',
     });
 
+    // Sync profession/experiencia to INFO_CLIENTE so /perfil shows it pre-filled
+    if (body.profesion) {
+      await this.bq.query(`
+        MERGE ${this.bq.t('INFO_CLIENTE')} T
+        USING (SELECT @id AS ID_USUARIO, @prof AS PROFESION, @exp AS EXPERIENCIA) S
+        ON T.ID_USUARIO = S.ID_USUARIO
+        WHEN MATCHED THEN
+          UPDATE SET
+            PROFESION = IF(NULLIF(S.PROFESION, '') IS NOT NULL, S.PROFESION, T.PROFESION),
+            EXPERIENCIA = IF(NULLIF(S.EXPERIENCIA, '') IS NOT NULL, S.EXPERIENCIA, T.EXPERIENCIA),
+            FECHA_ACTUALIZACION = CURRENT_TIMESTAMP()
+        WHEN NOT MATCHED THEN
+          INSERT (ID_USUARIO, PROFESION, EXPERIENCIA, FECHA_ACTUALIZACION)
+          VALUES (S.ID_USUARIO, S.PROFESION, S.EXPERIENCIA, CURRENT_TIMESTAMP())
+      `, { id: body.id_usuario, prof: body.profesion, exp: body.experiencia || '' });
+    }
+
     // INSERT first (only if not yet sent) — BigQuery serializes DML so only one
     // concurrent request gets numDmlAffectedRows=1; the rest get 0 or a serialization
     // error (caught as 0). This prevents duplicate emails when user saves repeatedly.

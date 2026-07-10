@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable } from '@nestjs/common';
 import * as crypto from 'crypto';
 import { BigQueryService } from '../../shared/infrastructure/services/bigquery.service';
 import { EmailService } from '../../shared/infrastructure/services/email.service';
@@ -36,7 +36,18 @@ export class PlanService {
     return { success: true };
   }
 
+  // Endpoint público (autenticado): solo permite activar FREE.
+  // Los planes pagados SOLO se activan vía confirmación de pago de Flow
+  // (confirmPayment → activatePlan) — si no, cualquiera se da PREMIUM gratis.
   async savePlan(userId: string, plan: string) {
+    if ((plan || '').toUpperCase() !== 'FREE') {
+      throw new ForbiddenException('Los planes pagados se activan solo tras confirmar el pago');
+    }
+    return this.activatePlan(userId, 'FREE');
+  }
+
+  // Uso interno — sin restricción de plan (la llama el flujo de pago confirmado).
+  private async activatePlan(userId: string, plan: string) {
     const now = new Date().toISOString();
 
     await this.bq.query(`
@@ -175,7 +186,7 @@ export class PlanService {
 
     if (!rows.length) return;
 
-    await this.savePlan(rows[0].ID_USUARIO, rows[0].PLAN);
+    await this.activatePlan(rows[0].ID_USUARIO, rows[0].PLAN);
 
     await this.bq.query(`
       DELETE FROM ${this.bq.t('PAGOS_PENDIENTES')} WHERE TOKEN = @token

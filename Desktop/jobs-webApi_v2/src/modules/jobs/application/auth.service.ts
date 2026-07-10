@@ -25,7 +25,7 @@ export class AuthService {
         u.FECHA_REGISTRO, u.PASSWORD, u.EMAIL_VERIFICADO,
         ic.PROFESION, ic.EXPERIENCIA,
         ic.FOTO_URL, ic.CV_URL as INFO_CV_URL,
-        pf.CARGOS, pf.UBICACIONES, pf.RESUMEN,
+        pf.PROFESION as PF_PROFESION, pf.CARGOS, pf.UBICACIONES, pf.RESUMEN,
         pf.CV_URL as PF_CV_URL,
         pf.EXPERIENCIA as PF_EXPERIENCIA,
         pf.PRETENSION_GENERAL,
@@ -90,7 +90,7 @@ export class AuthService {
       SELECT
         u.ID_USUARIO, u.NOMBRE, u.EMAIL, u.CELULAR, u.ASIGNADO_LKD, u.FECHA_REGISTRO,
         ic.PROFESION, ic.EXPERIENCIA, ic.FOTO_URL, ic.CV_URL as INFO_CV_URL,
-        pf.CARGOS, pf.UBICACIONES, pf.RESUMEN, pf.CV_URL as PF_CV_URL,
+        pf.PROFESION as PF_PROFESION, pf.CARGOS, pf.UBICACIONES, pf.RESUMEN, pf.CV_URL as PF_CV_URL,
         pf.EXPERIENCIA as PF_EXPERIENCIA, pf.PRETENSION_GENERAL,
         COALESCE(pa.ACTIVO, 0) as AUTO_ACTIVO,
         COALESCE(pc.PLAN, 'FREE') as PLAN,
@@ -223,7 +223,7 @@ export class AuthService {
         u.ID_USUARIO, u.NOMBRE, u.EMAIL, u.CELULAR, u.ASIGNADO_LKD, u.FECHA_REGISTRO,
         ic.PROFESION, ic.EXPERIENCIA,
         ic.FOTO_URL, ic.CV_URL as INFO_CV_URL,
-        pf.CARGOS, pf.UBICACIONES, pf.RESUMEN,
+        pf.PROFESION as PF_PROFESION, pf.CARGOS, pf.UBICACIONES, pf.RESUMEN,
         pf.CV_URL as PF_CV_URL,
         pf.EXPERIENCIA as PF_EXPERIENCIA,
         pf.PRETENSION_GENERAL,
@@ -418,7 +418,7 @@ export class AuthService {
     const ubicaciones = this.parseJson(u.UBICACIONES);
 
     const postulaCompleto = !!(
-      u.PROFESION && u.PF_CV_URL && cargos.length &&
+      u.PF_PROFESION && u.PF_CV_URL && cargos.length &&
       u.PF_EXPERIENCIA && ubicaciones.length && u.PRETENSION_GENERAL
     );
 
@@ -441,6 +441,7 @@ export class AuthService {
       },
       postula_facil: {
         completo: postulaCompleto,
+        profesion: u.PF_PROFESION || '',
         cargos,
         ubicaciones,
         resumen: u.RESUMEN || '',

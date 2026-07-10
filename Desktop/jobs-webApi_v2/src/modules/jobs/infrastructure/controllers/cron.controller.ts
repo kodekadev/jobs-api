@@ -1,7 +1,9 @@
 import { Controller, Post, Headers, UnauthorizedException } from '@nestjs/common';
 import { PlanService } from '../../application/plan.service';
 import env from '../../../shared/infrastructure/environment';
+import { Public } from '../../../shared/infrastructure/guards/jwt-auth.guard';
 
+@Public() // valida su propio CRON_SECRET (no es un JWT de usuario)
 @Controller('cron')
 export class CronController {
   constructor(private readonly planService: PlanService) {}
