@@ -22,7 +22,7 @@ export class AuthService {
     const rows = await this.bq.query<any>(`
       SELECT
         u.ID_USUARIO, u.NOMBRE, u.EMAIL, u.CELULAR, u.ASIGNADO_LKD,
-        u.FECHA_REGISTRO, u.PASSWORD,
+        u.FECHA_REGISTRO, u.PASSWORD, u.EMAIL_VERIFICADO,
         ic.PROFESION, ic.EXPERIENCIA,
         ic.FOTO_URL, ic.CV_URL as INFO_CV_URL,
         pf.CARGOS, pf.UBICACIONES, pf.RESUMEN,
@@ -42,14 +42,19 @@ export class AuthService {
       LIMIT 1
     `, { email: emailNorm });
 
-    if (!rows.length) throw new UnauthorizedException('Credenciales inválidas');
+    if (!rows.length) throw new UnauthorizedException('No existe una cuenta con ese email');
 
     const u = rows[0];
 
     if (!u.PASSWORD) throw new UnauthorizedException('Cuenta Google — usa ese método');
 
     const ok = await bcrypt.compare(password, u.PASSWORD);
-    if (!ok) throw new UnauthorizedException('Credenciales inválidas');
+    if (!ok) throw new UnauthorizedException('Contraseña incorrecta');
+
+    // NULL means existing user (before verification feature) → allow through
+    if (u.EMAIL_VERIFICADO === false) {
+      throw new UnauthorizedException('email_no_verificado');
+    }
 
     return this.buildResponse(u);
   }
@@ -151,15 +156,101 @@ export class AuthService {
 
     await this.bq.query(`
       INSERT INTO ${this.bq.t('USUARIOS')}
-        (ID_USUARIO, NOMBRE, EMAIL, CELULAR, PASSWORD, TERMINOS, ASIGNADO_LKD, FECHA_REGISTRO)
+        (ID_USUARIO, NOMBRE, EMAIL, CELULAR, PASSWORD, TERMINOS, ASIGNADO_LKD, FECHA_REGISTRO, EMAIL_VERIFICADO)
       VALUES
-        (@id, @nombre, @email, @celular, @password, @terminos, 0, CURRENT_TIMESTAMP())
+        (@id, @nombre, @email, @celular, @password, @terminos, 0, CURRENT_TIMESTAMP(), false)
     `, { id, nombre: body.nombre, email: emailNorm, celular: body.celular, password: hash, terminos: body.terminos ? 1 : 0 });
 
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const hashed   = crypto.createHash('sha256').update(rawToken).digest('hex');
+    const expires  = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+
+    await this.bq.query(`
+      INSERT INTO ${this.bq.t('EMAIL_VERIFICATIONS')} (ID_USUARIO, TOKEN, EXPIRES_AT, CREATED_AT)
+      VALUES (@id, @token, @expires, CURRENT_TIMESTAMP())
+    `, { id, token: hashed, expires }).catch(() => null);
+
+    const link = `${env.frontendUrl}/verificar-email?token=${rawToken}`;
     this.email.send(
       emailNorm,
-      '¡Bienvenido a AplicAI! Tu cuenta está activa',
-      this.email.welcomeHtml(body.nombre),
+      'Verifica tu cuenta en AplicAI',
+      this.email.verifyEmailHtml(body.nombre, link),
+    ).catch(() => null);
+
+    return { success: true, pendingVerification: true };
+  }
+
+  // ─── VERIFY EMAIL ─────────────────────────────────────────────────────────
+  async verifyEmail(rawToken: string) {
+    const hashed = crypto.createHash('sha256').update(rawToken).digest('hex');
+
+    const rows = await this.bq.query<any>(`
+      SELECT ID_USUARIO, EXPIRES_AT FROM ${this.bq.t('EMAIL_VERIFICATIONS')}
+      WHERE TOKEN = @token LIMIT 1
+    `, { token: hashed });
+
+    if (!rows.length) throw new BadRequestException('Enlace inválido o ya utilizado');
+    if (new Date(rows[0].EXPIRES_AT) < new Date()) throw new BadRequestException('Enlace expirado — solicita uno nuevo');
+
+    const userId = rows[0].ID_USUARIO;
+
+    await Promise.all([
+      this.bq.query(`
+        UPDATE ${this.bq.t('USUARIOS')} SET EMAIL_VERIFICADO = true WHERE ID_USUARIO = @id
+      `, { id: userId }),
+      this.bq.query(`
+        DELETE FROM ${this.bq.t('EMAIL_VERIFICATIONS')} WHERE ID_USUARIO = @id
+      `, { id: userId }),
+    ]);
+
+    const user = await this.bq.query<any>(`
+      SELECT NOMBRE, EMAIL FROM ${this.bq.t('USUARIOS')} WHERE ID_USUARIO = @id LIMIT 1
+    `, { id: userId });
+
+    if (user.length) {
+      this.email.send(
+        user[0].EMAIL,
+        '¡Bienvenido a AplicAI! Tu cuenta está activa',
+        this.email.welcomeHtml(user[0].NOMBRE),
+      ).catch(() => null);
+    }
+
+    return { success: true };
+  }
+
+  // ─── RESEND VERIFICATION ──────────────────────────────────────────────────
+  async resendVerification(emailRaw: string) {
+    const emailNorm = emailRaw.trim().toLowerCase();
+
+    const rows = await this.bq.query<any>(`
+      SELECT ID_USUARIO, NOMBRE, EMAIL_VERIFICADO FROM ${this.bq.t('USUARIOS')}
+      WHERE LOWER(EMAIL) = @email LIMIT 1
+    `, { email: emailNorm });
+
+    if (!rows.length) return { success: true };
+    if (rows[0].EMAIL_VERIFICADO === true) return { success: true };
+
+    const userId = rows[0].ID_USUARIO;
+    const nombre = rows[0].NOMBRE;
+
+    await this.bq.query(`
+      DELETE FROM ${this.bq.t('EMAIL_VERIFICATIONS')} WHERE ID_USUARIO = @id
+    `, { id: userId }).catch(() => null);
+
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const hashed   = crypto.createHash('sha256').update(rawToken).digest('hex');
+    const expires  = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+
+    await this.bq.query(`
+      INSERT INTO ${this.bq.t('EMAIL_VERIFICATIONS')} (ID_USUARIO, TOKEN, EXPIRES_AT, CREATED_AT)
+      VALUES (@id, @token, @expires, CURRENT_TIMESTAMP())
+    `, { id: userId, token: hashed, expires }).catch(() => null);
+
+    const link = `${env.frontendUrl}/verificar-email?token=${rawToken}`;
+    await this.email.send(
+      emailNorm,
+      'Verifica tu cuenta en AplicAI',
+      this.email.verifyEmailHtml(nombre, link),
     ).catch(() => null);
 
     return { success: true };

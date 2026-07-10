@@ -166,6 +166,30 @@ export class EmailService {
     );
   }
 
+  verifyEmailHtml(nombre: string, link: string): string {
+    const headerContent = `
+      <h1 style="color:white;margin:16px 0 4px;font-size:22px">Verifica tu cuenta</h1>
+      <p style="color:rgba(255,255,255,0.65);margin:0;font-size:14px">Un solo clic y ya estás dentro</p>`;
+
+    const body = `
+      <p style="color:#334155;font-size:15px;line-height:1.6;margin:0 0 24px">
+        Hola <strong>${nombre}</strong>, haz clic en el botón para confirmar tu email y activar tu cuenta en AplicAI.
+      </p>
+      <a href="${link}"
+        style="display:inline-block;background:linear-gradient(135deg,#1E6E82,#2A8FA5);color:white;padding:14px 28px;border-radius:10px;text-decoration:none;font-weight:700;font-size:15px">
+        Verificar mi cuenta →
+      </a>
+      <p style="color:#94A3B8;font-size:13px;margin-top:24px;line-height:1.5">
+        Este enlace expira en 24 horas. Si no creaste esta cuenta, ignora este correo.
+      </p>`;
+
+    return this.base(
+      'linear-gradient(135deg, #090F1E 0%, #0D2140 100%)',
+      headerContent,
+      body,
+    );
+  }
+
   postulaFacilHtml(nombre: string, cargos: string[]): string {
     const headerContent = `
       <h1 style="color:white;margin:16px 0 4px;font-size:22px">¡Todo listo, estamos en marcha!</h1>

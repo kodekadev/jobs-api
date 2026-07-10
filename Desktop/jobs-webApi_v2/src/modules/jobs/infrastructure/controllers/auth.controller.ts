@@ -31,6 +31,18 @@ export class AuthController {
     return this.authService.register(body);
   }
 
+  @Post('verify-email')
+  @HttpCode(200)
+  verifyEmail(@Body() body: { token: string }) {
+    return this.authService.verifyEmail(body.token);
+  }
+
+  @Post('resend-verification')
+  @HttpCode(200)
+  resendVerification(@Body() body: { email: string }) {
+    return this.authService.resendVerification(body.email);
+  }
+
   @Post('forgot-password')
   @HttpCode(200)
   forgotPassword(@Body() body: { email: string }) {
