@@ -126,23 +126,34 @@ export class PostulaFacilService {
       }
     }
 
-    // Trigger registration job only once per user.
-    // CORREOS_ENVIADOS acts as a distributed lock: if a record exists for
-    // 'registro_portales', the job was already triggered (or is running).
-    // This prevents multiple parallel Cloud Run executions for the same user.
-    const alreadyTriggered = await this.bq.query<any>(`
-      SELECT ID FROM ${this.bq.t('CORREOS_ENVIADOS')}
-      WHERE ID_USUARIO = @id AND TIPO = 'registro_portales' LIMIT 1
+    // Trigger registration job at most once every 2 hours per user.
+    // - If account already exists in CUENTAS_PORTALES → skip (success).
+    // - If job was triggered in the last 2h (CORREOS_ENVIADOS) → skip (running).
+    // - Otherwise → trigger and record the attempt.
+    // This prevents parallel Cloud Run executions while still allowing
+    // retries if the job failed (record expires after 2 hours).
+    const accountExists = await this.bq.query<any>(`
+      SELECT id_usuario FROM ${this.bq.t('CUENTAS_PORTALES')}
+      WHERE id_usuario = @id AND portal = 'trabajando' LIMIT 1
     `, { id: body.id_usuario }).catch(() => []);
 
-    if (!alreadyTriggered.length) {
-      // Insert BEFORE triggering so concurrent saves don't race through
-      await this.bq.query(`
-        INSERT INTO ${this.bq.t('CORREOS_ENVIADOS')} (ID_USUARIO, TIPO, FECHA)
-        VALUES (@id, 'registro_portales', CURRENT_TIMESTAMP())
-      `, { id: body.id_usuario }).catch(() => null);
+    if (!accountExists.length) {
+      const recentlyTriggered = await this.bq.query<any>(`
+        SELECT ID FROM ${this.bq.t('CORREOS_ENVIADOS')}
+        WHERE ID_USUARIO = @id AND TIPO = 'registro_portales'
+          AND FECHA >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 2 HOUR)
+        LIMIT 1
+      `, { id: body.id_usuario }).catch(() => []);
 
-      this.cloudRun.triggerRegisterJob(body.id_usuario);
+      if (!recentlyTriggered.length) {
+        // Insert BEFORE triggering so concurrent saves don't race through
+        await this.bq.query(`
+          INSERT INTO ${this.bq.t('CORREOS_ENVIADOS')} (ID_USUARIO, TIPO, FECHA)
+          VALUES (@id, 'registro_portales', CURRENT_TIMESTAMP())
+        `, { id: body.id_usuario }).catch(() => null);
+
+        this.cloudRun.triggerRegisterJob(body.id_usuario);
+      }
     }
 
     return { success: true };
