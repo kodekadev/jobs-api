@@ -161,38 +161,46 @@ export class AuthService {
         (@id, @nombre, @email, @celular, @password, @terminos, 0, CURRENT_TIMESTAMP(), false)
     `, { id, nombre: body.nombre, email: emailNorm, celular: body.celular, password: hash, terminos: body.terminos ? 1 : 0 });
 
-    const rawToken = crypto.randomBytes(32).toString('hex');
-    const hashed   = crypto.createHash('sha256').update(rawToken).digest('hex');
-    const expires  = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+    const code    = String(Math.floor(100000 + Math.random() * 900000));
+    const hashed  = crypto.createHash('sha256').update(code).digest('hex');
+    const expires = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
 
     await this.bq.query(`
       INSERT INTO ${this.bq.t('EMAIL_VERIFICATIONS')} (ID_USUARIO, TOKEN, EXPIRES_AT, CREATED_AT)
       VALUES (@id, @token, @expires, CURRENT_TIMESTAMP())
     `, { id, token: hashed, expires }).catch(() => null);
 
-    const link = `${env.frontendUrl}/verificar-email?token=${rawToken}`;
     this.email.send(
       emailNorm,
-      'Verifica tu cuenta en AplicAI',
-      this.email.verifyEmailHtml(body.nombre, link),
+      `${code} es tu código de verificación de AplicAI`,
+      this.email.verifyEmailHtml(body.nombre, code),
     ).catch(() => null);
 
     return { success: true, pendingVerification: true };
   }
 
-  // ─── VERIFY EMAIL ─────────────────────────────────────────────────────────
-  async verifyEmail(rawToken: string) {
-    const hashed = crypto.createHash('sha256').update(rawToken).digest('hex');
+  // ─── VERIFY EMAIL (código de 6 dígitos) ──────────────────────────────────
+  async verifyEmail(emailRaw: string, code: string) {
+    const emailNorm = emailRaw.trim().toLowerCase();
+    const hashed    = crypto.createHash('sha256').update(code.trim()).digest('hex');
+
+    const userRows = await this.bq.query<any>(`
+      SELECT ID_USUARIO, NOMBRE FROM ${this.bq.t('USUARIOS')}
+      WHERE LOWER(EMAIL) = @email LIMIT 1
+    `, { email: emailNorm });
+
+    if (!userRows.length) throw new BadRequestException('Código inválido');
+
+    const userId = userRows[0].ID_USUARIO;
+    const nombre = userRows[0].NOMBRE;
 
     const rows = await this.bq.query<any>(`
-      SELECT ID_USUARIO, EXPIRES_AT FROM ${this.bq.t('EMAIL_VERIFICATIONS')}
-      WHERE TOKEN = @token LIMIT 1
-    `, { token: hashed });
+      SELECT EXPIRES_AT FROM ${this.bq.t('EMAIL_VERIFICATIONS')}
+      WHERE ID_USUARIO = @id AND TOKEN = @token LIMIT 1
+    `, { id: userId, token: hashed });
 
-    if (!rows.length) throw new BadRequestException('Enlace inválido o ya utilizado');
-    if (new Date(rows[0].EXPIRES_AT) < new Date()) throw new BadRequestException('Enlace expirado — solicita uno nuevo');
-
-    const userId = rows[0].ID_USUARIO;
+    if (!rows.length) throw new BadRequestException('Código inválido');
+    if (new Date(rows[0].EXPIRES_AT) < new Date()) throw new BadRequestException('Código expirado — solicita uno nuevo');
 
     await Promise.all([
       this.bq.query(`
@@ -203,19 +211,24 @@ export class AuthService {
       `, { id: userId }),
     ]);
 
-    const user = await this.bq.query<any>(`
-      SELECT NOMBRE, EMAIL FROM ${this.bq.t('USUARIOS')} WHERE ID_USUARIO = @id LIMIT 1
+    this.email.send(
+      emailNorm,
+      '¡Bienvenido a AplicAI! Tu cuenta está activa',
+      this.email.welcomeHtml(nombre),
+    ).catch(() => null);
+
+    // Retornar sesión completa para auto-login al dashboard
+    const fullUser = await this.bq.query<any>(`
+      SELECT
+        u.ID_USUARIO, u.NOMBRE, u.EMAIL, u.CELULAR, u.ASIGNADO_LKD, u.FECHA_REGISTRO,
+        COALESCE(pc.PLAN, 'FREE') as PLAN, pc.ESTADO as PLAN_ESTADO
+      FROM ${this.bq.t('USUARIOS')} u
+      LEFT JOIN ${this.bq.t('PLAN_CONTRATADO')} pc
+        ON u.ID_USUARIO = pc.ID_USUARIO AND pc.ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE')
+      WHERE u.ID_USUARIO = @id LIMIT 1
     `, { id: userId });
 
-    if (user.length) {
-      this.email.send(
-        user[0].EMAIL,
-        '¡Bienvenido a AplicAI! Tu cuenta está activa',
-        this.email.welcomeHtml(user[0].NOMBRE),
-      ).catch(() => null);
-    }
-
-    return { success: true };
+    return this.buildResponse(fullUser[0]);
   }
 
   // ─── RESEND VERIFICATION ──────────────────────────────────────────────────
@@ -237,20 +250,19 @@ export class AuthService {
       DELETE FROM ${this.bq.t('EMAIL_VERIFICATIONS')} WHERE ID_USUARIO = @id
     `, { id: userId }).catch(() => null);
 
-    const rawToken = crypto.randomBytes(32).toString('hex');
-    const hashed   = crypto.createHash('sha256').update(rawToken).digest('hex');
-    const expires  = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+    const code    = String(Math.floor(100000 + Math.random() * 900000));
+    const hashed  = crypto.createHash('sha256').update(code).digest('hex');
+    const expires = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
 
     await this.bq.query(`
       INSERT INTO ${this.bq.t('EMAIL_VERIFICATIONS')} (ID_USUARIO, TOKEN, EXPIRES_AT, CREATED_AT)
       VALUES (@id, @token, @expires, CURRENT_TIMESTAMP())
     `, { id: userId, token: hashed, expires }).catch(() => null);
 
-    const link = `${env.frontendUrl}/verificar-email?token=${rawToken}`;
     await this.email.send(
       emailNorm,
-      'Verifica tu cuenta en AplicAI',
-      this.email.verifyEmailHtml(nombre, link),
+      `${code} es tu código de verificación de AplicAI`,
+      this.email.verifyEmailHtml(nombre, code),
     ).catch(() => null);
 
     return { success: true };

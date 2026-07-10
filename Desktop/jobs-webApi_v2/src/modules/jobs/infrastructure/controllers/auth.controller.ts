@@ -33,8 +33,8 @@ export class AuthController {
 
   @Post('verify-email')
   @HttpCode(200)
-  verifyEmail(@Body() body: { token: string }) {
-    return this.authService.verifyEmail(body.token);
+  verifyEmail(@Body() body: { email: string; code: string }) {
+    return this.authService.verifyEmail(body.email, body.code);
   }
 
   @Post('resend-verification')

@@ -166,21 +166,20 @@ export class EmailService {
     );
   }
 
-  verifyEmailHtml(nombre: string, link: string): string {
+  verifyEmailHtml(nombre: string, code: string): string {
     const headerContent = `
-      <h1 style="color:white;margin:16px 0 4px;font-size:22px">Verifica tu cuenta</h1>
-      <p style="color:rgba(255,255,255,0.65);margin:0;font-size:14px">Un solo clic y ya estás dentro</p>`;
+      <h1 style="color:white;margin:16px 0 4px;font-size:22px">Código de verificación</h1>
+      <p style="color:rgba(255,255,255,0.65);margin:0;font-size:14px">Ingresa este código para activar tu cuenta</p>`;
 
     const body = `
       <p style="color:#334155;font-size:15px;line-height:1.6;margin:0 0 24px">
-        Hola <strong>${nombre}</strong>, haz clic en el botón para confirmar tu email y activar tu cuenta en AplicAI.
+        Hola <strong>${nombre}</strong>, ingresa el siguiente código en AplicAI para verificar tu cuenta:
       </p>
-      <a href="${link}"
-        style="display:inline-block;background:linear-gradient(135deg,#1E6E82,#2A8FA5);color:white;padding:14px 28px;border-radius:10px;text-decoration:none;font-weight:700;font-size:15px">
-        Verificar mi cuenta →
-      </a>
-      <p style="color:#94A3B8;font-size:13px;margin-top:24px;line-height:1.5">
-        Este enlace expira en 24 horas. Si no creaste esta cuenta, ignora este correo.
+      <div style="background:#F0F9FF;border-radius:16px;padding:28px;text-align:center;margin-bottom:24px">
+        <span style="font-size:42px;font-weight:800;letter-spacing:10px;color:#1E6E82;font-family:monospace">${code}</span>
+      </div>
+      <p style="color:#94A3B8;font-size:13px;margin:0;line-height:1.5">
+        Este código expira en 24 horas. Si no creaste esta cuenta, ignora este correo.
       </p>`;
 
     return this.base(
