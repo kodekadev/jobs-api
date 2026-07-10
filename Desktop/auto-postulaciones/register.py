@@ -41,16 +41,27 @@ def register_user(user: dict) -> dict:
         label = PORTAL_LABELS.get(portal, portal)
         # ── 1. Crear cuenta ───────────────────────────────────────────────────
         cuenta_preexistia = bq.get_portal_account(uid, portal) is not None
-        cuenta = get_or_create_account(user, portal)
+        try:
+            cuenta = get_or_create_account(user, portal)
+        except Exception as e:
+            resultados[portal] = "ERROR"
+            print(f"  [{portal}] excepción al crear cuenta: {e}")
+            telegram(
+                f"[PostulAI] Onboarding ERROR\n"
+                f"Usuario: {nombre}\n"
+                f"Portal: {label}\n"
+                f"No se pudo crear cuenta: {e}"
+            )
+            continue
         cuenta_nueva = not cuenta_preexistia and cuenta is not None
         if not cuenta:
             resultados[portal] = "ERROR"
             print(f"  [{portal}] no se pudo crear cuenta")
             telegram(
-                f"[PostulAI] Onboarding\n"
+                f"[PostulAI] Onboarding ERROR\n"
                 f"Usuario: {nombre}\n"
                 f"Portal: {label}\n"
-                f"ERROR: no se pudo crear cuenta"
+                f"No se pudo crear cuenta (sin excepción)"
             )
             continue
 
@@ -152,7 +163,15 @@ def main():
     user = users[0]
     resultados = register_user(user)
 
-    ok = all(v == "OK" for v in resultados.values())
+    errores = [p for p, v in resultados.items() if v == "ERROR"]
+    if errores:
+        telegram(
+            f"[PostulAI] Registro FALLIDO\n"
+            f"Usuario: {user.get('NOMBRE') or single_user_id}\n"
+            f"Portales con error: {', '.join(PORTAL_LABELS.get(p, p) for p in errores)}"
+        )
+
+    ok = all(v in ("OK", "YA_EXISTE") for v in resultados.values())
     print(f"\nResultado: {resultados}")
     sys.exit(0 if ok else 1)
 
