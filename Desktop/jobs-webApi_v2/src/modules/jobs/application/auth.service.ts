@@ -221,8 +221,18 @@ export class AuthService {
     const fullUser = await this.bq.query<any>(`
       SELECT
         u.ID_USUARIO, u.NOMBRE, u.EMAIL, u.CELULAR, u.ASIGNADO_LKD, u.FECHA_REGISTRO,
+        ic.PROFESION, ic.EXPERIENCIA,
+        ic.FOTO_URL, ic.CV_URL as INFO_CV_URL,
+        pf.CARGOS, pf.UBICACIONES, pf.RESUMEN,
+        pf.CV_URL as PF_CV_URL,
+        pf.EXPERIENCIA as PF_EXPERIENCIA,
+        pf.PRETENSION_GENERAL,
+        COALESCE(pa.ACTIVO, false) as AUTO_ACTIVO,
         COALESCE(pc.PLAN, 'FREE') as PLAN, pc.ESTADO as PLAN_ESTADO
       FROM ${this.bq.t('USUARIOS')} u
+      LEFT JOIN ${this.bq.t('INFO_CLIENTE')} ic ON u.ID_USUARIO = ic.ID_USUARIO
+      LEFT JOIN ${this.bq.t('POSTULA_FACIL')} pf ON u.ID_USUARIO = pf.ID_USUARIO
+      LEFT JOIN ${this.bq.t('POSTULACIONES_AUTO')} pa ON u.ID_USUARIO = pa.ID_USUARIO
       LEFT JOIN ${this.bq.t('PLAN_CONTRATADO')} pc
         ON u.ID_USUARIO = pc.ID_USUARIO AND pc.ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE')
       WHERE u.ID_USUARIO = @id LIMIT 1
