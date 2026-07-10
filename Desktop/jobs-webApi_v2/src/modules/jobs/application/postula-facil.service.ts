@@ -101,13 +101,19 @@ export class PostulaFacilService {
       jornada: body.jornada || '',
     });
 
-    // Send confirmation email once per user
-    const sent = await this.bq.query<any>(`
-      SELECT ID FROM ${this.bq.t('CORREOS_ENVIADOS')}
-      WHERE ID_USUARIO = @id AND TIPO = 'postula_facil' LIMIT 1
-    `, { id: body.id_usuario }).catch(() => []);
+    // INSERT first (only if not yet sent) — BigQuery serializes DML so only one
+    // concurrent request gets numDmlAffectedRows=1; the rest get 0 or a serialization
+    // error (caught as 0). This prevents duplicate emails when user saves repeatedly.
+    const inserted = await this.bq.dml(`
+      INSERT INTO ${this.bq.t('CORREOS_ENVIADOS')} (ID_USUARIO, TIPO, FECHA)
+      SELECT @id, 'postula_facil', CURRENT_TIMESTAMP()
+      WHERE NOT EXISTS (
+        SELECT 1 FROM ${this.bq.t('CORREOS_ENVIADOS')}
+        WHERE ID_USUARIO = @id AND TIPO = 'postula_facil'
+      )
+    `, { id: body.id_usuario }).catch(() => 0);
 
-    if (!sent.length) {
+    if (inserted > 0) {
       const user = await this.bq.query<any>(`
         SELECT NOMBRE, EMAIL FROM ${this.bq.t('USUARIOS')} WHERE ID_USUARIO = @id LIMIT 1
       `, { id: body.id_usuario });
@@ -118,11 +124,6 @@ export class PostulaFacilService {
           '¡Tu perfil de Postula Fácil está listo!',
           this.email.postulaFacilHtml(user[0].NOMBRE, body.cargos),
         ).catch(() => null);
-
-        await this.bq.query(`
-          INSERT INTO ${this.bq.t('CORREOS_ENVIADOS')} (ID_USUARIO, TIPO, FECHA)
-          VALUES (@id, 'postula_facil', CURRENT_TIMESTAMP())
-        `, { id: body.id_usuario }).catch(() => null);
       }
     }
 
