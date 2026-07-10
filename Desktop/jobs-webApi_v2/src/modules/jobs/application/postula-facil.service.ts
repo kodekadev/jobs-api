@@ -39,6 +39,8 @@ export class PostulaFacilService {
     carrera?: string;
     situacion_estudios?: string;
     anio_inicio_estudios?: string;
+    tipo_busqueda?: string;
+    jornada?: string;
   }) {
     const limits = PLAN_LIMITS[(body.plan || 'FREE').toUpperCase()] ?? PLAN_LIMITS.FREE;
     if ((body.cargos || []).length > limits.cargos) {
@@ -67,11 +69,13 @@ export class PostulaFacilService {
         CARRERA = COALESCE(NULLIF(@carrera, ''), T.CARRERA),
         SITUACION_ESTUDIOS = COALESCE(NULLIF(@situacion_estudios, ''), T.SITUACION_ESTUDIOS),
         ANIO_INICIO_ESTUDIOS = IF(@anio_inicio_estudios != '', SAFE_CAST(@anio_inicio_estudios AS INT64), T.ANIO_INICIO_ESTUDIOS),
+        TIPO_BUSQUEDA = COALESCE(NULLIF(@tipo_busqueda, ''), T.TIPO_BUSQUEDA),
+        JORNADA = COALESCE(NULLIF(@jornada, ''), T.JORNADA),
         FECHA_ACTUALIZACION = CURRENT_TIMESTAMP()
       WHEN NOT MATCHED THEN INSERT
-        (ID_USUARIO, PLAN, PROFESION, RESUMEN, CV_URL, CARGOS, EXPERIENCIA, UBICACIONES, PRETENSION_GENERAL, RUT, FECHA_NACIMIENTO, EMPRESA, ANIO_INICIO, ACTUALMENTE_TRABAJANDO, ANIO_FIN, NIVEL_EDUCATIVO, INSTITUCION, CARRERA, SITUACION_ESTUDIOS, ANIO_INICIO_ESTUDIOS, FECHA_ACTUALIZACION)
+        (ID_USUARIO, PLAN, PROFESION, RESUMEN, CV_URL, CARGOS, EXPERIENCIA, UBICACIONES, PRETENSION_GENERAL, RUT, FECHA_NACIMIENTO, EMPRESA, ANIO_INICIO, ACTUALMENTE_TRABAJANDO, ANIO_FIN, NIVEL_EDUCATIVO, INSTITUCION, CARRERA, SITUACION_ESTUDIOS, ANIO_INICIO_ESTUDIOS, TIPO_BUSQUEDA, JORNADA, FECHA_ACTUALIZACION)
       VALUES
-        (@id, @plan, @prof, @resumen, @cv, @cargos, @exp, @ubic, @pretension, @rut, @fn, NULLIF(@empresa, ''), SAFE_CAST(NULLIF(@anio_inicio, '') AS INT64), @actualmente, IF(@actualmente, NULL, SAFE_CAST(NULLIF(@anio_fin, '') AS INT64)), NULLIF(@nivel_educativo, ''), NULLIF(@institucion, ''), NULLIF(@carrera, ''), NULLIF(@situacion_estudios, ''), SAFE_CAST(NULLIF(@anio_inicio_estudios, '') AS INT64), CURRENT_TIMESTAMP())
+        (@id, @plan, @prof, @resumen, @cv, @cargos, @exp, @ubic, @pretension, @rut, @fn, NULLIF(@empresa, ''), SAFE_CAST(NULLIF(@anio_inicio, '') AS INT64), @actualmente, IF(@actualmente, NULL, SAFE_CAST(NULLIF(@anio_fin, '') AS INT64)), NULLIF(@nivel_educativo, ''), NULLIF(@institucion, ''), NULLIF(@carrera, ''), NULLIF(@situacion_estudios, ''), SAFE_CAST(NULLIF(@anio_inicio_estudios, '') AS INT64), NULLIF(@tipo_busqueda, ''), NULLIF(@jornada, ''), CURRENT_TIMESTAMP())
     `, {
       id: body.id_usuario,
       plan: body.plan,
@@ -93,6 +97,8 @@ export class PostulaFacilService {
       carrera: body.carrera || '',
       situacion_estudios: body.situacion_estudios || '',
       anio_inicio_estudios: body.anio_inicio_estudios || '',
+      tipo_busqueda: body.tipo_busqueda || '',
+      jornada: body.jornada || '',
     });
 
     // Send confirmation email once per user
