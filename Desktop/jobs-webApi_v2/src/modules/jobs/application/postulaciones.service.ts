@@ -25,7 +25,8 @@ export class PostulacionesService {
 
     const [countRows, rows] = await Promise.all([
       this.bq.query<any>(`
-        SELECT COUNT(*) as total FROM ${this.bq.t('EMPLEOS')}
+        SELECT COUNT(*) as total, MIN(Fecha_Postulacion) as primera
+        FROM ${this.bq.t('EMPLEOS')}
         WHERE id_usuario = @id
       `, { id: userId }),
       this.bq.query<any>(`
@@ -38,7 +39,8 @@ export class PostulacionesService {
       `, { id: userId }),
     ]);
 
-    const total = Number(countRows[0]?.total ?? rows.length);
+    const total   = Number(countRows[0]?.total ?? rows.length);
+    const primera = countRows[0]?.primera?.value ?? countRows[0]?.primera ?? null;
 
     const grouped: Record<string, any[]> = {};
 
@@ -61,7 +63,7 @@ export class PostulacionesService {
       });
     }
 
-    return { postulaciones: grouped, total };
+    return { postulaciones: grouped, total, primera_postulacion: primera };
   }
 
   private relTime(fecha: any): string {
