@@ -24,7 +24,7 @@ export class EmailService {
 <body style="margin:0;padding:0;background:#F0F4F8;font-family:Arial,Helvetica,sans-serif">
   <div style="max-width:520px;margin:32px auto;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.1)">
     <div style="background:${headerBg};padding:28px 32px">
-      <img src="${env.frontendUrl}/JOBS.png" alt="AplicAI" style="height:32px"/>
+      <span style="font-size:22px;font-weight:800;color:#ffffff;letter-spacing:-0.5px;font-family:Arial,sans-serif">Aplic<span style="color:#4ECDC4">AI</span></span>
       ${headerContent}
     </div>
     <div style="background:#ffffff;padding:32px">
