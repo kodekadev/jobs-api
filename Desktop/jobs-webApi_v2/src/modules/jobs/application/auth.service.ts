@@ -227,7 +227,7 @@ export class AuthService {
         pf.CV_URL as PF_CV_URL,
         pf.EXPERIENCIA as PF_EXPERIENCIA,
         pf.PRETENSION_GENERAL,
-        COALESCE(pa.ACTIVO, false) as AUTO_ACTIVO,
+        COALESCE(pa.ACTIVO, 0) as AUTO_ACTIVO,
         COALESCE(pc.PLAN, 'FREE') as PLAN, pc.ESTADO as PLAN_ESTADO
       FROM ${this.bq.t('USUARIOS')} u
       LEFT JOIN ${this.bq.t('INFO_CLIENTE')} ic ON u.ID_USUARIO = ic.ID_USUARIO
