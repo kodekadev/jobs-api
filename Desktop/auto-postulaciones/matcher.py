@@ -13,14 +13,30 @@ import json
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
-# Palabras que rechazan el empleo inmediatamente sin importar el cargo
-_REJECT_ALWAYS = [
+# Rechazados para quien busca EMPLEO (no quiere prácticas)
+_REJECT_EMPLEO = [
     "práctica profesional", "practica profesional",
     "recién egresado", "recien egresado",
-    "sin experiencia requerida", "sin experiencia",
+    "sin experiencia requerida",
     "primer empleo", "pasante", "practicante",
     "vendedor puerta a puerta", "venta directa",
     "multinivel", "network marketing",
+]
+
+# Rechazados para quien busca PRACTICA (no le corresponden empleos de experiencia)
+_REJECT_PRACTICA = [
+    "vendedor puerta a puerta", "venta directa",
+    "multinivel", "network marketing",
+    "jefe de", "gerente", "subgerente", "director de",
+    "senior", "sr.", "sr ", "lead ", "tech lead",
+    "10 años", "8 años", "7 años", "6 años", "5 años de experiencia",
+]
+
+# Palabras que ACEPTAN para quien busca PRACTICA (al menos una debe aparecer)
+_ACCEPT_PRACTICA = [
+    "práctica", "practica", "practicante", "pasante", "intern",
+    "trainee", "egresado", "recién egresado", "recien egresado",
+    "sin experiencia", "primer empleo", "junior", "titulado reciente",
 ]
 
 
@@ -41,10 +57,23 @@ def _keyword_filter(job: dict, user: dict) -> tuple[bool, str]:
     desc   = (job.get("descripcion") or "").lower()
     texto  = titulo + " " + desc
 
-    # Rechazo duro — términos incompatibles con cualquier profesional
-    for kw in _REJECT_ALWAYS:
-        if kw in texto:
-            return False, f"rechazado: '{kw}'"
+    tipo = (user.get("TIPO_BUSQUEDA") or user.get("tipo_busqueda") or "EMPLEO").upper()
+    es_practica = tipo == "PRACTICA"
+
+    if es_practica:
+        # Rechazar términos incompatibles con práctica
+        for kw in _REJECT_PRACTICA:
+            if kw in texto:
+                return False, f"rechazado para practicante: '{kw}'"
+        # Debe tener al menos una señal de práctica en el texto completo
+        if not any(kw in texto for kw in _ACCEPT_PRACTICA):
+            return False, "sin indicador de práctica/trainee/egresado"
+        return True, "empleo de práctica detectado"
+    else:
+        # Rechazar prácticas para quien busca empleo
+        for kw in _REJECT_EMPLEO:
+            if kw in texto:
+                return False, f"rechazado: '{kw}'"
 
     # Al menos una palabra relevante del cargo buscado debe aparecer en el título
     cargos = _parse_list(user.get("cargos") or user.get("CARGOS"))
@@ -70,21 +99,28 @@ def _keyword_filter(job: dict, user: dict) -> tuple[bool, str]:
 
 
 def _build_profile_text(user: dict) -> str:
-    cargos     = _parse_list(user.get("cargos") or user.get("CARGOS"))
-    profesion  = user.get("profesion") or user.get("PROFESION") or ""
-    resumen    = (user.get("resumen") or user.get("RESUMEN") or "")[:400]
+    cargos      = _parse_list(user.get("cargos") or user.get("CARGOS"))
+    profesion   = user.get("profesion") or user.get("PROFESION") or ""
+    resumen     = (user.get("resumen") or user.get("RESUMEN") or "")[:400]
     experiencia = user.get("experiencia") or user.get("EXPERIENCIA") or "no especificada"
-    pretension = user.get("pretension_general") or user.get("PRETENSION_GENERAL") or ""
+    pretension  = user.get("pretension_general") or user.get("PRETENSION_GENERAL") or ""
+    tipo        = (user.get("TIPO_BUSQUEDA") or user.get("tipo_busqueda") or "EMPLEO").upper()
+    jornada     = (user.get("JORNADA") or user.get("jornada") or "FULL_TIME").upper()
     try:
-        pretension_fmt = f"${int(pretension):,} CLP" if pretension else ""
+        pretension_fmt = f"${int(pretension):,} CLP" if pretension and int(pretension) > 0 else ""
     except (ValueError, TypeError):
         pretension_fmt = f"${pretension} CLP" if pretension else ""
 
+    tipo_label = "Práctica profesional / Internship" if tipo == "PRACTICA" else "Empleo remunerado"
+    jornada_label = "Part Time" if jornada == "PART_TIME" else "Full Time"
+
     base = (
-        f"Profesión: {profesion}\n"
-        f"Cargos buscados: {', '.join(cargos)}\n"
-        f"Años/nivel de experiencia: {experiencia}\n"
-        f"Resumen profesional: {resumen}"
+        f"Tipo de búsqueda: {tipo_label}\n"
+        f"Jornada: {jornada_label}\n"
+        f"Profesión/Carrera: {profesion}\n"
+        f"Cargos/áreas buscadas: {', '.join(cargos)}\n"
+        f"Años de experiencia: {experiencia}\n"
+        f"Resumen: {resumen}"
     )
     return base + (f"\nPretensión salarial: {pretension_fmt}" if pretension_fmt else "")
 
@@ -119,11 +155,12 @@ EMPLEOS A EVALUAR:
 {empleos_txt}
 
 CRITERIOS DE MATCHING (en orden de prioridad):
-1. ACEPTA SIEMPRE si el título del empleo contiene las mismas palabras clave del cargo buscado (p.ej. si busca "Jefe de proyectos" y el título dice "Jefe de Proyecto" o "Jefe(a) Proyecto" → ACEPTA).
-2. RECHAZA SIEMPRE si el empleo es: práctica profesional, sin experiencia, pasantía, ventas directas, multinivel, retail operativo.
-3. RECHAZA si la industria es claramente incompatible con la formación (p.ej. ingeniero civil industrial → no aplica a cargo de psicólogo, enfermera, chef).
-4. En caso de duda, ACEPTA. Es mejor postular a un empleo borderline que perder una oportunidad.
-5. Si la descripción está vacía, evalúa solo por título y sé generoso.
+1. ACEPTA SIEMPRE si el título contiene las palabras clave del cargo buscado (match directo).
+2. Si el candidato busca PRÁCTICA: ACEPTA solo empleos de práctica/pasantía/trainee/egresado/sin experiencia. RECHAZA empleos que requieren experiencia, cargos senior, jefaturas o gerencias.
+3. Si el candidato busca EMPLEO: RECHAZA empleos de práctica profesional, pasantía, sin experiencia, multinivel, ventas puerta a puerta.
+4. RECHAZA si la industria es claramente incompatible con la formación del candidato.
+5. En caso de duda, ACEPTA. Es mejor postular a un empleo borderline que perder la oportunidad.
+6. Si la descripción está vacía, evalúa solo por título y sé generoso.
 
 Responde SOLO con JSON válido: {{"match": [lista de índices que son buen match]}}
 No incluyas texto adicional, solo el JSON."""

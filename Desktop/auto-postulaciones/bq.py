@@ -63,7 +63,9 @@ def _pf_select(alias: str = "pf") -> str:
         {a}.ANIO_INICIO_ESTUDIOS,
         COALESCE(UPPER({a}.PLAN), 'FREE') AS plan,
         {a}.EMPRESAS_EXCLUIDAS,
-        {a}.BUSQUEDA_ACTIVA
+        {a}.BUSQUEDA_ACTIVA,
+        COALESCE(UPPER({a}.TIPO_BUSQUEDA), 'EMPLEO') AS TIPO_BUSQUEDA,
+        COALESCE(UPPER({a}.JORNADA), 'FULL_TIME') AS JORNADA
     """
 
 
@@ -80,8 +82,12 @@ def get_active_users() -> list[dict]:
           AND pf.CARGOS IS NOT NULL
           AND pf.UBICACIONES IS NOT NULL
           AND pf.PROFESION IS NOT NULL AND pf.PROFESION != ''
-          AND pf.PRETENSION_GENERAL IS NOT NULL AND pf.PRETENSION_GENERAL != ''
           AND pf.RUT IS NOT NULL AND pf.RUT != ''
+          AND (
+            -- Empleo requiere pretension; practica puede tener 0 o vacio
+            COALESCE(UPPER(pf.TIPO_BUSQUEDA), 'EMPLEO') = 'PRACTICA'
+            OR (pf.PRETENSION_GENERAL IS NOT NULL AND pf.PRETENSION_GENERAL != '')
+          )
     """
     rows = list(_query(query).result())
     return [dict(r) for r in rows]
