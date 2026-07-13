@@ -7,6 +7,7 @@ import { OAuth2Client } from 'google-auth-library';
 import { BigQueryService } from '../../shared/infrastructure/services/bigquery.service';
 import { EmailService } from '../../shared/infrastructure/services/email.service';
 import env from '../../shared/infrastructure/environment';
+import { PLAN_VIGENTE_SQL } from './plan.service';
 
 @Injectable()
 export class AuthService {
@@ -38,6 +39,7 @@ export class AuthService {
       LEFT JOIN ${this.bq.t('POSTULACIONES_AUTO')} pa ON u.ID_USUARIO = pa.ID_USUARIO
       LEFT JOIN ${this.bq.t('PLAN_CONTRATADO')} pc
         ON u.ID_USUARIO = pc.ID_USUARIO AND pc.ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE')
+        AND ${PLAN_VIGENTE_SQL}
       WHERE LOWER(u.EMAIL) = @email
       LIMIT 1
     `, { email: emailNorm });
@@ -101,6 +103,7 @@ export class AuthService {
       LEFT JOIN ${this.bq.t('POSTULACIONES_AUTO')} pa ON u.ID_USUARIO = pa.ID_USUARIO
       LEFT JOIN ${this.bq.t('PLAN_CONTRATADO')} pc
         ON u.ID_USUARIO = pc.ID_USUARIO AND pc.ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE')
+        AND ${PLAN_VIGENTE_SQL}
       WHERE LOWER(u.EMAIL) = @email
       LIMIT 1
     `, { email: emailNorm });
@@ -235,6 +238,7 @@ export class AuthService {
       LEFT JOIN ${this.bq.t('POSTULACIONES_AUTO')} pa ON u.ID_USUARIO = pa.ID_USUARIO
       LEFT JOIN ${this.bq.t('PLAN_CONTRATADO')} pc
         ON u.ID_USUARIO = pc.ID_USUARIO AND pc.ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE')
+        AND ${PLAN_VIGENTE_SQL}
       WHERE u.ID_USUARIO = @id LIMIT 1
     `, { id: userId });
 

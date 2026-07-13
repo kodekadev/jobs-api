@@ -6,6 +6,7 @@ import { CloudRunService } from '../../shared/infrastructure/services/cloud-run.
 const PLAN_LIMITS: Record<string, { cargos: number; ubicaciones: number }> = {
   FREE:    { cargos: 1,  ubicaciones: 1  },
   PRO:     { cargos: 4,  ubicaciones: 4  },
+  SPRINT:  { cargos: 4,  ubicaciones: 4  },
   PREMIUM: { cargos: 10, ubicaciones: 10 },
   TRIAL:   { cargos: 4,  ubicaciones: 4  },
 };

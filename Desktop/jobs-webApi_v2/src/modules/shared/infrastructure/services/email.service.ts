@@ -109,6 +109,7 @@ export class EmailService {
 
     const planFeatures: Record<string, string[]> = {
       PRO:     ['25 postulaciones automáticas/día', '4 cargos buscados', '✨ Optimización de CV con IA (2/mes)', 'Soporte prioritario'],
+      SPRINT:  ['25 postulaciones automáticas/día', '4 cargos buscados', '✨ Optimización de CV con IA (3)'],
       PREMIUM: ['50 postulaciones automáticas/día', '10 cargos buscados', '✨ Optimización de CV con IA (5/mes)', 'Soporte 24/7'],
     };
     const features = planFeatures[plan] || [];
@@ -116,7 +117,7 @@ export class EmailService {
     const body = `
       <p style="color:#334155;font-size:15px;line-height:1.6;margin:0 0 20px">
         Hola <strong>${nombre}</strong>, tu plan <strong>${plan}</strong> vence el <strong>${fechaFin}</strong>.
-        Si no renuevas, pasarás automáticamente al plan gratuito (10 postulaciones/día).
+        Si no renuevas, pasarás automáticamente al plan gratuito (5 postulaciones/día).
       </p>
 
       ${features.length ? `

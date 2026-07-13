@@ -6,8 +6,17 @@ import env from '../../shared/infrastructure/environment';
 
 const PLAN_PRICES: Record<string, number> = {
   PRO: 9990,
+  SPRINT: 14990,   // pago único — 30 días, sin renovación
   PREMIUM: 19990,
 };
+
+// Condición SQL de vigencia: planes pagados duran 30 días desde el pago,
+// TRIAL 14 días, FREE no expira. Usar con alias `pc`.
+export const PLAN_VIGENTE_SQL = `(
+  pc.PLAN = 'FREE'
+  OR (pc.PLAN = 'TRIAL' AND DATE(pc.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY))
+  OR (pc.PLAN NOT IN ('FREE', 'TRIAL') AND DATE(pc.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))
+)`;
 
 @Injectable()
 export class PlanService {
@@ -18,8 +27,9 @@ export class PlanService {
 
   async getPlan(userId: string) {
     const rows = await this.bq.query<any>(`
-      SELECT PLAN, ESTADO, FECHA_INICIO FROM ${this.bq.t('PLAN_CONTRATADO')}
-      WHERE ID_USUARIO = @id AND ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE')
+      SELECT PLAN, ESTADO, FECHA_INICIO FROM ${this.bq.t('PLAN_CONTRATADO')} pc
+      WHERE pc.ID_USUARIO = @id AND pc.ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE')
+        AND ${PLAN_VIGENTE_SQL}
       ORDER BY FECHA_INICIO DESC LIMIT 1
     `, { id: userId });
 
