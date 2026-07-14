@@ -33,7 +33,20 @@ export class PlanService {
       ORDER BY FECHA_INICIO DESC LIMIT 1
     `, { id: userId });
 
-    return { plan: rows[0]?.PLAN || 'FREE', estado: rows[0]?.ESTADO || null };
+    const row = rows[0];
+    const fechaInicio: Date | null = row?.FECHA_INICIO?.value
+      ? new Date(row.FECHA_INICIO.value)
+      : row?.FECHA_INICIO
+      ? new Date(row.FECHA_INICIO)
+      : null;
+    let fecha_fin: string | null = null;
+    if (fechaInicio && row?.PLAN !== 'FREE') {
+      const dias = row?.PLAN === 'TRIAL' ? 14 : 30;
+      const fin = new Date(fechaInicio);
+      fin.setDate(fin.getDate() + dias);
+      fecha_fin = fin.toISOString().split('T')[0];
+    }
+    return { plan: row?.PLAN || 'FREE', estado: row?.ESTADO || null, fecha_fin };
   }
 
   async cancelPlan(userId: string) {
@@ -121,7 +134,7 @@ export class PlanService {
       amount: String(amount),
       currency: 'CLP',
       email: userEmail,
-      orderId,
+      commerceOrder: orderId, // Flow exige "commerceOrder" (error 104 si va como orderId)
       subject: `Plan ${plan} — AplicAI`,
       urlConfirmation,
       urlReturn,
