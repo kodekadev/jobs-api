@@ -76,7 +76,7 @@ export class PostulacionesService {
       `, { id: userId }),
       this.bq.query<any>(`
         SELECT
-          cargo, Empresa, Fecha_Postulacion, titulo_empleo
+          cargo, Empresa, Fecha_Postulacion, titulo_empleo, Descripcion
         FROM ${this.bq.t('EMPLEOS')}
         WHERE id_usuario = @id
         ORDER BY Fecha_Postulacion DESC
@@ -105,6 +105,7 @@ export class PostulacionesService {
         link: '',
         titulo: r.titulo_empleo || '',
         tiempo: this.relTime(r.Fecha_Postulacion),
+        descripcion: r.Descripcion || '',
       });
     }
 
