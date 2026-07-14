@@ -19,6 +19,19 @@ export class PostulaFacilService {
     private readonly cloudRun: CloudRunService,
   ) {}
 
+  private extraColumnsReady = false;
+
+  private async ensureExtraColumns() {
+    if (this.extraColumnsReady) return;
+    try {
+      await this.bq.query(`ALTER TABLE ${this.bq.t('POSTULA_FACIL')} ADD COLUMN IF NOT EXISTS EMPRESAS_EXCLUIDAS STRING`);
+    } catch { /* ya existe */ }
+    try {
+      await this.bq.query(`ALTER TABLE ${this.bq.t('POSTULA_FACIL')} ADD COLUMN IF NOT EXISTS BUSQUEDA_ACTIVA BOOL`);
+    } catch { /* ya existe */ }
+    this.extraColumnsReady = true;
+  }
+
   async save(body: {
     id_usuario: string;
     plan: string;
@@ -42,7 +55,10 @@ export class PostulaFacilService {
     anio_inicio_estudios?: string;
     tipo_busqueda?: string;
     jornada?: string;
+    empresas_excluidas?: string[];
+    busqueda_activa?: boolean;
   }) {
+    await this.ensureExtraColumns();
     const limits = PLAN_LIMITS[(body.plan || 'FREE').toUpperCase()] ?? PLAN_LIMITS.FREE;
     if ((body.cargos || []).length > limits.cargos) {
       throw new BadRequestException(`Plan ${body.plan} permite máximo ${limits.cargos} cargo(s)`);
@@ -72,11 +88,13 @@ export class PostulaFacilService {
         ANIO_INICIO_ESTUDIOS = IF(@anio_inicio_estudios != '', SAFE_CAST(@anio_inicio_estudios AS INT64), T.ANIO_INICIO_ESTUDIOS),
         TIPO_BUSQUEDA = COALESCE(NULLIF(@tipo_busqueda, ''), T.TIPO_BUSQUEDA),
         JORNADA = COALESCE(NULLIF(@jornada, ''), T.JORNADA),
+        EMPRESAS_EXCLUIDAS = @empresas_excluidas,
+        BUSQUEDA_ACTIVA = @busqueda_activa,
         FECHA_ACTUALIZACION = CURRENT_TIMESTAMP()
       WHEN NOT MATCHED THEN INSERT
-        (ID_USUARIO, PLAN, PROFESION, RESUMEN, CV_URL, CARGOS, EXPERIENCIA, UBICACIONES, PRETENSION_GENERAL, RUT, FECHA_NACIMIENTO, EMPRESA, ANIO_INICIO, ACTUALMENTE_TRABAJANDO, ANIO_FIN, NIVEL_EDUCATIVO, INSTITUCION, CARRERA, SITUACION_ESTUDIOS, ANIO_INICIO_ESTUDIOS, TIPO_BUSQUEDA, JORNADA, FECHA_ACTUALIZACION)
+        (ID_USUARIO, PLAN, PROFESION, RESUMEN, CV_URL, CARGOS, EXPERIENCIA, UBICACIONES, PRETENSION_GENERAL, RUT, FECHA_NACIMIENTO, EMPRESA, ANIO_INICIO, ACTUALMENTE_TRABAJANDO, ANIO_FIN, NIVEL_EDUCATIVO, INSTITUCION, CARRERA, SITUACION_ESTUDIOS, ANIO_INICIO_ESTUDIOS, TIPO_BUSQUEDA, JORNADA, EMPRESAS_EXCLUIDAS, BUSQUEDA_ACTIVA, FECHA_ACTUALIZACION)
       VALUES
-        (@id, @plan, @prof, @resumen, @cv, @cargos, @exp, @ubic, @pretension, @rut, @fn, NULLIF(@empresa, ''), SAFE_CAST(NULLIF(@anio_inicio, '') AS INT64), @actualmente, IF(@actualmente, NULL, SAFE_CAST(NULLIF(@anio_fin, '') AS INT64)), NULLIF(@nivel_educativo, ''), NULLIF(@institucion, ''), NULLIF(@carrera, ''), NULLIF(@situacion_estudios, ''), SAFE_CAST(NULLIF(@anio_inicio_estudios, '') AS INT64), NULLIF(@tipo_busqueda, ''), NULLIF(@jornada, ''), CURRENT_TIMESTAMP())
+        (@id, @plan, @prof, @resumen, @cv, @cargos, @exp, @ubic, @pretension, @rut, @fn, NULLIF(@empresa, ''), SAFE_CAST(NULLIF(@anio_inicio, '') AS INT64), @actualmente, IF(@actualmente, NULL, SAFE_CAST(NULLIF(@anio_fin, '') AS INT64)), NULLIF(@nivel_educativo, ''), NULLIF(@institucion, ''), NULLIF(@carrera, ''), NULLIF(@situacion_estudios, ''), SAFE_CAST(NULLIF(@anio_inicio_estudios, '') AS INT64), NULLIF(@tipo_busqueda, ''), NULLIF(@jornada, ''), @empresas_excluidas, @busqueda_activa, CURRENT_TIMESTAMP())
     `, {
       id: body.id_usuario,
       plan: body.plan,
@@ -100,6 +118,8 @@ export class PostulaFacilService {
       anio_inicio_estudios: body.anio_inicio_estudios || '',
       tipo_busqueda: body.tipo_busqueda || '',
       jornada: body.jornada || '',
+      empresas_excluidas: JSON.stringify(body.empresas_excluidas || []),
+      busqueda_activa: body.busqueda_activa ?? false,
     });
 
     // Sync profession/experiencia to INFO_CLIENTE so /perfil shows it pre-filled
@@ -206,6 +226,8 @@ export class PostulaFacilService {
       carrera: r.CARRERA || '',
       situacion_estudios: r.SITUACION_ESTUDIOS || '',
       anio_inicio_estudios: r.ANIO_INICIO_ESTUDIOS ? String(r.ANIO_INICIO_ESTUDIOS) : '',
+      empresas_excluidas: this.parseJson(r.EMPRESAS_EXCLUIDAS),
+      busqueda_activa: r.BUSQUEDA_ACTIVA ?? false,
     };
   }
 
