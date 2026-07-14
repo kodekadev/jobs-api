@@ -3,8 +3,6 @@ import { BigQueryService } from '../../shared/infrastructure/services/bigquery.s
 import { GcsService } from '../../shared/infrastructure/services/gcs.service';
 import env from '../../shared/infrastructure/environment';
 
-const pdfParse = require('pdf-parse') as (buf: Buffer) => Promise<{ text: string }>;
-
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const MODEL = process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001';
 const CV_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 horas
@@ -170,6 +168,10 @@ export class AiService {
       const res = await fetch(url);
       if (!res.ok) return '';
       const buf = Buffer.from(await res.arrayBuffer());
+      // Lazy require: pdfjs-dist (usado por pdf-parse) falla al importarse en Node <22
+      // si se carga a nivel de módulo. Al cargarlo aquí solo falla si realmente se usa.
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const pdfParse = require('pdf-parse') as (b: Buffer) => Promise<{ text: string }>;
       const { text } = await pdfParse(buf);
       const texto = (text || '').trim().slice(0, 6000);
       this.cvCache.set(userId, { texto, ts: Date.now() });
