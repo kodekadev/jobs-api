@@ -124,8 +124,12 @@ def process_user(user: dict) -> dict:
 
     # ── 0. Cuentas y sesión (Playwright principal, Selenium fallback) ──────────
     print(f"[{nombre}] Obteniendo cuentas de portales...", flush=True)
+    _env_portales = os.environ.get("PORTALES_ACTIVOS", "").strip()
+    _portales_lista = ["chiletrabajos", "trabajando"]
+    portales_activos = [p for p in _portales_lista if not _env_portales or p in _env_portales.lower().split(",")]
+
     portal_creds: dict[str, dict | None] = {}
-    for portal in ["chiletrabajos", "trabajando"]:
+    for portal in portales_activos:
         portal_creds[portal] = get_or_create_account(user, portal)
 
     tbj_creds = portal_creds.get("trabajando")
@@ -392,7 +396,21 @@ def process_user(user: dict) -> dict:
 
 
 def main():
+    update_cv_mode = "--update-cv" in __import__("sys").argv
     start = datetime.now()
+
+    if update_cv_mode:
+        print(f"Modo --update-cv: {start.strftime('%Y-%m-%d %H:%M')} UTC\n", flush=True)
+        single_user_id = os.environ.get("SINGLE_USER_ID", "").strip()
+        users = bq.get_user_by_id(single_user_id) if single_user_id else bq.get_active_users()
+        if not users:
+            print("Sin usuarios para actualizar CV.", flush=True)
+            return
+        for u in users:
+            update_cv_user(u)
+        print(f"\nCV actualizado para {len(users)} usuario(s).", flush=True)
+        return
+
     print(f"Auto-postulaciones iniciadas: {start.strftime('%Y-%m-%d %H:%M')} UTC\n", flush=True)
 
     single_user_id = os.environ.get("SINGLE_USER_ID", "").strip()
@@ -498,20 +516,5 @@ def update_cv_user(user: dict) -> dict:
     return {"user": nombre, "cht": ok_cht, "tbj": ok_tbj}
 
 
-def main():
-    update_cv_mode = "--update-cv" in __import__("sys").argv
-    start = datetime.now()
-
-    if update_cv_mode:
-        print(f"Modo --update-cv: {start.strftime('%Y-%m-%d %H:%M')} UTC\n", flush=True)
-        single_user_id = os.environ.get("SINGLE_USER_ID", "").strip()
-        users = bq.get_user_by_id(single_user_id) if single_user_id else bq.get_active_users()
-        if not users:
-            print("Sin usuarios para actualizar CV.", flush=True)
-            return
-        for u in users:
-            update_cv_user(u)
-        print(f"\nCV actualizado para {len(users)} usuario(s).", flush=True)
-        return
-
-    print(f"Auto-postulaciones iniciadas: {start.strftime('%Y-%m-%d %H:%M')} UTC\n", flush=True)
+if __name__ == "__main__":
+    main()

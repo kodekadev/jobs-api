@@ -23,8 +23,8 @@ export class EmailService {
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
 <body style="margin:0;padding:0;background:#F0F4F8;font-family:Arial,Helvetica,sans-serif">
   <div style="max-width:520px;margin:32px auto;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.1)">
-    <div style="background:${headerBg};padding:28px 32px">
-      <span style="font-size:22px;font-weight:800;color:#ffffff;letter-spacing:-0.5px;font-family:Arial,sans-serif">Aplic<span style="color:#4ECDC4">AI</span></span>
+    <div style="background:${headerBg};padding:28px 32px;text-align:center">
+      <div style="margin-bottom:8px"><span style="font-size:26px;font-weight:800;color:#ffffff;letter-spacing:-0.5px;font-family:Arial,sans-serif">Aplic<span style="color:#4ECDC4">AI</span></span></div>
       ${headerContent}
     </div>
     <div style="background:#ffffff;padding:32px">
@@ -109,7 +109,8 @@ export class EmailService {
 
     const planFeatures: Record<string, string[]> = {
       PRO:     ['25 postulaciones automáticas/día', '4 cargos buscados', '✨ Optimización de CV con IA (2/mes)', 'Soporte prioritario'],
-      SPRINT:  ['25 postulaciones automáticas/día', '4 cargos buscados', '✨ Optimización de CV con IA (3)'],
+      SPRINT:  ['750 postulaciones en 30 días', '4 cargos buscados', '✨ Optimización de CV con IA (3)'],
+      TURBO:   ['750 postulaciones en 30 días', '4 cargos buscados', '✨ Optimización de CV con IA (3)'],
       PREMIUM: ['50 postulaciones automáticas/día', '10 cargos buscados', '✨ Optimización de CV con IA (5/mes)', 'Soporte 24/7'],
     };
     const features = planFeatures[plan] || [];

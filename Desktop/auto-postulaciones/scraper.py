@@ -206,9 +206,12 @@ def _scrape_trabajando_playwright(page, cargo: str, ubicacion: str, n: int) -> l
                     link = f"https://www.trabajando.cl{url_o}"
                 else:
                     link = f"https://www.trabajando.cl/trabajo-empleo/{cargo_enc}/trabajo/{id_o}-j"
+                desc_raw = (o.get("descripcionOferta") or o.get("descripcion") or
+                            o.get("descripcionEmpleo") or o.get("resumen") or "")
+                descripcion = _clean(re.sub(r'<[^>]+>', ' ', str(desc_raw)))[:5000] if desc_raw else ""
                 jobs.append({
                     "id": link, "titulo": titulo, "empresa": empr,
-                    "descripcion": "", "link": link,
+                    "descripcion": descripcion, "link": link,
                     "ubicacion": ubicacion, "fuente": "trabajando",
                 })
 
@@ -335,9 +338,12 @@ def _scrape_trabajando(cargo: str, ubicacion: str, n: int, driver=None) -> list[
                                 link = f"https://www.trabajando.cl{url_o}"
                             else:
                                 link = f"https://www.trabajando.cl/trabajo-empleo/{cargo_enc}/trabajo/{id_o}-j"
+                            desc_raw = (o.get("descripcionOferta") or o.get("descripcion") or
+                                        o.get("descripcionEmpleo") or o.get("resumen") or "")
+                            descripcion = _clean(re.sub(r'<[^>]+>', ' ', str(desc_raw)))[:5000] if desc_raw else ""
                             api_jobs.append({
                                 "id": link, "titulo": titulo, "empresa": empr,
-                                "descripcion": "", "link": link,
+                                "descripcion": descripcion, "link": link,
                                 "ubicacion": ubicacion, "fuente": "trabajando",
                             })
                     except Exception:

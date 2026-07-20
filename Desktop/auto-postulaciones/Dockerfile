@@ -1,24 +1,25 @@
 FROM mcr.microsoft.com/playwright/python:v1.49.0-jammy
 
-# Logs en tiempo real (sin buffering de stdout)
 ENV PYTHONUNBUFFERED=1
 
-# Instalar Chromium para Selenium (undetected-chromedriver)
+# Install Google Chrome stable (real binary, not snap redirect like chromium-browser on Jammy)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    chromium-browser \
-    chromium-chromedriver \
-    xvfb \
-    && rm -rf /var/lib/apt/lists/* \
-    && ln -sf /usr/bin/chromium-browser /usr/bin/chromium \
-    && (ls /usr/lib/chromium-browser/chromedriver 2>/dev/null && ln -sf /usr/lib/chromium-browser/chromedriver /usr/bin/chromedriver || true)
+    wget gnupg xvfb \
+    && wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor > /etc/apt/trusted.gpg.d/google.gpg \
+    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
+    && apt-get update && apt-get install -y --no-install-recommends google-chrome-stable \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Playwright browsers ya están en la imagen base — solo instalar chromium por si acaso
+# Playwright browsers (pre-installed in base image, reinstall to confirm)
 RUN playwright install chromium
+
+# Download matching chromedriver via webdriver-manager at build time
+RUN python -c "from webdriver_manager.chrome import ChromeDriverManager; p=ChromeDriverManager().install(); print('chromedriver:', p)"
 
 COPY *.py ./
 COPY chiletrabajos/ ./chiletrabajos/

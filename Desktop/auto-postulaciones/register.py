@@ -16,7 +16,10 @@ from portal_accounts import get_or_create_account, upload_cv_trabajando, crear_c
 from telegram_notify import enviar as telegram
 
 # Indeed queda fuera del auto-registro: requiere OTP interactivo del usuario
-PORTALES = ["chiletrabajos", "trabajando"]
+_ALL_PORTALES = ["chiletrabajos", "trabajando"]
+# PORTALES_ACTIVOS=chiletrabajos en Cloud Run, vacío = todos
+_env_filtro = os.environ.get("PORTALES_ACTIVOS", "").strip()
+PORTALES = [p for p in _ALL_PORTALES if not _env_filtro or p in _env_filtro.lower().split(",")]
 
 PORTAL_LABELS = {"chiletrabajos": "ChileTrabajos.cl", "trabajando": "Trabajando.cl"}
 
@@ -104,13 +107,17 @@ def register_user(user: dict) -> dict:
         cv_ok = False
         cv_interno_ok = False
         if portal == "trabajando":
-            if cuenta_nueva:
-                # Wizard ya completado por crear_cuenta_trabajando en la misma sesion
+            from portal_accounts import LAST_TBJ_ONBOARDING
+            wizard_ok = LAST_TBJ_ONBOARDING.get("wizard_ok")
+            if cuenta_nueva and wizard_ok:
+                # Wizard verificado OK por crear_cuenta_trabajando en la misma sesion
                 cv_ok = True
                 cv_interno_ok = True
                 print(f"  [{portal}] Wizard CV completado durante creacion de cuenta")
             elif cv_url:
-                print(f"  [{portal}] Subiendo CV archivo (cuenta pre-existente)...")
+                if cuenta_nueva:
+                    print(f"  [{portal}] Wizard fallo durante creacion — reintentando con CV archivo...")
+                print(f"  [{portal}] Subiendo CV archivo...")
                 cv_ok = upload_cv_trabajando(cuenta["email"], cuenta["password"], cv_url, user=user)
                 cv_interno_ok = cv_ok
                 telegram(

@@ -20,7 +20,7 @@ export class PostulacionesController {
 
   @Get(':id/today-count')
   getTodayCount(@Param('id') id: string) {
-    return this.service.getTodayCount(id).then(count => ({ count }));
+    return this.service.getTodayCount(id);
   }
 
   @Get(':id')

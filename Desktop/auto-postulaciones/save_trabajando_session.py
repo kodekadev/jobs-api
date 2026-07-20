@@ -79,10 +79,19 @@ def _pw_login(email: str, password: str):
                 break
             if "/checkpoint/" in cur:
                 print("  Trabajando pidio verificacion adicional. Completala en el navegador.")
+            # Detectar JWT en localStorage (login exitoso sin cambio de URL)
+            try:
+                ls_keys = page.evaluate("() => Object.keys(localStorage)") or []
+                if any(kw in k.lower() for k in ls_keys for kw in ["token", "auth", "jwt", "candidato"]):
+                    print(f"  -> JWT detectado en localStorage")
+                    logged_in = True
+                    break
+            except Exception:
+                pass
         except Exception:
             pass
         if (i + 1) % 5 == 0:
-            print(f"  Esperando... {(i+1)*3}s")
+            print(f"  Esperando... {(i+1)*3}s  (URL: {page.url})")
 
     if not logged_in:
         print("\nERROR: No se detecto login en 6 minutos. Abortando.")
@@ -167,6 +176,16 @@ def save_trabajando_session(user_id: str) -> None:
         all_cookies = ctx.cookies(urls=["https://www.trabajando.cl"])
         if not all_cookies:
             all_cookies = [c for c in ctx.cookies() if "trabajando" in c.get("domain", "")]
+        # Capturar JWT/tokens de localStorage
+        try:
+            ls_keys = page.evaluate("() => Object.keys(localStorage)") or []
+            for k in ls_keys:
+                v = page.evaluate(f"() => localStorage.getItem({k!r})")
+                if v and any(kw in k.lower() for kw in ["token", "auth", "jwt", "candidato", "user", "session"]):
+                    all_cookies.append({"name": f"__ls_{k}", "value": v, "domain": ".trabajando.cl", "path": "/"})
+            print(f"  localStorage keys: {ls_keys}")
+        except Exception as e:
+            print(f"  localStorage error: {e}")
         browser.close()
         pw.stop()
 

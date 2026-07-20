@@ -249,20 +249,30 @@ def _solve_recaptcha(sitekey: str, page_url: str, action: str = "login") -> str 
 def _make_driver():
     from selenium.webdriver.chrome.service import Service
 
-    # Check multiple paths — Playwright base image uses chromium-browser, others use chromium
-    for candidate in ["/usr/bin/chromium", "/usr/bin/chromium-browser",
-                      "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable"]:
+    # Google Chrome stable (installed in Dockerfile) — works in Docker unlike apt chromium-browser (snap)
+    for candidate in ["/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",
+                      "/usr/bin/chromium", "/usr/bin/chromium-browser"]:
         if os.path.exists(candidate):
             chromium_path = candidate
             break
     else:
-        chromium_path = "/usr/bin/chromium"  # fallback (will error clearly)
-    for candidate in ["/usr/bin/chromedriver", "/usr/lib/chromium-browser/chromedriver"]:
-        if os.path.exists(candidate):
-            driver_path = candidate
-            break
-    else:
-        driver_path = "/usr/bin/chromedriver"
+        chromium_path = "/usr/bin/google-chrome-stable"
+
+    # chromedriver via webdriver-manager (pre-cached at build time) or system fallback
+    driver_path = None
+    try:
+        from webdriver_manager.chrome import ChromeDriverManager
+        driver_path = ChromeDriverManager().install()
+    except Exception as _wdm_e:
+        print(f"  [driver] webdriver-manager falló: {_wdm_e}")
+        for candidate in ["/usr/bin/chromedriver", "/usr/lib/chromium-browser/chromedriver"]:
+            if os.path.exists(candidate):
+                driver_path = candidate
+                break
+        if not driver_path:
+            driver_path = "/usr/bin/chromedriver"
+
+    print(f"  [driver] chrome={chromium_path} | chromedriver={driver_path}")
     in_linux = os.path.exists(chromium_path)
 
     # En Cloud Run: usar Xvfb (display virtual) para que Chrome corra sin --headless.
@@ -298,6 +308,14 @@ def _make_driver():
 
 
 # ─── TRABAJANDO.CL ────────────────────────────────────────────────────────────
+
+# Claves de storage que evidencian sesión autenticada en trabajando.cl
+_TBJ_AUTH_KEYS = ["token", "auth", "jwt", "candidato"]
+
+# Resultado del último onboarding (wizard CV) — lo lee register.py para no
+# asumir que el perfil quedó completo solo porque la cuenta se creó.
+LAST_TBJ_ONBOARDING = {"wizard_ok": None}
+
 
 def _selenium_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
                                        mail: str, clave: str, uid: str | None = None,
@@ -377,28 +395,83 @@ def _selenium_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
         ))
         driver.execute_script("arguments[0].scrollIntoView(true);", btn)
         time.sleep(0.3)
+        # Interceptar respuestas de red antes de submit
+        driver.execute_script("""
+            window.__regLog = [];
+            var _orig = window.fetch;
+            window.fetch = function() {
+                var url = String(arguments[0]);
+                var prom = _orig.apply(this, arguments);
+                prom.then(function(r) {
+                    r.clone().text().then(function(b) {
+                        window.__regLog.push({url:url.slice(0,80), status:r.status, body:b.slice(0,300)});
+                    });
+                });
+                return prom;
+            };
+        """)
         driver.execute_script("arguments[0].click();", btn)
         time.sleep(15)
 
         current_url = driver.current_url
         content = driver.page_source.lower()
 
-        success_signals = ["¡hola ", "hola ", "cuenta-creada", "como-quieres-postular",
-                           "mi curriculum", "completar perfil", "dashboard"]
-        if any(s in content for s in success_signals) or "crea-tu-curriculum" not in current_url:
-            print(f"  -> Registrado OK, URL: {current_url}")
+        # Debug: API calls y storage
+        try:
+            reg_log = driver.execute_script("return window.__regLog || [];")
+            for e in reg_log:
+                print(f"  [reg-api] {e.get('status')} {e.get('url')} -> {e.get('body','')[:120]}")
+        except Exception: pass
+        ss_items = {}
+        try:
+            ss_items = driver.execute_script(
+                "var r={}; for(var i=0;i<sessionStorage.length;i++){"
+                "var k=sessionStorage.key(i); r[k]=sessionStorage.getItem(k);} return r;"
+            ) or {}
+            if ss_items: print(f"  [reg-ss] sessionStorage: {list(ss_items.keys())}")
+        except Exception: pass
+
+        # ── Verificación real: token de sesión en local/sessionStorage ──────
+        # El registro puede redirigir a / (homepage) con sesión activa, así que
+        # la evidencia confiable es el token, no el texto de la página.
+        try:
+            ls_items = driver.execute_script(
+                "var r={}; for(var i=0;i<localStorage.length;i++){"
+                "var k=localStorage.key(i); r[k]=localStorage.getItem(k);} return r;"
+            ) or {}
+        except Exception:
+            ls_items = {}
+        has_auth = any(
+            v and any(kw in k.lower() for kw in _TBJ_AUTH_KEYS)
+            for store in (ls_items, ss_items)
+            for k, v in store.items()
+        )
+
+        success_urls = ["cuenta-creada", "como-quieres", "mi-curriculum", "completar"]
+        if any(s in current_url for s in success_urls) or has_auth:
+            print(f"  -> Registrado OK (auth={has_auth}), URL: {current_url}")
             # Completar wizard CV en la misma sesion (evita segundo login + reCAPTCHA)
+            wizard_ok = False
             if user:
                 print(f"  -> Completando wizard CV en misma sesion...")
                 try:
-                    completar_cv_trabajando(driver, user)
+                    wizard_ok = bool(completar_cv_trabajando(driver, user))
                 except Exception as _e:
                     print(f"  -> Error en wizard CV: {_e}")
+                if not wizard_ok:
+                    print(f"  ! Wizard CV NO completado — perfil quedará pendiente")
+            LAST_TBJ_ONBOARDING["wizard_ok"] = wizard_ok
             if uid:
                 try:
-                    bq.save_portal_cookies(uid, "trabajando", driver.get_cookies(),
-                                           email=mail, password=clave)
-                    print(f"  -> Cookies Trabajando guardadas para {uid}")
+                    all_cookies = driver.get_cookies()
+                    # localStorage (Trabajando puede usar JWT ahí)
+                    print(f"  -> localStorage keys: {list(ls_items.keys())}")
+                    for k, v in ls_items.items():
+                        if v and any(kw in k.lower() for kw in _TBJ_AUTH_KEYS + ["user", "session"]):
+                            all_cookies.append({"name": f"__ls_{k}", "value": v,
+                                                "domain": ".trabajando.cl", "path": "/"})
+                    bq.save_portal_cookies(uid, "trabajando", all_cookies, email=mail, password=clave)
+                    print(f"  -> {len(all_cookies)} cookies guardadas para {uid}")
                 except Exception as e:
                     print(f"  -> Error guardando cookies: {e}")
             driver.quit()
@@ -407,9 +480,11 @@ def _selenium_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
         already_registered = ["ya existe", "correo registrado", "email en uso",
                                "ya está registrado", "already registered"]
         if any(s in content for s in already_registered):
-            print(f"  ! Email ya registrado — guardando credencial")
+            # El email es generado aleatoriamente: "ya existe" casi siempre significa
+            # que el formulario se llenó mal. NO guardar credenciales inventadas.
+            print(f"  ! Portal dice 'email ya registrado' para email recién generado — FALLO")
             driver.quit()
-            return True
+            return False
 
         print(f"  ! Trabajando: formulario no avanzó, URL: {current_url}")
         driver.quit()
@@ -887,24 +962,57 @@ def _pw_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
 
             url     = page.url
             content = page.content().lower()
+
+            # Evidencia real de sesión: token en localStorage (no texto de la página)
+            try:
+                _ls_keys = page.evaluate("() => Object.keys(localStorage)")
+                _ls_now  = {k: page.evaluate(f"() => localStorage.getItem({k!r})") for k in (_ls_keys or [])}
+            except Exception:
+                _ls_now = {}
+            has_auth = any(
+                v and any(kw in k.lower() for kw in _TBJ_AUTH_KEYS)
+                for k, v in _ls_now.items()
+            )
+
             already = ["ya existe","correo registrado","ya está registrado","already registered"]
-            success = ["¡hola ","hola ","cuenta-creada","como-quieres","mi curriculum","completar perfil"]
-
             if any(s in content for s in already):
-                print(f"  [pw-tbj] Email ya registrado — OK"); return True
-            if not (any(s in content for s in success) or "crea-tu-curriculum" not in url):
-                print(f"  [pw-tbj] ! Formulario no avanzó: {url}"); return False
+                # El email es generado aleatoriamente: "ya existe" casi siempre significa
+                # que el formulario se llenó mal. NO tratar como éxito.
+                print(f"  [pw-tbj] ! Portal dice 'ya registrado' para email recién generado — FALLO")
+                return False
 
-            print(f"  [pw-tbj] Registrado OK: {url}")
+            success_urls = ["cuenta-creada", "como-quieres", "mi-curriculum", "completar"]
+            if not (any(s in url for s in success_urls) or has_auth):
+                print(f"  [pw-tbj] ! Formulario no avanzó (URL: {url}, auth={has_auth})")
+                return False
 
+            print(f"  [pw-tbj] Registrado OK (auth={has_auth}): {url}")
+
+            wizard_ok = False
             if user:
                 print(f"  [pw-tbj] Completando wizard CV...")
-                _pw_wizard_trabajando(page, user)
+                wizard_ok = bool(_pw_wizard_trabajando(page, user))
+                if not wizard_ok:
+                    print(f"  [pw-tbj] ! Wizard CV NO completado — perfil quedará pendiente")
+            LAST_TBJ_ONBOARDING["wizard_ok"] = wizard_ok
 
             if uid:
                 cookies = ctx.cookies()
+                # Capturar también localStorage (Trabajando puede usar JWT ahí)
+                try:
+                    ls_keys = page.evaluate("() => Object.keys(localStorage)")
+                    ls_items = {k: page.evaluate(f"() => localStorage.getItem({k!r})") for k in (ls_keys or [])}
+                    if ls_items:
+                        print(f"  [pw-tbj] localStorage keys: {list(ls_items.keys())}")
+                        # Guardar tokens de localStorage como pseudo-cookies
+                        for k, v in ls_items.items():
+                            if v and any(kw in k.lower() for kw in ["token", "auth", "jwt", "user", "session", "candidato"]):
+                                cookies.append({"name": f"__ls_{k}", "value": v,
+                                                "domain": ".trabajando.cl", "path": "/"})
+                except Exception as _lse:
+                    print(f"  [pw-tbj] localStorage error: {_lse}")
                 bq.save_portal_cookies(uid, "trabajando", cookies, email=mail, password=clave)
-                print(f"  [pw-tbj] Cookies guardadas para {uid}")
+                print(f"  [pw-tbj] {len(cookies)} cookies guardadas para {uid}")
 
             return True
 
@@ -920,6 +1028,7 @@ def crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
                              mail: str, clave: str, uid: str | None = None,
                              user: dict | None = None) -> bool:
     """Crea cuenta en trabajando.cl. Intenta Playwright primero, Selenium como fallback."""
+    LAST_TBJ_ONBOARDING["wizard_ok"] = None
     try:
         print(f"  [tbj] Intentando Playwright...")
         if _pw_crear_cuenta_trabajando(nombre, apellido, celular, mail, clave, uid=uid, user=user):
@@ -1899,9 +2008,7 @@ def _is_tbj_login_page(url: str) -> bool:
 
 def _tbj_logged_in(url: str) -> bool:
     """True si la URL indica sesion activa en Trabajando.cl."""
-    return any(s in url for s in _TBJ_SUCCESS_PATHS) or (
-        "trabajando.cl" in url and "ingresa-a-tu-cuenta" not in url
-    )
+    return any(s in url for s in _TBJ_SUCCESS_PATHS)
 
 
 def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
@@ -2380,18 +2487,32 @@ def get_trabajando_pw_session(uid: str, email: str, password: str):
         locale="es-CL",
         viewport={"width": 1280, "height": 800},
     )
+    # Separar cookies normales de pseudo-cookies de localStorage (__ls_ prefix)
+    ls_entries = {c["name"][5:]: c["value"] for c in cookies if c.get("name", "").startswith("__ls_")}
+    real_cookies = [c for c in cookies if not c.get("name", "").startswith("__ls_")]
+
     try:
-        context.add_cookies(_selenium_cookies_to_playwright(cookies))
+        context.add_cookies(_selenium_cookies_to_playwright(real_cookies))
     except Exception as e:
         print(f"  -> Error inyectando cookies PW: {e}")
 
     page = context.new_page()
+    # Abrir dominio base primero para poder escribir en localStorage
+    page.goto("https://www.trabajando.cl/", wait_until="domcontentloaded", timeout=20000)
+    if ls_entries:
+        try:
+            for k, v in ls_entries.items():
+                page.evaluate(f"() => localStorage.setItem({k!r}, {v!r})")
+            print(f"  -> localStorage restaurado: {list(ls_entries.keys())}")
+        except Exception as e:
+            print(f"  -> Error restaurando localStorage: {e}")
+
     page.goto("https://www.trabajando.cl/mi-curriculum",
               wait_until="domcontentloaded", timeout=30000)
     time.sleep(3)
 
-    if "ingresa-a-tu-cuenta" in page.url:
-        print(f"  -> Cookies PW expiradas para {uid}")
+    if "mi-curriculum" not in page.url:
+        print(f"  -> Cookies PW invalidas o expiradas (URL: {page.url}) para {uid}")
         browser.close()
         pw.stop()
         return None

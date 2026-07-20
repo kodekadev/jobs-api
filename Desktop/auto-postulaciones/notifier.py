@@ -63,16 +63,6 @@ def send_summary(user: dict, jobs_found: list[dict], applied: list[dict]) -> Non
     if total == 0:
         return
 
-    n_portales = len(portales)
-    n_email    = len(email_directo)
-
-    detalle_parts = []
-    if n_portales:
-        detalle_parts.append(f"<strong>{n_portales}</strong> en portales (ChileTrabajos / Trabajando.cl)")
-    if n_email:
-        detalle_parts.append(f"<strong>{n_email}</strong> por email directo a empleadores (LinkedIn)")
-    detalle_html = " y ".join(detalle_parts)
-
     html = f"""
     <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#333">
       <div style="background:linear-gradient(135deg,#1E6E82,#2A8FA5);padding:32px;text-align:center;border-radius:12px 12px 0 0">
@@ -87,7 +77,6 @@ def send_summary(user: dict, jobs_found: list[dict], applied: list[dict]) -> Non
         <div style="background:white;border-radius:12px;padding:24px;border:1px solid #e2e8f0;margin-bottom:24px">
           <p style="font-size:48px;font-weight:900;color:#1E6E82;margin:0">{total}</p>
           <p style="font-size:15px;color:#555;margin:8px 0 0">postulacion{'es enviadas' if total != 1 else ' enviada'} hoy</p>
-          <p style="font-size:13px;color:#94a3b8;margin:10px 0 0">{detalle_html}</p>
         </div>
 
         <p style="color:#555;font-size:14px;margin:0 0 24px">
@@ -110,7 +99,7 @@ def send_summary(user: dict, jobs_found: list[dict], applied: list[dict]) -> Non
     subject   = f"✅ {total} postulacion{'es' if total != 1 else ''} enviadas hoy — AplicAI"
     try:
         _send_smtp(from_addr, to, subject, html)
-        print(f"  ✓ Resumen enviado a {to} ({n_portales} portales + {n_email} email directo)")
+        print(f"  ✓ Resumen enviado a {to} ({total} postulaciones)")
     except Exception as e:
         print(f"  ⚠ Error enviando resumen a {to}: {e}")
 
@@ -150,10 +139,10 @@ def send_trial_warning(user: dict, days_left: int) -> None:
         <div style="background:white;border-radius:10px;padding:16px;border:1px solid #e2e8f0;margin-top:16px">
           <p style="margin:0 0 8px;font-weight:700;font-size:14px">¿Qué incluye el plan PRO?</p>
           <ul style="margin:0;padding-left:20px;font-size:14px;color:#555;line-height:1.8">
-            <li>Hasta 50 empleos buscados por cargo</li>
-            <li>3 ubicaciones por cargo</li>
-            <li>25 postulaciones por email al día</li>
-            <li>Resumen diario en tu correo</li>
+            <li>Hasta 750 postulaciones automatizadas al mes</li>
+            <li>4 cargos buscados — cobertura 5× mayor</li>
+            <li>Resumen semanal de resultados</li>
+            <li>Soporte prioritario</li>
           </ul>
         </div>
 
