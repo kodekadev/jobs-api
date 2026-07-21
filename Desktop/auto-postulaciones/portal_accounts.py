@@ -3166,6 +3166,23 @@ def apply_trabajando_playwright(page, job_url: str, user: dict = {}, resumen: st
         except Exception:
             pass
 
+        # ── Paso 2b2: Modal redirección externa ───────────────────────────────
+        # "Aviso de redireccionamiento" — el empleo pide terminar en sitio externo.
+        # No podemos auto-postular, cerramos y saltamos.
+        try:
+            if page.locator('#modalPostulacionLinkExterno, text=Aviso de redireccionamiento').first.is_visible(timeout=1500):
+                print(f"    [trabajando] Redirección externa — saltando")
+                try:
+                    page.locator("button:has-text('No quiero completar')").first.click()
+                except Exception:
+                    try:
+                        page.locator("button[data-bs-dismiss='modal']").first.click()
+                    except Exception:
+                        pass
+                return False
+        except Exception:
+            pass
+
         # ── Paso 2c: Modal "Comenzar preguntas del reclutador" ────────────────
         # Hay DOS botones Comenzar: uno mobile (d-block d-md-none, oculto en desktop)
         # y uno desktop (d-none d-md-block, visible). Hay que iterar y clickear el visible.
