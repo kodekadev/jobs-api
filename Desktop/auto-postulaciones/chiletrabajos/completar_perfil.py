@@ -480,6 +480,7 @@ def _pw_completar_perfil_chiletrabajos(user_id: str, user: dict) -> bool:
         return False
 
     cloud = bool(os.environ.get("K_SERVICE") or os.environ.get("CLOUD_RUN_JOB"))
+    headless = cloud  # visible en local para poder ver qué pasa
 
     rut     = str(user.get("RUT") or user.get("rut") or "")
     cel_raw = str(user.get("CELULAR") or user.get("celular") or "")
@@ -518,7 +519,7 @@ def _pw_completar_perfil_chiletrabajos(user_id: str, user: dict) -> bool:
                     "--disable-blink-features=AutomationControlled"]
             if cloud:
                 args.append("--single-process")
-            browser = pw.chromium.launch(headless=True, args=args)
+            browser = pw.chromium.launch(headless=headless, args=args)
             ctx = browser.new_context(
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

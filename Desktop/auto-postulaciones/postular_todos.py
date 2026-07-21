@@ -71,6 +71,27 @@ def _run():
         print(f"  USUARIO: {nombre} ({uid}) | Plan: {plan}")
         print(f"{'='*60}")
 
+        # ── Setup: crear cuentas y llenar CV si faltan (Selenium) ─────────────
+        if not bq.get_portal_account(uid, "trabajando"):
+            print(f"  [{uid}] Sin cuenta Trabajando — creando y llenando CV...")
+            try:
+                from trabajando.crear_cuenta import crear_cuenta_trabajando as _crear_tbj
+                if _crear_tbj(uid, user):
+                    from trabajando.completar_perfil import completar_perfil_trabajando as _cv_tbj
+                    _cv_tbj(uid, user)
+            except Exception as e:
+                print(f"  [{uid}] Setup Trabajando error: {e}")
+
+        if not bq.get_portal_account(uid, "chiletrabajos"):
+            print(f"  [{uid}] Sin cuenta ChileTrabajos — creando y llenando CV...")
+            try:
+                from chiletrabajos.crear_cuenta import crear_cuenta_chiletrabajos as _crear_cht
+                if _crear_cht(uid, user):
+                    from chiletrabajos.completar_perfil import _pw_completar_perfil_chiletrabajos as _cv_cht
+                    _cv_cht(uid, user)
+            except Exception as e:
+                print(f"  [{uid}] Setup ChileTrabajos error: {e}")
+
         # ── Límites del día ────────────────────────────────────────
         max_dia    = _get_max_dia(plan)
         ya_hoy     = bq.get_postulaciones_hoy(uid)

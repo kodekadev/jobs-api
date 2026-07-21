@@ -69,6 +69,20 @@ def _pf_select(alias: str = "pf") -> str:
     """
 
 
+def get_users_postula_facil() -> list[dict]:
+    """Retorna todos los usuarios que llenaron Postula Fácil (independiente de auto-postulaciones)."""
+    query = f"""
+        SELECT {_pf_select('pf')}, u.EMAIL, u.NOMBRE, u.CELULAR
+        FROM `{PROJECT}.{DATASET}.POSTULA_FACIL` pf
+        LEFT JOIN `{PROJECT}.{DATASET}.USUARIOS` u
+            ON LOWER(u.ID_USUARIO) = LOWER(pf.ID_USUARIO)
+        WHERE pf.ID_USUARIO IS NOT NULL AND pf.ID_USUARIO != ''
+          AND COALESCE(u.EMAIL, '') != ''
+    """
+    rows = list(_query(query).result())
+    return [dict(r) for r in rows]
+
+
 def get_active_users() -> list[dict]:
     """Retorna usuarios con POSTULACIONES_AUTO activo=1 y POSTULA_FACIL completo."""
     query = f"""
@@ -136,6 +150,59 @@ def get_expiring_trials(days: int = 4) -> list[dict]:
         query_parameters=[bigquery.ScalarQueryParameter("days", "INT64", days)]
     )
     return [dict(r) for r in _query(query, cfg).result()]
+
+
+def perfil_hash(user: dict) -> str:
+    """Hash MD5 de los campos del perfil que se sincronizan con los portales.
+    Cambia solo cuando el usuario edita datos relevantes en Postula Fácil."""
+    import hashlib, json as _json
+    campos = {
+        k: (user.get(k) or user.get(k.lower()) or "")
+        for k in [
+            "CV_URL", "RESUMEN", "EXPERIENCIA", "PROFESION",
+            "PRETENSION_GENERAL", "NIVEL_EDUCATIVO", "CARRERA",
+            "EMPRESA", "RUT", "FECHA_NACIMIENTO", "CELULAR",
+        ]
+    }
+    for k in ["CARGOS", "UBICACIONES"]:
+        v = user.get(k) or user.get(k.lower()) or []
+        campos[k] = _json.dumps(v, ensure_ascii=False) if isinstance(v, list) else str(v)
+    serialized = _json.dumps(campos, sort_keys=True, ensure_ascii=False)
+    return hashlib.md5(serialized.encode()).hexdigest()
+
+
+def perfil_necesita_actualizar(user_id: str, portal: str, current_hash: str) -> bool:
+    """True si el usuario nunca fue completado en este portal o sus datos cambiaron."""
+    query = f"""
+        SELECT perfil_hash
+        FROM `{PROJECT}.{DATASET}.CUENTAS_PORTALES`
+        WHERE id_usuario = @uid AND portal = @portal
+        LIMIT 1
+    """
+    cfg = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("uid",    "STRING", user_id),
+        bigquery.ScalarQueryParameter("portal", "STRING", portal),
+    ])
+    rows = list(_query(query, cfg).result())
+    if not rows or not rows[0].perfil_hash:
+        return True
+    return rows[0].perfil_hash != current_hash
+
+
+def save_perfil_completado(user_id: str, portal: str, hash_valor: str) -> None:
+    """Marca el perfil como completado guardando el hash actual del perfil."""
+    query = f"""
+        UPDATE `{PROJECT}.{DATASET}.CUENTAS_PORTALES`
+        SET perfil_completado_at = CURRENT_TIMESTAMP(),
+            perfil_hash = @hash
+        WHERE id_usuario = @uid AND portal = @portal
+    """
+    cfg = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("uid",    "STRING", user_id),
+        bigquery.ScalarQueryParameter("portal", "STRING", portal),
+        bigquery.ScalarQueryParameter("hash",   "STRING", hash_valor),
+    ])
+    _query(query, cfg).result()
 
 
 def get_portal_account(user_id: str, portal: str) -> dict | None:

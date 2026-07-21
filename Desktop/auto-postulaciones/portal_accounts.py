@@ -695,7 +695,7 @@ def _pw_paso2_experiencia(page, user: dict):
 
     # Empresa
     if empresa:
-        for kw in ["empresa", "ompañ", "rganiz", "nstituc"]:
+        for kw in ["empresa", "ompañ", "rganiz"]:
             inps = [i for i in page.locator(f"input[placeholder*='{kw}']").all() if i.is_visible()]
             if inps and not (inps[0].input_value() or "").strip():
                 _pw_vue_set(page, inps[0].element_handle(), empresa)
@@ -2098,42 +2098,39 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
             except Exception:
                 pass
 
-        # ── 4. Llenar email y password ────────────────────────────────────────
-        import random as _rnd
-        # Vue re-renderiza el input al escribir carácter por carácter con ActionChains,
-        # lo que provoca que los caracteres se pierdan. Usamos el setter nativo del
-        # prototipo HTMLInputElement para que Vue v-model reciba el valor completo
-        # de una vez, sin stale refs ni re-renders intermedios.
-
-        def _vue_set(el, value: str):
+        # ── 4. Llenar email y password via JS con selector CSS (evita stale ref) ─
+        def _vue_fill(css_sel: str, value: str):
+            """Rellena un input encontrándolo por CSS en runtime — no hay stale ref."""
             driver.execute_script("""
-                var el = arguments[0], v = arguments[1];
+                var el = document.querySelector(arguments[0]);
+                if (!el) return;
+                el.focus();
                 var setter = Object.getOwnPropertyDescriptor(
                     window.HTMLInputElement.prototype, 'value').set;
-                setter.call(el, v);
+                setter.call(el, arguments[1]);
                 el.dispatchEvent(new Event('input',  {bubbles: true}));
                 el.dispatchEvent(new Event('change', {bubbles: true}));
-            """, el, value)
+                el.blur();
+            """, css_sel, value)
 
-        email_el = wait.until(EC.element_to_be_clickable(
-            (By.XPATH, "//form//input[not(@type='password') and not(@type='hidden')]")
-        ))
-        email_el.click()
-        time.sleep(0.3)
-        _vue_set(email_el, email)
+        import random as _rnd
+
+        # Esperar que el form esté listo
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'input[name="email"]')))
+        time.sleep(0.5)
+
+        _vue_fill('input[name="email"]', email)
         time.sleep(0.4)
-
-        pwd_el = wait.until(EC.element_to_be_clickable(
-            (By.CSS_SELECTOR, 'input[type="password"]')
-        ))
-        pwd_el.click()
-        time.sleep(0.3)
-        _vue_set(pwd_el, password)
+        _vue_fill('input[type="password"]', password)
         time.sleep(0.6)
 
-        email_val = email_el.get_attribute("value") or ""
-        pwd_val   = pwd_el.get_attribute("value") or ""
-        print(f"  [trabajando] Form email={email_val[:30]!r} pwd_len={len(pwd_val)}")
+        # Verificar valores rellenados
+        email_val, pwd_len = driver.execute_script("""
+            var em = document.querySelector('input[name="email"]');
+            var pw = document.querySelector('input[type="password"]');
+            return [em ? em.value : '', pw ? pw.value.length : 0];
+        """)
+        print(f"  [trabajando] Form email={email_val[:30]!r} pwd_len={pwd_len}")
 
         # reCAPTCHA nativo corre automáticamente en el browser — no inyectamos nada.
         # El token se genera desde la IP de Cloud Run, que coincide con la petición de login.
@@ -2393,8 +2390,20 @@ def get_trabajando_session(uid: str, email: str, password: str) -> webdriver.Chr
         with _sessions_lock:
             _sessions[key] = {"driver": driver, "email": email, "password": password}
         try:
-            bq.save_portal_cookies(uid, "trabajando", driver.get_cookies())
-            print(f"  -> Cookies Trabajando guardadas para {uid} (post-login)")
+            all_cookies = driver.get_cookies()
+            # Capturar localStorage (JWT/auth tokens que Trabajando usa para aplicar)
+            try:
+                ls_keys = driver.execute_script("return Object.keys(localStorage) || []") or []
+                for k in ls_keys:
+                    v = driver.execute_script(f"return localStorage.getItem({k!r})")
+                    if v:
+                        all_cookies.append({"name": f"__ls_{k}", "value": v,
+                                            "domain": ".trabajando.cl", "path": "/"})
+                print(f"  -> localStorage capturado: {ls_keys}")
+            except Exception as ls_e:
+                print(f"  -> localStorage error: {ls_e}")
+            bq.save_portal_cookies(uid, "trabajando", all_cookies, email=email, password=password)
+            print(f"  -> Cookies Trabajando guardadas para {uid} ({len(all_cookies)} items)")
         except Exception as e:
             print(f"  -> Error guardando cookies post-login: {e}")
     return driver
@@ -2537,77 +2546,66 @@ def get_trabajando_pw_session(uid: str, email: str, password: str):
     else:
         print(f"  -> Sin cookies Playwright para {uid} — intentando login")
 
-    # ── 2. Fallback: login con credenciales ───────────────────────────────────
+    # ── 2. Fallback: usar Selenium (ya maneja reCAPTCHA) para obtener cookies ─
     if not email or not password:
-        print(f"  -> Sin credenciales para login Trabajando PW de {uid}")
+        print(f"  -> Sin credenciales para login Trabajando de {uid}")
+        return None
+
+    print(f"  -> Sin sesión PW para {uid} — usando Selenium para login (email={email!r})")
+    try:
+        driver = get_trabajando_session(uid, email, password)
+        if not driver:
+            print(f"  -> Login Selenium Trabajando fallido para {uid}")
+            return None
+        print(f"  -> Login Selenium OK para {uid} — convirtiendo a Playwright")
+    except Exception as e:
+        print(f"  -> Error login Selenium Trabajando {uid}: {e}")
+        return None
+
+    # Con cookies ya guardadas en BQ por get_trabajando_session, reintentar Playwright
+    cookies = bq.get_portal_cookies(uid, "trabajando")
+    if not cookies:
+        print(f"  -> Selenium no guardó cookies para {uid}")
         return None
 
     try:
         pw, browser, context = _make_pw_context()
+        ls_entries   = {c["name"][5:]: c["value"] for c in cookies if c.get("name", "").startswith("__ls_")}
+        real_cookies = [c for c in cookies if not c.get("name", "").startswith("__ls_")]
+        try:
+            context.add_cookies(_selenium_cookies_to_playwright(real_cookies))
+        except Exception as e:
+            print(f"  -> Error inyectando cookies PW: {e}")
+
         page = context.new_page()
-        page.goto("https://www.trabajando.cl/ingresa-a-tu-cuenta",
+        page.goto("https://www.trabajando.cl/", wait_until="domcontentloaded", timeout=20000)
+        if ls_entries:
+            for k, v in ls_entries.items():
+                try:
+                    page.evaluate(f"() => localStorage.setItem({k!r}, {v!r})")
+                except Exception:
+                    pass
+
+        page.goto("https://www.trabajando.cl/mi-curriculum",
                   wait_until="domcontentloaded", timeout=30000)
         time.sleep(3)
 
-        # Cerrar banner cookies si aparece
-        for sel in ["button:has-text('Acepto')", "#aceptarCookies"]:
-            try:
-                b = page.locator(sel).first
-                if b.is_visible():
-                    b.click(); time.sleep(0.5)
-            except Exception:
-                pass
-
-        # Llenar form con setter nativo de Vue
-        _vue_set_pw(page, "form input:not([type='password']):not([type='hidden'])", email)
-        time.sleep(0.4)
-        _vue_set_pw(page, "input[type='password']", password)
-        time.sleep(2)  # dar tiempo al reCAPTCHA nativo
-
-        # Click submit
-        for sel in ["button:has-text('Entrar')", "button:has-text('Ingresar')", "form button[type='submit']", "form button"]:
-            try:
-                btn = page.locator(sel).first
-                if btn.is_visible() and btn.is_enabled():
-                    btn.click()
-                    break
-            except Exception:
-                pass
-
-        page.wait_for_load_state("networkidle", timeout=15000)
-        time.sleep(3)
-
-        if "mi-curriculum" not in page.url and "ingresa-a-tu-cuenta" in page.url:
-            # reCAPTCHA puede tardar — esperar más
-            time.sleep(5)
-            page.goto("https://www.trabajando.cl/mi-curriculum",
-                      wait_until="domcontentloaded", timeout=20000)
-            time.sleep(2)
-
         if "mi-curriculum" not in page.url:
-            print(f"  -> Login PW Trabajando fallido para {uid} (URL: {page.url[:60]})")
+            print(f"  -> Cookies Selenium→PW inválidas para {uid} (URL: {page.url[:60]})")
             try:
                 browser.close(); pw.stop()
             except Exception:
                 pass
             return None
 
-        print(f"  -> Login PW Trabajando OK para {uid}")
-        # Guardar cookies para próxima vez
-        try:
-            raw_cookies = context.cookies()
-            bq.save_portal_cookies(uid, "trabajando", raw_cookies, email=email, password=password)
-            print(f"  -> Cookies Trabajando PW guardadas en BQ para {uid}")
-        except Exception as e:
-            print(f"  -> Error guardando cookies PW: {e}")
-
+        print(f"  -> Sesión PW Trabajando OK para {uid} (vía Selenium cookies)")
         with _pw_lock:
             _pw_sessions[key] = {"pw": pw, "browser": browser, "context": context, "page": page,
                                  "email": email, "password": password}
         return page
 
     except Exception as e:
-        print(f"  -> Error login PW Trabajando {uid}: {e}")
+        print(f"  -> Error convirtiendo sesión Selenium→PW {uid}: {e}")
         try:
             browser.close(); pw.stop()
         except Exception:
@@ -3057,8 +3055,9 @@ def apply_trabajando_playwright(page, job_url: str, user: dict = {}, resumen: st
                     break
             except Exception:
                 pass
-        # Intentar selectores CSS primero, luego JS con heurística de bloque más largo
-        for sel in ["[class*='descripcion-oferta']", "[class*='descripcion-empleo']",
+        # 1) Selectores específicos de Trabajando.cl — XPath primero, luego CSS
+        for sel in ["xpath=//*[@id='detalleOferta']/div[3]/div[1]/div[3]",
+                    "[class*='descripcion-oferta']", "[class*='descripcion-empleo']",
                     "[class*='descripcion']", "#descripcion-oferta", "#cuerpoOferta",
                     ".cuerpo-oferta", ".job-description", "[class*='oferta-descripcion']"]:
             try:
@@ -3070,25 +3069,34 @@ def apply_trabajando_playwright(page, job_url: str, user: dict = {}, resumen: st
                         break
             except Exception:
                 pass
+        # 2) Detección dinámica usando la estructura estable de Trabajando.cl:
+        #    #columnaPostular es el sidebar — la columna de contenido es su hermana en div.row
         if not descripcion:
             try:
                 descripcion = page.evaluate("""() => {
-                    // Busca el div cuyas hijos DIRECTOS son casi todos <p>/<ul>/<ol>
-                    // Eso identifica el cuerpo de descripción de Trabajando.cl (Vue SPA)
-                    // y evita agarrar encabezados, sidebars o secciones de salario
-                    const CONTENT_TAGS = new Set(['P','UL','OL','H1','H2','H3','H4','STRONG']);
-                    let best = null, bestScore = 0;
-                    for (const div of document.querySelectorAll('div')) {
-                        const children = Array.from(div.children);
-                        if (children.length < 3) continue;
-                        const contentKids = children.filter(c => CONTENT_TAGS.has(c.tagName)).length;
-                        const ratio = contentKids / children.length;
-                        const txt = (div.innerText || '').trim();
-                        // ratio alto = div de contenido puro; descarta wrappers y sidebars
-                        if (ratio >= 0.75 && txt.length > 150 && txt.length < 9000 && ratio > bestScore) {
-                            best = div;
-                            bestScore = ratio;
+                    const sidebar = document.getElementById('columnaPostular');
+                    if (sidebar) {
+                        const row = sidebar.parentElement;
+                        const contentCol = row && Array.from(row.children).find(
+                            c => c !== sidebar && !c.id && c.tagName === 'DIV'
+                        );
+                        if (contentCol) {
+                            const clone = contentCol.cloneNode(true);
+                            // Eliminar badges, iconos de accesibilidad y SVGs que no son descripción
+                            ['ul', 'svg', '.accessible'].forEach(sel =>
+                                clone.querySelectorAll(sel).forEach(el => el.remove())
+                            );
+                            const txt = (clone.innerText || clone.textContent || '').trim();
+                            if (txt.length > 100) return txt.replace(/\\n{3,}/g, '\\n\\n').slice(0, 5000);
                         }
+                    }
+                    // Fallback: div donde TODOS los hijos son <p>, elegir el más largo
+                    let best = null, bestLen = 0;
+                    for (const div of document.querySelectorAll('div')) {
+                        const kids = Array.from(div.children);
+                        if (kids.length < 2 || !kids.every(c => c.tagName === 'P')) continue;
+                        const txt = (div.innerText || '').trim();
+                        if (txt.length > bestLen) { best = div; bestLen = txt.length; }
                     }
                     return best ? best.innerText.trim().slice(0, 5000) : '';
                 }""") or ""
