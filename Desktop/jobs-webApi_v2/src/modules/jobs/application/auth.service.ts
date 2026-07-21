@@ -124,7 +124,10 @@ export class AuthService {
       this.email.welcomeHtml(nombre),
     ).catch(() => null);
 
-    const newUser = { ID_USUARIO: id, NOMBRE: nombre, EMAIL: emailNorm, PLAN: 'FREE', AUTO_ACTIVO: false };
+    // Asignar TRIAL de 14 días al nuevo usuario Google
+    await this.assignTrial(id);
+
+    const newUser = { ID_USUARIO: id, NOMBRE: nombre, EMAIL: emailNorm, PLAN: 'TRIAL', AUTO_ACTIVO: false };
     return this.buildResponse(newUser);
   }
 
@@ -213,6 +216,9 @@ export class AuthService {
         DELETE FROM ${this.bq.t('EMAIL_VERIFICATIONS')} WHERE ID_USUARIO = @id
       `, { id: userId }),
     ]);
+
+    // Asignar TRIAL de 14 días al completar el registro
+    await this.assignTrial(userId);
 
     this.email.send(
       emailNorm,
@@ -411,6 +417,24 @@ export class AuthService {
   }
 
   // ─── HELPERS ──────────────────────────────────────────────────────────────
+
+  // Asigna TRIAL de 14 días al registrarse. Si ya tiene un plan activo no lo pisa.
+  private async assignTrial(userId: string): Promise<void> {
+    const now = new Date().toISOString();
+    const fin = new Date();
+    fin.setDate(fin.getDate() + 14);
+    const fechaFin = fin.toISOString();
+    await this.bq.query(`
+      MERGE ${this.bq.t('PLAN_CONTRATADO')} T
+      USING (SELECT @id AS ID_USUARIO) S
+      ON T.ID_USUARIO = S.ID_USUARIO
+      WHEN NOT MATCHED THEN
+        INSERT (ID_USUARIO, PLAN, ESTADO, FECHA_INICIO, FECHA_FIN, METODO_PAGO)
+        VALUES (@id, 'TRIAL', 'ACTIVO', @now, @fechaFin, 'REGISTRO')
+    `, { id: userId, now, fechaFin })
+      .catch((e: any) => console.warn('[auth] No se pudo asignar TRIAL:', e.message));
+  }
+
   private buildResponse(u: any) {
     const token = jwt.sign(
       { id: u.ID_USUARIO, email: u.EMAIL, nombre: u.NOMBRE },
