@@ -345,6 +345,38 @@ def guardar_optimizacion(user_id: str, tipo: str = "respuesta_formulario",
         print(f"  [bq] CV_OPTIMIZACIONES insert error: {errors}")
 
 
+def get_postulaciones_hoy(user_id: str) -> int:
+    """Cuántas postulaciones hizo este usuario hoy (hora Chile, portales, no email directo)."""
+    query = f"""
+        SELECT COUNT(*) AS cnt
+        FROM `{PROJECT}.{DATASET}.EMPLEOS`
+        WHERE id_usuario = @uid
+          AND DATE(Fecha_Postulacion, 'America/Santiago') = CURRENT_DATE('America/Santiago')
+          AND portal NOT IN ('email_directo', '')
+    """
+    cfg = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("uid", "STRING", user_id),
+    ])
+    result = list(_query(query, cfg).result())
+    return result[0].cnt
+
+
+def ya_envio_email(user_id: str, email_reclutador: str) -> bool:
+    """True si ya enviamos email a este reclutador para este usuario."""
+    query = f"""
+        SELECT COUNT(*) AS cnt
+        FROM `{PROJECT}.{DATASET}.EMPLEOS`
+        WHERE id_usuario = @uid
+          AND descripcion LIKE @pat
+    """
+    cfg = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("uid", "STRING", user_id),
+        bigquery.ScalarQueryParameter("pat", "STRING", f"%{email_reclutador}%"),
+    ])
+    result = list(_query(query, cfg).result())
+    return result[0].cnt > 0
+
+
 def save_jobs(rows: list[dict]) -> None:
     """Inserta filas en EMPLEOS."""
     if not rows:

@@ -20,6 +20,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 import bq
+from emailer import extract_email, send_application
 from portal_accounts import (
     get_chiletrabajos_pw_session,
     close_chiletrabajos_pw_session,
@@ -27,6 +28,7 @@ from portal_accounts import (
     _llm_answer_questions,
     _extract_cv_text,
     _save_answers_to_cache,
+    job_aplica_al_usuario,
 )
 
 BASE_URL  = "https://www.chiletrabajos.cl"
@@ -197,8 +199,59 @@ def _responder_preguntas_cht_pw(page, user: dict, job_title: str = "") -> None:
     print(f"    [cht] Preguntas: {len(grupos)} radios, {len(pending)} inputs")
 
 
+_DESC_END_MARKERS = [
+    "beneficios", "comparte por redes", "estadísticas del anuncio",
+    "estadisticas del anuncio", "trabajos relacionados", "compartir enlace",
+    "denunciar oferta", "ofertas relacionadas",
+]
+
+
 def _extraer_descripcion_cht(page) -> str:
     """Extrae el texto de descripción del empleo desde la página de detalle."""
+    # 1) p.mb-0 más largo — estructura confirmada de ChileTrabajos
+    try:
+        best = ""
+        for el in page.locator("p.mb-0").all():
+            try:
+                txt = (el.inner_text() or "").strip()
+                if len(txt) > len(best):
+                    best = txt
+            except Exception:
+                pass
+        if len(best) > 50:
+            return _recortar_descripcion(best)
+    except Exception:
+        pass
+
+    # 2) Sección entre "Descripción oferta de trabajo" y marcadores de fin
+    try:
+        txt = page.evaluate("""() => {
+            const body = document.body.innerText || '';
+            const lower = body.toLowerCase();
+            const startMarkers = ['descripción oferta de trabajo', 'descripcion oferta de trabajo'];
+            let start = -1;
+            for (const m of startMarkers) {
+                const idx = lower.indexOf(m);
+                if (idx !== -1) { start = idx + m.length; break; }
+            }
+            if (start === -1) return '';
+            const endMarkers = [
+                'beneficios', 'comparte por redes', 'estadísticas del anuncio',
+                'estadisticas del anuncio', 'trabajos relacionados', 'compartir enlace'
+            ];
+            let end = body.length;
+            for (const m of endMarkers) {
+                const idx = lower.indexOf(m, start);
+                if (idx !== -1 && idx < end) end = idx;
+            }
+            return body.slice(start, end).trim();
+        }""") or ""
+        if len(txt) > 50:
+            return txt[:5000]
+    except Exception:
+        pass
+
+    # 3) Selectores CSS genéricos
     for sel in [
         "[class*='descripcion-oferta']", "[class*='descripcion-empleo']",
         "#descripcion", "[class*='descripcion']", ".detalle-oferta",
@@ -206,13 +259,56 @@ def _extraer_descripcion_cht(page) -> str:
     ]:
         try:
             el = page.locator(sel).first
-            if el.count() and el.is_visible():
-                txt = el.inner_text().strip()
+            if el.count():
+                txt = (el.inner_text() or "").strip()
                 if len(txt) > 50:
-                    return txt[:5000]
+                    return _recortar_descripcion(txt)
         except Exception:
             continue
+
     return ""
+
+
+def _recortar_descripcion(txt: str) -> str:
+    """Corta la descripción en el primer marcador de sección no relevante."""
+    lower = txt.lower()
+    cut = len(txt)
+    for marker in _DESC_END_MARKERS:
+        idx = lower.find(marker)
+        if idx != -1 and idx < cut:
+            cut = idx
+    return txt[:cut].strip()[:5000]
+
+
+def _extraer_salario_cht(page) -> "int | None":
+    """Extrae el salario de la página de detalle. Retorna None si no aparece."""
+    try:
+        raw = page.evaluate("""() => {
+            const rows = document.querySelectorAll('tr, .info-row, dl dt, dl dd');
+            let isNext = false;
+            for (const el of rows) {
+                const t = (el.innerText || '').trim();
+                if (isNext) {
+                    const n = t.replace(/[.\\s]/g, '').replace(/[^\\d]/g, '');
+                    return n.length >= 5 ? n : null;
+                }
+                if (/^salario$/i.test(t) || /^sueldo$/i.test(t)) isNext = true;
+            }
+            // Intentar buscar en celdas de tabla: par clave/valor
+            for (const td of document.querySelectorAll('td')) {
+                if (/salario|sueldo/i.test(td.innerText || '')) {
+                    const next = td.nextElementSibling;
+                    if (next) {
+                        const n = (next.innerText || '').replace(/[.\\s]/g, '').replace(/[^\\d]/g, '');
+                        if (n.length >= 5) return n;
+                    }
+                }
+            }
+            return null;
+        }""")
+        return int(raw) if raw else None
+    except Exception:
+        return None
 
 
 def _postular_empleo_pw(page, job_url: str, user: dict, titulo: str) -> "dict | bool":
@@ -226,11 +322,51 @@ def _postular_empleo_pw(page, job_url: str, user: dict, titulo: str) -> "dict | 
             return False
 
         content = page.content().lower()
-        if any(s in content for s in ["ya postulaste", "ya te postulaste", "postulado anteriormente"]):
-            print(f"    [cht] Ya postulado")
-            return False
+        if any(s in content for s in [
+            "ya postulaste", "ya te postulaste", "postulado anteriormente",
+            "usted ya ha postulado", "ya ha postulado", "postular de nuevo",
+            "ya aplicaste", "already applied",
+        ]):
+            print(f"    [cht] Ya postulado — skip")
+            return {"ok": True, "ya_postulado": True, "descripcion": ""}
+
+        # Extraer empresa desde campo "Buscado" y verificar empresas excluidas
+        empresa = ""
+        try:
+            empresa = page.evaluate("""() => {
+                const rows = document.querySelectorAll('tr, .info-row');
+                for (const row of rows) {
+                    const cells = row.querySelectorAll('td, th, dt, dd');
+                    for (let i = 0; i < cells.length - 1; i++) {
+                        if (/buscado/i.test(cells[i].innerText || '')) {
+                            return (cells[i+1].innerText || '').trim();
+                        }
+                    }
+                }
+                return '';
+            }""") or ""
+        except Exception:
+            pass
+        if empresa:
+            aplica, motivo = job_aplica_al_usuario(titulo, empresa, user)
+            if not aplica:
+                print(f"    [cht] SALTADO ({motivo}): empresa '{empresa}'")
+                return False
 
         descripcion = _extraer_descripcion_cht(page)
+
+        # Filtro salario: saltar si la oferta paga menos de la pretensión del usuario
+        salario = _extraer_salario_cht(page)
+        pretension = None
+        try:
+            raw_p = str(user.get("PRETENSION_GENERAL") or user.get("pretension_general") or "")
+            cleaned = re.sub(r"[^\d]", "", raw_p)
+            pretension = int(cleaned) if cleaned else None
+        except Exception:
+            pass
+        if salario and pretension and salario < pretension:
+            print(f"    [cht] Salario {salario:,} < pretensión {pretension:,} — skip")
+            return False
 
         # Click "Postular"
         postular_selectors = [
@@ -325,14 +461,14 @@ def _postular_empleo_pw(page, job_url: str, user: dict, titulo: str) -> "dict | 
         print(f"    [cht] {'OK Postulado' if confirmed else ('Error en envio' if error else 'Enviado sin confirmar')}")
         if not ok:
             return False
-        return {"ok": True, "descripcion": descripcion}
+        return {"ok": True, "descripcion": descripcion, "empresa": empresa}
 
     except Exception as e:
         print(f"    [cht] Error postular: {e}")
         return False
 
 
-def postular_empleos_cht(user_id: str, user: dict) -> int:
+def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
     """
     Busca y postula empleos en ChileTrabajos para el usuario.
 
@@ -446,23 +582,74 @@ def postular_empleos_cht(user_id: str, user: dict) -> int:
                         print(f"[cht] {j+1}/{len(jobs)} Ya aplicado — skip")
                         continue
 
-                    print(f"[cht] {j+1}/{len(jobs)} {job['titulo'][:50]}")
-                    ok = _postular_empleo_pw(page, job["link"], user, job["titulo"])
+                    titulo = job["titulo"]
+                    aplica, motivo = job_aplica_al_usuario(titulo, "", user)
+                    if not aplica:
+                        print(f"[cht] {j+1}/{len(jobs)} SALTADO ({motivo}): '{titulo[:40]}'")
+                        continue
 
-                    if ok:
+                    print(f"[cht] {j+1}/{len(jobs)} {titulo[:50]}")
+
+                    # Postular con reconexión en TargetClosedError
+                    ok = False
+                    try:
+                        ok = _postular_empleo_pw(page, job["link"], user, titulo)
+                    except Exception as e:
+                        if "TargetClosedError" in type(e).__name__ or "closed" in str(e).lower():
+                            print(f"[cht] Browser cerrado — reconectando...")
+                            try:
+                                close_chiletrabajos_pw_session(user_id)
+                            except Exception:
+                                pass
+                            page = get_chiletrabajos_pw_session(user_id, email, password)
+                            if page:
+                                print(f"[cht] Reconectado — reintentando empleo...")
+                                try:
+                                    ok = _postular_empleo_pw(page, job["link"], user, titulo)
+                                except Exception:
+                                    pass
+                        else:
+                            print(f"[cht] Error: {e}")
+
+                    if ok and isinstance(ok, dict) and ok.get("ya_postulado"):
+                        applied_ids.add(job_id)
+                        print(f"[cht] {j+1}/{len(jobs)} Ya postulado — skip")
+                    elif ok:
+                        descripcion  = (isinstance(ok, dict) and ok.get("descripcion")) or ""
+                        empresa_cht  = (isinstance(ok, dict) and ok.get("empresa")) or ""
+
+                        # Enviar email al reclutador si hay email en la descripción
+                        email_rec = extract_email(descripcion)
+                        if email_rec:
+                            if bq.ya_envio_email(user_id, email_rec):
+                                print(f"[cht] Email a {email_rec} ya enviado antes — skip")
+                            else:
+                                enviado_ok = send_application(
+                                    user,
+                                    {"titulo": job["titulo"], "empresa": empresa_cht},
+                                    email_rec,
+                                )
+                                if enviado_ok:
+                                    print(f"[cht] Email enviado a {email_rec} ✓")
+                                    descripcion += f"\n\n[email_directo: {email_rec}]"
+
                         bq.save_jobs([{
                             "id_empleo":         job_id,
                             "id_usuario":        user_id,
                             "titulo_empleo":     job["titulo"],
                             "cargo":             cargo,
                             "Fecha_Postulacion": datetime.datetime.utcnow().isoformat(),
-                            "empresa":           "",
+                            "empresa":           empresa_cht,
+                            "descripcion":       descripcion,
                             "link":              job["link"],
                             "portal":            PORTAL_ID,
                         }])
                         applied_ids.add(job_id)
                         count += 1
                         print(f"[cht] Guardado ({count})")
+                        if count >= max_count:
+                            print(f"[cht] Límite {max_count} alcanzado — deteniendo ChileTrabajos")
+                            raise StopIteration
                     else:
                         try:
                             page.go_back()
@@ -470,6 +657,8 @@ def postular_empleos_cht(user_id: str, user: dict) -> int:
                         except Exception:
                             pass
 
+    except StopIteration:
+        pass  # límite alcanzado — salida limpia
     except Exception as e:
         import traceback
         print(f"[cht] Error general: {e}")
@@ -478,6 +667,7 @@ def postular_empleos_cht(user_id: str, user: dict) -> int:
         close_chiletrabajos_pw_session(user_id)
 
     print(f"[cht] Finalizado {user_id} — {count} postulaciones")
+
     return count
 
 

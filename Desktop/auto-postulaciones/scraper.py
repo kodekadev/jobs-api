@@ -113,7 +113,7 @@ def _scrape_trabajando_playwright(page, cargo: str, ubicacion: str, n: int) -> l
     jobs: list[dict] = []
     cargo_enc     = urllib.parse.quote(cargo)
     ubicacion_enc = urllib.parse.quote(ubicacion)
-    nav_url = f"https://www.trabajando.cl/trabajo-empleo/{cargo_enc}?ubicacion={ubicacion_enc}"
+    nav_url = f"https://www.trabajando.cl/trabajo-empleo/{cargo_enc}?ubicacion={ubicacion_enc}&fecha=semana"
 
     try:
         page.goto(nav_url, wait_until="domcontentloaded", timeout=20000)
@@ -247,7 +247,7 @@ def _scrape_trabajando(cargo: str, ubicacion: str, n: int, driver=None) -> list[
     jobs = []
     cargo_enc     = urllib.parse.quote(cargo)
     ubicacion_enc = urllib.parse.quote(ubicacion)
-    url = f"https://www.trabajando.cl/trabajo-empleo/{cargo_enc}?ubicacion={ubicacion_enc}"
+    url = f"https://www.trabajando.cl/trabajo-empleo/{cargo_enc}?ubicacion={ubicacion_enc}&fecha=semana"
 
     try:
         # Limpiar respuestas previas para no mezclar con login
@@ -637,19 +637,10 @@ def find_jobs(cargo: str, ubicacion: str, n: int = 40, trabajando_driver=None,
         # Pausa entre portales para no saturar
         time.sleep(random.uniform(1.5, 3))
 
-    # Filtrar resultados sin título o con título claramente irrelevante
-    cargo_words = set(cargo.lower().split())
-    filtered = []
-    for j in all_jobs:
-        titulo = j.get("titulo", "").lower()
-        if not titulo:
-            continue
-        # Al menos una palabra del cargo debe aparecer en el título
-        if any(w in titulo for w in cargo_words if len(w) > 3):
-            filtered.append(j)
-
+    # Solo descartar empleos sin título
+    filtered = [j for j in all_jobs if j.get("titulo", "").strip()]
     discarded = len(all_jobs) - len(filtered)
     if discarded:
-        print(f"    [filtro relevancia] descartados {discarded} empleos irrelevantes")
+        print(f"    [filtro relevancia] descartados {discarded} sin título")
 
     return filtered
