@@ -7,7 +7,10 @@ const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const MODEL = process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001';
 const CV_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 horas
 
+const FREE_PLANS = new Set(['FREE']);
+
 interface Contexto {
+  plan: string;
   nombre: string;
   cargos: string[];
   experiencia: string;
@@ -130,7 +133,7 @@ export class AiService {
   private async getContexto(userId: string): Promise<Contexto | null> {
     const rows = await this.bq.query<any>(`
       SELECT pf.PROFESION, pf.RESUMEN, pf.CV_URL, pf.CARGOS, pf.EXPERIENCIA,
-             pf.CARRERA, pf.NIVEL_EDUCATIVO, pf.INSTITUCION, pf.EMPRESA, u.NOMBRE
+             pf.CARRERA, pf.NIVEL_EDUCATIVO, pf.INSTITUCION, pf.EMPRESA, u.NOMBRE, u.PLAN
       FROM ${this.bq.t('POSTULA_FACIL')} pf
       JOIN ${this.bq.t('USUARIOS')} u ON u.ID_USUARIO = pf.ID_USUARIO
       WHERE pf.ID_USUARIO = @id LIMIT 1
@@ -142,6 +145,7 @@ export class AiService {
     try { cargos = Array.isArray(r.CARGOS) ? r.CARGOS : JSON.parse(r.CARGOS || '[]'); } catch { /* noop */ }
 
     return {
+      plan: (r.PLAN || 'FREE').toUpperCase(),
       nombre: r.NOMBRE || '',
       cargos,
       experiencia: r.EXPERIENCIA || '',
@@ -201,6 +205,9 @@ ${ctx.cvTexto ? `\nCV COMPLETO (texto extraído del PDF):\n---\n${ctx.cvTexto}\n
     // Fail-open: sin contexto o sin IA, no bloquear la postulación
     if (!ctx) return { apto: true, score: 50, razon: 'sin-perfil' };
 
+    // Plan FREE no usa Claude — fail-open directo para no gastar tokens
+    if (FREE_PLANS.has(ctx.plan)) return { apto: true, score: 50, razon: 'plan-free' };
+
     const system = `Eres un evaluador de compatibilidad laboral. Comparas una vacante contra el perfil real de un candidato y decides si vale la pena postular.
 Criterios: el cargo debe corresponder al nivel y área del candidato (una práctica/internship NO es apta para alguien con años de experiencia, y viceversa), los requisitos principales deben estar razonablemente cubiertos por su experiencia o herramientas del CV, y el rubro debe ser compatible.
 Responde SOLO un JSON válido, sin markdown: {"apto": true|false, "score": 0-100, "razon": "máximo 15 palabras"}`;
@@ -249,7 +256,11 @@ ${(body.descripcion || '').slice(0, 3500)}
     let contexto = '';
     if (body.user_id) {
       const ctx = await this.getContexto(body.user_id);
-      if (ctx) contexto = this.perfilPrompt(ctx);
+      if (ctx) {
+        // Plan FREE no usa Claude — devolver null para que el form_filler use el fallback
+        if (FREE_PLANS.has(ctx.plan)) return { respuesta: null };
+        contexto = this.perfilPrompt(ctx);
+      }
     }
     if (!contexto && body.perfil) {
       const p = body.perfil;
