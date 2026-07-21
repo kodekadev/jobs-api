@@ -3038,11 +3038,12 @@ def apply_trabajando_playwright(page, job_url: str, user: dict = {}, resumen: st
 
         # ── Pre-paso: cerrar modal "Comenzar" si aparece antes de Postular ────
         try:
-            btn_pre = page.locator('button[data-bs-target="#modalConfirmarPreguntas"]').first
-            if btn_pre.is_visible(timeout=1500):
-                btn_pre.click()
-                print(f"    [trabajando] Click Comenzar (modal pre-postular)")
-                time.sleep(1.5)
+            for btn_pre in page.locator('button[data-bs-target="#modalConfirmarPreguntas"]').all():
+                if btn_pre.is_visible():
+                    btn_pre.click()
+                    print(f"    [trabajando] Click Comenzar (modal pre-postular)")
+                    time.sleep(1.5)
+                    break
         except Exception:
             pass
 
@@ -3166,38 +3167,31 @@ def apply_trabajando_playwright(page, job_url: str, user: dict = {}, resumen: st
             pass
 
         # ── Paso 2c: Modal "Comenzar preguntas del reclutador" ────────────────
+        # Hay DOS botones Comenzar: uno mobile (d-block d-md-none, oculto en desktop)
+        # y uno desktop (d-none d-md-block, visible). Hay que iterar y clickear el visible.
         _comenzar_clickeado = False
         try:
-            # Caso 1: botón que ABRE el modal (flujo antiguo)
-            try:
-                btn_fuera = page.locator('button[data-bs-target="#modalConfirmarPreguntas"]').first
-                btn_fuera.wait_for(state="visible", timeout=2000)
-                btn_fuera.click()
-                print(f"    [trabajando] Click Comenzar (abre modal preguntas)")
-                time.sleep(3)
-                _comenzar_clickeado = True
-            except Exception:
-                pass
-
+            for sel_comenzar in [
+                'button[data-bs-target="#modalConfirmarPreguntas"]',
+                'button[aria-label="modal confirmar responder preguntas"]',
+                '.modal.show button:has-text("Comenzar")',
+                '.modal-body button:has-text("Comenzar")',
+                'button:has-text("Comenzar")',
+            ]:
+                if _comenzar_clickeado:
+                    break
+                try:
+                    for btn in page.locator(sel_comenzar).all():
+                        if btn.is_visible():
+                            btn.click()
+                            print(f"    [trabajando] Click Comenzar [{sel_comenzar[:50]}]")
+                            time.sleep(3)
+                            _comenzar_clickeado = True
+                            break
+                except Exception:
+                    continue
             if not _comenzar_clickeado:
-                # Caso 2: modal ya abierto por "Postula fácil" — "Comenzar" está DENTRO del modal
-                for sel_comenzar in [
-                    '#modalConfirmarPreguntas button:has-text("Comenzar")',
-                    '.modal.show button:has-text("Comenzar")',
-                    'button:has-text("Comenzar")',
-                ]:
-                    try:
-                        btn_dentro = page.locator(sel_comenzar).first
-                        btn_dentro.wait_for(state="visible", timeout=2000)
-                        btn_dentro.click()
-                        print(f"    [trabajando] Click Comenzar (dentro de modal abierto) [{sel_comenzar[:40]}]")
-                        time.sleep(3)
-                        _comenzar_clickeado = True
-                        break
-                    except Exception:
-                        continue
-                if not _comenzar_clickeado:
-                    print(f"    [trabajando] Sin modal Comenzar en página")
+                print(f"    [trabajando] Sin modal Comenzar en página")
         except Exception as e:
             print(f"    [trabajando] Comenzar error: {e}")
 
