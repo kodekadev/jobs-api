@@ -501,6 +501,22 @@ def update_cv_user(user: dict) -> dict:
     except Exception as e:
         print(f"  [{nombre}] Trabajando.cl CV error: {e}", flush=True)
 
+    # Establecer sesión Playwright Trabajando para postulaciones futuras
+    try:
+        from portal_accounts import get_trabajando_pw_session
+        cuenta_tbj = bq.get_portal_account(uid, "trabajando")
+        if cuenta_tbj:
+            print(f"  [{nombre}] Iniciando sesión Playwright Trabajando.cl (email={cuenta_tbj['email']!r})...", flush=True)
+            page = get_trabajando_pw_session(uid, cuenta_tbj["email"], cuenta_tbj["password"])
+            if page:
+                print(f"  [{nombre}] Sesión Playwright Trabajando OK — cookies guardadas", flush=True)
+            else:
+                print(f"  [{nombre}] Sesión Playwright Trabajando FALLÓ", flush=True)
+        else:
+            print(f"  [{nombre}] Sin cuenta Trabajando en BQ — saltar sesión PW", flush=True)
+    except Exception as e:
+        print(f"  [{nombre}] Error sesión PW Trabajando: {e}", flush=True)
+
     return {"user": nombre, "cht": ok_cht, "tbj": ok_tbj}
 
 
