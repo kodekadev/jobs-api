@@ -136,11 +136,11 @@ def _selenium_crear_cuenta_chiletrabajos(user_id: str, user: dict) -> bool:
     nombre   = partes[0] if partes else "Usuario"
     apellido = partes[1] if len(partes) > 1 else "Apellido"
 
-    # Mismo patrón que Trabajando.cl: {nombre}.{alo3}{hex6}@gmail.com
     nombre_slug   = re.sub(r"[^a-z0-9]", "", nombre.lower())
-    apellido_slug = re.sub(r"[^a-z0-9]", "", apellido.lower())[:3]
-    codigo        = secrets.token_hex(3)
-    email         = f"{nombre_slug}.{apellido_slug}{codigo}@gmail.com"
+    apellido_slug = re.sub(r"[^a-z0-9]", "", (" ".join(partes[1:]) if len(partes) > 1 else "jobs").lower())
+    prefix        = f"{nombre_slug}.{apellido_slug}"
+    n             = bq.count_portal_emails_like(prefix) + 1
+    email         = f"{prefix}{n}@gmail.com"
     clave         = _generar_clave()
 
     driver = None
@@ -531,9 +531,10 @@ def _pw_crear_cuenta_chiletrabajos(user_id: str, user: dict) -> bool:
     apellido = partes[1] if len(partes) > 1 else "Apellido"
 
     nombre_slug   = re.sub(r"[^a-z0-9]", "", nombre.lower())
-    apellido_slug = re.sub(r"[^a-z0-9]", "", apellido.lower())[:3]
-    codigo        = secrets.token_hex(3)
-    email         = f"{nombre_slug}.{apellido_slug}{codigo}@gmail.com"
+    apellido_slug = re.sub(r"[^a-z0-9]", "", (" ".join(partes[1:]) if len(partes) > 1 else "jobs").lower())
+    prefix        = f"{nombre_slug}.{apellido_slug}"
+    n             = bq.count_portal_emails_like(prefix) + 1
+    email         = f"{prefix}{n}@gmail.com"
     clave         = _generar_clave()
 
     cloud = _cht_in_cloud_run()

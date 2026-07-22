@@ -205,6 +205,20 @@ def save_perfil_completado(user_id: str, portal: str, hash_valor: str) -> None:
     _query(query, cfg).result()
 
 
+def count_portal_emails_like(prefix: str) -> int:
+    """Cuenta cuántas cuentas en CUENTAS_PORTALES tienen email que empieza con prefix."""
+    from google.cloud import bigquery
+    query = f"SELECT COUNT(*) AS cnt FROM `{PROJECT}.{DATASET}.CUENTAS_PORTALES` WHERE email LIKE @pattern"
+    cfg = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("pattern", "STRING", f"{prefix}%@gmail.com"),
+    ])
+    try:
+        rows = list(_query(query, cfg).result())
+        return int(rows[0].cnt) if rows else 0
+    except Exception:
+        return 0
+
+
 def get_portal_account(user_id: str, portal: str) -> dict | None:
     """Retorna credenciales guardadas para un portal, o None si no existen."""
     query = f"""

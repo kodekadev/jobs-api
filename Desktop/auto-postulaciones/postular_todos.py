@@ -12,6 +12,14 @@ Ejecutar desde Spyder: seleccionar todo y Run Selection, o F5.
 """
 import os, sys, threading, asyncio
 
+# nest_asyncio permite que Playwright sync API funcione aunque BigQuery/gRPC
+# haya iniciado un event loop asyncio en el mismo thread.
+try:
+    import nest_asyncio
+    nest_asyncio.apply()
+except ImportError:
+    pass
+
 _dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else r"C:\Users\bastian\Desktop\auto-postulaciones"
 if _dir not in sys.path:
     sys.path.insert(0, _dir)
@@ -24,9 +32,9 @@ load_dotenv(os.path.join(_dir, ".env"))
 SOLO_USUARIO = None  # ej: "jobs2" para probar uno solo
 
 PLAN_LIMITS = {
-    "FREE":    {"max_postulaciones_dia": 10},
+    "FREE":    {"max_postulaciones_dia": 5},
     "PRO":     {"max_postulaciones_dia": 25},
-    "SPRINT":  {"max_postulaciones_dia": 25},
+    "SPRINT":  {"max_postulaciones_dia": 40},
     "PREMIUM": {"max_postulaciones_dia": 50},
     "TRIAL":   {"max_postulaciones_dia": 25},
 }

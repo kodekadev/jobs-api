@@ -72,7 +72,15 @@ def _process_user(user: dict, bq, get_trabajando_pw_session, apply_trabajando_pl
     print(f"  [{uid}] Iniciando sesión Trabajando.cl...")
     page = get_trabajando_pw_session(uid, creds["email"], creds["password"])
     if not page:
-        print(f"  [{uid}] ERROR: No se pudo iniciar sesión")
+        import portal_accounts as _pa_mod
+        motivo_login = _pa_mod._portal_login_failures.get(creds.get("email", ""), "desconocido")
+        print(f"  [{uid}] ERROR: No se pudo iniciar sesión — MOTIVO: {motivo_login}")
+        telegram(
+            f"[AplicAI] Fallo sesión Trabajando.cl\n"
+            f"Usuario: {nombre} ({uid})\n"
+            f"Email portal: {creds.get('email','?')}\n"
+            f"Motivo: {motivo_login}"
+        )
         return
 
     ok_count = err_count = 0

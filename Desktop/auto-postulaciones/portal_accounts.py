@@ -150,6 +150,36 @@ _xvfb_lock    = threading.Lock()
 _sessions: dict[str, dict] = {}
 _sessions_lock = threading.Lock()
 
+# Almacena motivo del último fallo de login por email
+_portal_login_failures: dict[str, str] = {}
+
+
+def _classify_login_failure(net_log: list, errores: list) -> str:
+    """Clasifica el motivo de fallo de login en Trabajando.cl desde los logs de red."""
+    for entry in net_log:
+        st   = entry.get("status", 0)
+        body = (entry.get("body", "") + entry.get("error", "")).lower()
+        url  = entry.get("url", "").lower()
+        if "login" in url or "session" in url or "auth" in url:
+            if st == 401 or any(k in body for k in ["invalid", "incorrecto", "contraseña incorrecta", "password"]):
+                return "credenciales_incorrectas"
+            if any(k in body for k in ["captcha", "robot", "bot", "blocked", "recaptcha"]):
+                return "recaptcha_bloqueado"
+            if any(k in body for k in ["no exist", "not found", "no registrad", "not register", "no encontr"]):
+                return "cuenta_no_existe"
+            if st == 429:
+                return "rate_limit_ip"
+    for err in errores:
+        el = err.lower()
+        if any(k in el for k in ["captcha", "robot"]):
+            return "recaptcha_bloqueado"
+        if any(k in el for k in ["contraseña", "password", "invalid", "incorrecta"]):
+            return "credenciales_incorrectas"
+    if not net_log:
+        return "recaptcha_bloqueo_antes_de_submit"
+    return "login_fallido_desconocido"
+
+
 def _ensure_xvfb():
     """Start a virtual display so Chrome can run without --headless in Cloud Run."""
     global _xvfb_started
@@ -2207,10 +2237,12 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
 
         # ── 8. Leer logs de red para diagnosticar ─────────────────────────────
         time.sleep(2)  # dar tiempo a que promesas de fetch/XHR se resuelvan
+        _all_net_classify = []
         try:
             api_log = driver.execute_script("return window.__apiLog || [];")
             xhr_log = driver.execute_script("return window.__xhrLog || [];")
             all_net = api_log + xhr_log
+            _all_net_classify = all_net
             if all_net:
                 print(f"  [net] {len(all_net)} peticiones capturadas tras click:")
                 for entry in all_net:
@@ -2297,6 +2329,11 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
                         break
             except Exception as _de:
                 print(f"  [direct] error: {_de}")
+
+        if not success:
+            motivo = _classify_login_failure(_all_net_classify, errores)
+            print(f"  [trabajando] MOTIVO_FALLO_LOGIN: {motivo}")
+            _portal_login_failures[email] = motivo
 
         return success
 
@@ -2555,7 +2592,8 @@ def get_trabajando_pw_session(uid: str, email: str, password: str):
     try:
         driver = get_trabajando_session(uid, email, password)
         if not driver:
-            print(f"  -> Login Selenium Trabajando fallido para {uid}")
+            motivo = _portal_login_failures.get(email, "desconocido")
+            print(f"  -> Login Selenium Trabajando FALLIDO para {uid} | MOTIVO: {motivo}")
             return None
         print(f"  -> Login Selenium OK para {uid} — convirtiendo a Playwright")
     except Exception as e:
@@ -4705,9 +4743,10 @@ def get_or_create_account(user: dict, portal: str) -> dict | None:
     clave    = _generar_clave()
 
     nombre_slug   = re.sub(r"[^a-z0-9]", "", nombre.lower())
-    apellido_slug = re.sub(r"[^a-z0-9]", "", (partes[1] if len(partes) > 1 else "").lower())[:3]
-    codigo        = secrets.token_hex(3)
-    portal_email  = f"{nombre_slug}.{apellido_slug}{codigo}@gmail.com"
+    apellido_slug = re.sub(r"[^a-z0-9]", "", (" ".join(partes[1:]) if len(partes) > 1 else "jobs").lower())
+    prefix        = f"{nombre_slug}.{apellido_slug}"
+    n             = bq.count_portal_emails_like(prefix) + 1
+    portal_email  = f"{prefix}{n}@gmail.com"
 
     ok = False
     if portal == "trabajando":
