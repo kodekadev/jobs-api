@@ -121,10 +121,8 @@ def _run():
             )
             continue
 
-        # Cuota por portal: Trabajando toma la mitad + el resto impar
-        cuota_tbj = (restantes + 1) // 2
-        cuota_cht = restantes // 2
-        print(f"  [{uid}] Postulaciones hoy: {ya_hoy}/{max_dia} | Restantes: {restantes} (Trabajando: {cuota_tbj} | ChileTrabajos: {cuota_cht})")
+        # Trabajando recibe el cupo completo; ChileTrabajos cubre lo que quede sin llenar
+        print(f"  [{uid}] Postulaciones hoy: {ya_hoy}/{max_dia} | Restantes: {restantes}")
 
         # ── Trabajando.cl ──────────────────────────────────────────
         tbj_ok = 0
@@ -135,31 +133,28 @@ def _run():
                 get_trabajando_pw_session,
                 apply_trabajando_playwright,
                 _scrape_trabajando_playwright,
-                max_count=cuota_tbj,
+                max_count=restantes,
             )
             tbj_ok = res[0] if res else 0
         except Exception as e:
             print(f"  [ERROR Trabajando {uid}] {str(e).encode('ascii', 'replace').decode('ascii')}")
 
-        # Rebalanceo: si Trabajando no llenó su cuota, ChileTrabajos toma el resto
-        tbj_sobrante = max(0, cuota_tbj - tbj_ok)
-        cuota_cht_final = cuota_cht + tbj_sobrante
-        if tbj_sobrante:
-            print(f"  [{uid}] Trabajando usó {tbj_ok}/{cuota_tbj} — ChileTrabajos hereda {tbj_sobrante} slots extra (total: {cuota_cht_final})")
+        # ChileTrabajos cubre los slots que Trabajando no llenó
+        cuota_cht_final = max(0, restantes - tbj_ok)
 
         # ── ChileTrabajos ──────────────────────────────────────────
         cht_ok = 0
         os.environ["PORTALES_ACTIVOS"] = "chiletrabajos"
         cht_creds = bq.get_portal_account(uid, "chiletrabajos")
         if cht_creds and cuota_cht_final > 0:
+            print(f"  [{uid}] Trabajando usó {tbj_ok}/{restantes} — ChileTrabajos cubre {cuota_cht_final} slots restantes")
             try:
                 cht_ok = postular_empleos_cht(uid, user, max_count=cuota_cht_final)
             except Exception as e:
                 print(f"  [ERROR ChileTrabajos {uid}] {e}")
-        elif not cht_creds:
-            print(f"  [{uid}] Sin cuenta ChileTrabajos — los {cuota_cht_final} slots no se usan")
+        elif not cht_creds and cuota_cht_final > 0:
+            print(f"  [{uid}] Sin cuenta ChileTrabajos — {cuota_cht_final} slots sin usar hoy")
 
-        # Rebalanceo inverso: si ChileTrabajos no llenó, informar (Trabajando ya terminó)
         cht_sobrante = max(0, cuota_cht_final - cht_ok)
         if cht_sobrante and cht_ok < cuota_cht_final:
             print(f"  [{uid}] ChileTrabajos usó {cht_ok}/{cuota_cht_final} — {cht_sobrante} slots sin usar hoy")
