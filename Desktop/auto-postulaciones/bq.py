@@ -84,27 +84,62 @@ def get_users_postula_facil() -> list[dict]:
 
 
 def get_active_users() -> list[dict]:
-    """Retorna usuarios con POSTULACIONES_AUTO activo=1 y POSTULA_FACIL completo."""
+    """Retorna usuarios con POSTULACIONES_AUTO activo=1 y POSTULA_FACIL completo.
+    El plan se lee desde PLAN_CONTRATADO (fuente de verdad) aplicando la lógica
+    de vigencia, no desde POSTULA_FACIL que puede estar desactualizado.
+    """
     query = f"""
-        SELECT {_pf_select('pf')}, u.EMAIL
-        FROM `{PROJECT}.{DATASET}.POSTULA_FACIL` pf
-        INNER JOIN `{PROJECT}.{DATASET}.POSTULACIONES_AUTO` pa
-            ON LOWER(pa.id_usuario) = LOWER(pf.ID_USUARIO)
-        LEFT JOIN `{PROJECT}.{DATASET}.USUARIOS` u
-            ON LOWER(u.ID_USUARIO) = LOWER(pf.ID_USUARIO)
-        WHERE pa.activo = 1
-          AND pf.CARGOS IS NOT NULL
-          AND pf.UBICACIONES IS NOT NULL
-          AND pf.PROFESION IS NOT NULL AND pf.PROFESION != ''
-          AND pf.RUT IS NOT NULL AND pf.RUT != ''
-          AND (
-            -- Empleo requiere pretension; practica puede tener 0 o vacio
-            COALESCE(UPPER(pf.TIPO_BUSQUEDA), 'EMPLEO') = 'PRACTICA'
-            OR (pf.PRETENSION_GENERAL IS NOT NULL AND pf.PRETENSION_GENERAL != '')
-          )
+        SELECT * REPLACE(
+          COALESCE(
+            CASE
+              WHEN pc_plan = 'FREE' THEN 'FREE'
+              WHEN pc_plan = 'TRIAL'
+                AND DATE(pc_fecha_inicio) >= DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY)
+                THEN 'TRIAL'
+              WHEN pc_plan NOT IN ('FREE', 'TRIAL') AND (
+                (pc_fecha_fin IS NOT NULL AND DATE(pc_fecha_fin) >= CURRENT_DATE())
+                OR (pc_fecha_fin IS NULL
+                    AND DATE(pc_fecha_inicio) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))
+              ) THEN pc_plan
+              ELSE NULL
+            END,
+            'FREE'
+          ) AS plan
+        )
+        FROM (
+          SELECT {_pf_select('pf')},
+                 pc.PLAN        AS pc_plan,
+                 pc.FECHA_INICIO AS pc_fecha_inicio,
+                 pc.FECHA_FIN    AS pc_fecha_fin,
+                 u.EMAIL
+          FROM `{PROJECT}.{DATASET}.POSTULA_FACIL` pf
+          INNER JOIN `{PROJECT}.{DATASET}.POSTULACIONES_AUTO` pa
+              ON LOWER(pa.id_usuario) = LOWER(pf.ID_USUARIO)
+          LEFT JOIN `{PROJECT}.{DATASET}.USUARIOS` u
+              ON LOWER(u.ID_USUARIO) = LOWER(pf.ID_USUARIO)
+          LEFT JOIN `{PROJECT}.{DATASET}.PLAN_CONTRATADO` pc
+              ON LOWER(pc.ID_USUARIO) = LOWER(pf.ID_USUARIO)
+              AND pc.ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE')
+          WHERE pa.activo = 1
+            AND pf.CARGOS IS NOT NULL
+            AND pf.UBICACIONES IS NOT NULL
+            AND pf.PROFESION IS NOT NULL AND pf.PROFESION != ''
+            AND pf.RUT IS NOT NULL AND pf.RUT != ''
+            AND (
+              COALESCE(UPPER(pf.TIPO_BUSQUEDA), 'EMPLEO') = 'PRACTICA'
+              OR (pf.PRETENSION_GENERAL IS NOT NULL AND pf.PRETENSION_GENERAL != '')
+            )
+        )
     """
     rows = list(_query(query).result())
-    return [dict(r) for r in rows]
+    result = []
+    for r in rows:
+        d = dict(r)
+        d.pop('pc_plan', None)
+        d.pop('pc_fecha_inicio', None)
+        d.pop('pc_fecha_fin', None)
+        result.append(d)
+    return result
 
 
 def get_user_by_id(user_id: str) -> list[dict]:
