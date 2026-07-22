@@ -81,7 +81,13 @@ def _crear_cuentas_usuario(uid: str, user: dict, bq) -> None:
 def _run():
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-    asyncio.set_event_loop(asyncio.new_event_loop())
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        import nest_asyncio
+        nest_asyncio.apply(loop)
+    except ImportError:
+        pass
 
     import bq
 
