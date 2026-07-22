@@ -10,13 +10,20 @@ const PLAN_PRICES: Record<string, number> = {
   PREMIUM: 19990,
 };
 
-// Condición SQL de vigencia: planes pagados duran 30 días desde el pago,
-// TRIAL 14 días, FREE no expira. Usar con alias `pc`.
+// Condición SQL de vigencia. Si FECHA_FIN está guardada se usa directamente;
+// si no, se calcula desde FECHA_INICIO (30 días pagados, 14 días TRIAL).
 export const PLAN_VIGENTE_SQL = `(
   pc.PLAN = 'FREE'
   OR (pc.PLAN = 'TRIAL' AND DATE(pc.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY))
-  OR (pc.PLAN NOT IN ('FREE', 'TRIAL') AND DATE(pc.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))
+  OR (pc.PLAN NOT IN ('FREE', 'TRIAL') AND (
+    (pc.FECHA_FIN IS NOT NULL AND DATE(pc.FECHA_FIN) >= CURRENT_DATE())
+    OR (pc.FECHA_FIN IS NULL AND DATE(pc.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))
+  ))
 )`;
+
+const CV_OPT_LIMITS: Record<string, number> = {
+  FREE: 0, PRO: 2, SPRINT: 3, PREMIUM: 5, TRIAL: 1,
+};
 
 @Injectable()
 export class PlanService {
@@ -25,27 +32,63 @@ export class PlanService {
     private readonly email: EmailService,
   ) {}
 
+  async getCvOptimizaciones(userId: string): Promise<{ usadas: number; limite: number; restantes: number }> {
+    const planRows = await this.bq.query<any>(`
+      SELECT PLAN, FECHA_INICIO FROM ${this.bq.t('PLAN_CONTRATADO')} pc
+      WHERE pc.ID_USUARIO = @id AND pc.ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE')
+        AND ${PLAN_VIGENTE_SQL}
+      ORDER BY FECHA_INICIO DESC LIMIT 1
+    `, { id: userId });
+
+    const plan = planRows[0]?.PLAN || 'FREE';
+    const limite = CV_OPT_LIMITS[plan] ?? 0;
+    if (limite === 0) return { usadas: 0, limite: 0, restantes: 0 };
+
+    const rawFi = planRows[0]?.FECHA_INICIO?.value ?? planRows[0]?.FECHA_INICIO;
+    const desde = rawFi ? new Date(rawFi).toISOString() : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+    // CV_OPTIMIZACIONES ya existe con schema: id, id_usuario, fecha (DATE), tipo, created_at
+    const rows = await this.bq.query<any>(`
+      SELECT COUNT(*) AS total FROM ${this.bq.t('CV_OPTIMIZACIONES')}
+      WHERE id_usuario = @id AND tipo = 'cv_optimizacion' AND created_at >= TIMESTAMP(@desde)
+    `, { id: userId, desde }).catch(() => [{ total: 0 }]);
+
+    const usadas = Number(rows[0]?.total ?? 0);
+    return { usadas, limite, restantes: Math.max(0, limite - usadas) };
+  }
+
+  async registrarCvOptimizacion(userId: string, _plan: string): Promise<void> {
+    await this.bq.query(`
+      INSERT INTO ${this.bq.t('CV_OPTIMIZACIONES')} (id, id_usuario, fecha, tipo, created_at)
+      VALUES (GENERATE_UUID(), @id, CURRENT_DATE(), 'cv_optimizacion', CURRENT_TIMESTAMP())
+    `, { id: userId });
+  }
+
   async getPlan(userId: string) {
     const rows = await this.bq.query<any>(`
-      SELECT PLAN, ESTADO, FECHA_INICIO FROM ${this.bq.t('PLAN_CONTRATADO')} pc
+      SELECT PLAN, ESTADO, FECHA_INICIO, FECHA_FIN FROM ${this.bq.t('PLAN_CONTRATADO')} pc
       WHERE pc.ID_USUARIO = @id AND pc.ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE')
         AND ${PLAN_VIGENTE_SQL}
       ORDER BY FECHA_INICIO DESC LIMIT 1
     `, { id: userId });
 
     const row = rows[0];
-    const fechaInicio: Date | null = row?.FECHA_INICIO?.value
-      ? new Date(row.FECHA_INICIO.value)
-      : row?.FECHA_INICIO
-      ? new Date(row.FECHA_INICIO)
-      : null;
     let fecha_fin: string | null = null;
-    if (fechaInicio && row?.PLAN !== 'FREE') {
-      const dias = row?.PLAN === 'TRIAL' ? 14 : 30;
-      const fin = new Date(fechaInicio);
-      fin.setDate(fin.getDate() + dias);
-      fecha_fin = fin.toISOString().split('T')[0];
+
+    if (row && row.PLAN !== 'FREE') {
+      if (row.FECHA_FIN) {
+        // Leer FECHA_FIN directamente desde BQ (permite override manual)
+        const ff = row.FECHA_FIN?.value ? new Date(row.FECHA_FIN.value) : new Date(row.FECHA_FIN);
+        fecha_fin = ff.toISOString().split('T')[0];
+      } else if (row.FECHA_INICIO) {
+        // Fallback: calcular desde FECHA_INICIO
+        const fi = row.FECHA_INICIO?.value ? new Date(row.FECHA_INICIO.value) : new Date(row.FECHA_INICIO);
+        const dias = row.PLAN === 'TRIAL' ? 14 : 30;
+        fi.setDate(fi.getDate() + dias);
+        fecha_fin = fi.toISOString().split('T')[0];
+      }
     }
+
     return { plan: row?.PLAN || 'FREE', estado: row?.ESTADO || null, fecha_fin };
   }
 
@@ -72,17 +115,20 @@ export class PlanService {
   // Uso interno — sin restricción de plan (la llama el flujo de pago confirmado).
   private async activatePlan(userId: string, plan: string) {
     const now = new Date().toISOString();
+    const fin = new Date();
+    fin.setDate(fin.getDate() + (plan === 'TRIAL' ? 14 : 30));
+    const fechaFin = fin.toISOString();
 
     await this.bq.query(`
       MERGE ${this.bq.t('PLAN_CONTRATADO')} T
       USING (SELECT @id AS ID_USUARIO) S
       ON T.ID_USUARIO = S.ID_USUARIO
       WHEN MATCHED THEN
-        UPDATE SET PLAN = @plan, ESTADO = 'ACTIVO', FECHA_INICIO = @now, METODO_PAGO = 'APP'
+        UPDATE SET PLAN = @plan, ESTADO = 'ACTIVO', FECHA_INICIO = @now, FECHA_FIN = @fechaFin, METODO_PAGO = 'APP'
       WHEN NOT MATCHED THEN
-        INSERT (ID_USUARIO, PLAN, ESTADO, FECHA_INICIO, METODO_PAGO)
-        VALUES (@id, @plan, 'ACTIVO', @now, 'APP')
-    `, { id: userId, plan, now });
+        INSERT (ID_USUARIO, PLAN, ESTADO, FECHA_INICIO, FECHA_FIN, METODO_PAGO)
+        VALUES (@id, @plan, 'ACTIVO', @now, @fechaFin, 'APP')
+    `, { id: userId, plan, now, fechaFin });
 
     return { success: true };
   }
@@ -92,18 +138,19 @@ export class PlanService {
     const rows = await this.bq.query<any>(`
       SELECT
         u.NOMBRE, u.EMAIL, pc.PLAN,
-        DATE_ADD(DATE(pc.FECHA_INICIO), INTERVAL 30 DAY) AS FECHA_FIN
+        COALESCE(DATE(pc.FECHA_FIN), DATE_ADD(DATE(pc.FECHA_INICIO), INTERVAL 30 DAY)) AS FECHA_FIN
       FROM ${this.bq.t('USUARIOS')} u
       JOIN ${this.bq.t('PLAN_CONTRATADO')} pc ON u.ID_USUARIO = pc.ID_USUARIO
       WHERE pc.ESTADO = 'ACTIVO'
         AND pc.PLAN NOT IN ('FREE', 'TRIAL')
-        AND DATE_ADD(DATE(pc.FECHA_INICIO), INTERVAL 30 DAY)
+        AND COALESCE(DATE(pc.FECHA_FIN), DATE_ADD(DATE(pc.FECHA_INICIO), INTERVAL 30 DAY))
             = DATE_ADD(CURRENT_DATE(), INTERVAL @dias DAY)
     `, { dias: diasAntes });
 
     await Promise.all(
       rows.map((r: any) => {
-        const fechaFin = new Date(r.FECHA_FIN).toLocaleDateString('es-CL', {
+        const rawFin = r.FECHA_FIN?.value ?? r.FECHA_FIN;
+        const fechaFin = new Date(rawFin).toLocaleDateString('es-CL', {
           day: 'numeric', month: 'long', year: 'numeric',
         });
         const subject = diasAntes <= 1
