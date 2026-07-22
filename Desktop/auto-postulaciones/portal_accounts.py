@@ -2676,7 +2676,9 @@ def _close_pw_session(uid: str) -> None:
         if key in _pw_sessions:
             try:
                 _pw_sessions[key]["browser"].close()
-                _pw_sessions[key]["pw"].stop()
+                # No llamar pw.stop() — interrumpe el asyncio loop y rompe
+                # sync_playwright() para los usuarios siguientes en el mismo hilo.
+                # El proceso pw se limpia cuando _run() termina.
             except Exception:
                 pass
             del _pw_sessions[key]
