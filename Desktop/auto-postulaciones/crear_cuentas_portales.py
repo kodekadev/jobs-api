@@ -11,6 +11,12 @@ Ejecutar desde terminal o Spyder (F5):
 """
 import os, sys, threading, asyncio
 
+try:
+    import nest_asyncio
+    nest_asyncio.apply()
+except ImportError:
+    pass
+
 _dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else r"C:\Users\bastian\Desktop\auto-postulaciones"
 if _dir not in sys.path:
     sys.path.insert(0, _dir)

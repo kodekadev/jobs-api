@@ -856,6 +856,16 @@ def _pw_paso3_formacion(page, user: dict):
             break
         page.wait_for_timeout(500)
 
+    # Si la carrera no está en catálogo, confirmar ingresarla igual
+    try:
+        link = page.locator("a:has-text('ingresarla'), a:has-text('Sí, ingresarla')")
+        if link.count() > 0 and link.first.is_visible():
+            link.first.click()
+            print(f"  [pw-wiz] Carrera fuera de catálogo — click 'Sí, ingresarla'")
+            page.wait_for_timeout(800)
+    except Exception:
+        pass
+
     # Situación + años de estudios (dos pasadas)
     def _fill_situation_years():
         year_count = [0]
@@ -1643,6 +1653,18 @@ def _paso3_generico(driver: webdriver.Chrome, user: dict) -> None:
                 pass
         print(f"  [cv] Paso3 carrera: {carrera}")
         time.sleep(1)
+
+    # Si la carrera no está en catálogo, confirmar ingresarla igual
+    for xp in ["//a[contains(text(),'ingresarla')]", "//a[contains(text(),'Sí')]"]:
+        try:
+            els = [e for e in driver.find_elements(By.XPATH, xp) if e.is_displayed()]
+            if els:
+                els[0].click()
+                print(f"  [cv] Carrera fuera de catálogo — click 'Sí, ingresarla'")
+                time.sleep(0.8)
+                break
+        except Exception:
+            pass
 
     # ── 4 y 5. Situacion + Anio de termino (dos pasadas) ─────────────────────
     def _fill_selects():
