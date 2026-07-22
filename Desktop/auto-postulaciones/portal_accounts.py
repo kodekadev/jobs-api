@@ -824,10 +824,8 @@ def _pw_paso3_formacion(page, user: dict):
             page.wait_for_timeout(2000)
         break
 
-    # Institución autocomplete (busca por palabra específica, no genérica)
-    _GENERICAS = {"universidad","instituto","escuela","centro","pontificia","de","del","la","los","chile"}
-    inst_words = [w for w in institucion.lower().split() if len(w) > 4 and w not in _GENERICAS]
-    inst_search = inst_words[0] if inst_words else institucion
+    # Institución autocomplete — usar exactamente lo que ingresó el usuario
+    inst_search = institucion
 
     def _first_active_input():
         return next((i for i in page.locator("input:not([disabled])").all()
@@ -1616,9 +1614,8 @@ def _paso3_generico(driver: webdriver.Chrome, user: dict) -> None:
     # ── 2. Institucion (primer autocomplete activo tras nivel) ────────────────
     # Terminos de busqueda: palabras mas especificas del nombre (ej "Portales" para Diego Portales)
     # Buscar por la palabra más específica del nombre (excluir genéricas como "de", "del", "universidad")
-    _GENERICAS = {"universidad", "instituto", "escuela", "centro", "pontificia", "de", "del", "la", "los", "chile"}
-    _inst_words = [w for w in institucion.lower().split() if len(w) > 4 and w not in _GENERICAS]
-    inst_search = _inst_words[0] if _inst_words else institucion
+    # Institución autocomplete — usar exactamente lo que ingresó el usuario
+    inst_search = institucion
 
     inp = _first_active_input()
     if inp:
