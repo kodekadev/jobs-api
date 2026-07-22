@@ -117,9 +117,15 @@ def get_active_users() -> list[dict]:
               ON LOWER(pa.id_usuario) = LOWER(pf.ID_USUARIO)
           LEFT JOIN `{PROJECT}.{DATASET}.USUARIOS` u
               ON LOWER(u.ID_USUARIO) = LOWER(pf.ID_USUARIO)
-          LEFT JOIN `{PROJECT}.{DATASET}.PLAN_CONTRATADO` pc
-              ON LOWER(pc.ID_USUARIO) = LOWER(pf.ID_USUARIO)
-              AND pc.ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE')
+          LEFT JOIN (
+            -- Un solo plan por usuario: el más reciente en estado activo/cancelado-pendiente
+            SELECT ID_USUARIO, PLAN, FECHA_INICIO, FECHA_FIN
+            FROM `{PROJECT}.{DATASET}.PLAN_CONTRATADO`
+            WHERE ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE')
+            QUALIFY ROW_NUMBER() OVER (
+              PARTITION BY LOWER(ID_USUARIO) ORDER BY FECHA_INICIO DESC
+            ) = 1
+          ) pc ON LOWER(pc.ID_USUARIO) = LOWER(pf.ID_USUARIO)
           WHERE pa.activo = 1
             AND pf.CARGOS IS NOT NULL
             AND pf.UBICACIONES IS NOT NULL
