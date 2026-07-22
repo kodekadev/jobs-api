@@ -124,10 +124,7 @@ export class AuthService {
       this.email.welcomeHtml(nombre),
     ).catch(() => null);
 
-    // Asignar TRIAL de 14 días al nuevo usuario Google
-    await this.assignTrial(id);
-
-    const newUser = { ID_USUARIO: id, NOMBRE: nombre, EMAIL: emailNorm, PLAN: 'TRIAL', AUTO_ACTIVO: false };
+    const newUser = { ID_USUARIO: id, NOMBRE: nombre, EMAIL: emailNorm, PLAN: 'FREE', AUTO_ACTIVO: false };
     return this.buildResponse(newUser);
   }
 
@@ -216,9 +213,6 @@ export class AuthService {
         DELETE FROM ${this.bq.t('EMAIL_VERIFICATIONS')} WHERE ID_USUARIO = @id
       `, { id: userId }),
     ]);
-
-    // Asignar TRIAL de 14 días al completar el registro
-    await this.assignTrial(userId);
 
     this.email.send(
       emailNorm,

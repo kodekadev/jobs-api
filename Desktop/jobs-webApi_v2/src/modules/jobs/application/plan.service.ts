@@ -112,6 +112,18 @@ export class PlanService {
     return this.activatePlan(userId, 'FREE');
   }
 
+  async activateTrial(userId: string) {
+    const rows = await this.bq.query<any>(`
+      SELECT PLAN FROM ${this.bq.t('PLAN_CONTRATADO')}
+      WHERE ID_USUARIO = @id AND PLAN != 'FREE' LIMIT 1
+    `, { id: userId }).catch(() => []);
+
+    if (rows.length > 0) {
+      throw new ForbiddenException('Ya usaste tu prueba gratuita');
+    }
+    return this.activatePlan(userId, 'TRIAL');
+  }
+
   // Uso interno — sin restricción de plan (la llama el flujo de pago confirmado).
   private async activatePlan(userId: string, plan: string) {
     const now = new Date().toISOString();
