@@ -61,22 +61,35 @@ def _ensure_xvfb():
 
 
 def _make_driver() -> webdriver.Chrome:
-    from selenium.webdriver.chrome.service import Service
-
     in_linux = os.path.exists(_CHROMIUM)
     if in_linux:
         _ensure_xvfb()
 
+    # En Windows: usar undetected-chromedriver para evitar detección de bot
+    if not in_linux:
+        try:
+            import undetected_chromedriver as uc
+            options = uc.ChromeOptions()
+            options.add_argument("--window-size=1366,768")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            driver = uc.Chrome(options=options, headless=False)
+            return driver
+        except Exception:
+            pass  # fallback a selenium normal
+
+    from selenium.webdriver.chrome.service import Service
     options = Options()
     if not in_linux:
         options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--disable-automation")
     options.add_argument("--window-size=1366,768")
     options.add_argument(
         "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
     )
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
@@ -540,28 +553,10 @@ def _pw_crear_cuenta_chiletrabajos(user_id: str, user: dict) -> bool:
     cloud = _cht_in_cloud_run()
 
     try:
+        from portal_accounts import _make_pw_context, _new_stealth_page
         with sync_playwright() as pw:
-            args = ["--no-sandbox", "--disable-dev-shm-usage",
-                    "--disable-blink-features=AutomationControlled"]
-            if cloud:
-                args.append("--single-process")
-            browser = pw.chromium.launch(headless=cloud, args=args)
-            ctx = browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-                ),
-                viewport={"width": 1366, "height": 768},
-                locale="es-CL",
-                timezone_id="America/Santiago",
-            )
-            ctx.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                Object.defineProperty(navigator, 'languages', {get: () => ['es-CL', 'es', 'en']});
-                Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-                window.chrome = { runtime: {} };
-            """)
-            page = ctx.new_page()
+            _pw, browser, ctx, _ = _make_pw_context(pw)
+            page = _new_stealth_page(ctx)
 
             for reg_url in [f"{BASE_URL}/chtregister", f"{BASE_URL}/registro", f"{BASE_URL}/crear-cuenta"]:
                 page.goto(reg_url, wait_until="domcontentloaded", timeout=30000)

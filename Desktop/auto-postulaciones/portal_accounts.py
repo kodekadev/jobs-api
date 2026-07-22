@@ -30,6 +30,69 @@ import threading
 
 import bq
 
+
+_CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+
+
+def _make_pw_context(pw=None):
+    """Lanza browser (Chrome real si existe) con configuración anti-detección."""
+    import random as _rnd
+    from playwright.sync_api import sync_playwright as _spw
+    owns_pw = pw is None
+    if owns_pw:
+        pw = _spw().start()
+
+    use_chrome = os.path.exists(_CHROME_PATH) and not _in_cloud_run
+    browser = pw.chromium.launch(
+        executable_path=_CHROME_PATH if use_chrome else None,
+        headless=_in_cloud_run,
+        args=[
+            "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+            "--disable-blink-features=AutomationControlled",
+            "--disable-automation", "--disable-infobars",
+            "--disable-default-apps", "--no-first-run",
+            "--no-default-browser-check",
+        ],
+    )
+    ctx = browser.new_context(
+        user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+        ),
+        locale="es-CL",
+        timezone_id="America/Santiago",
+        viewport={"width": _rnd.randint(1260, 1320), "height": _rnd.randint(780, 820)},
+        permissions=["geolocation"],
+        extra_http_headers={"Accept-Language": "es-CL,es;q=0.9,en;q=0.8"},
+    )
+    ctx.add_init_script("""
+        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+        window.chrome = { runtime: {}, loadTimes: function(){}, csi: function(){} };
+        Object.defineProperty(navigator, 'plugins', {get: () => [
+            {name:'Chrome PDF Plugin'}, {name:'Chrome PDF Viewer'},
+            {name:'Native Client'}, {name:'Widevine Content Decryption Module'}
+        ]});
+        Object.defineProperty(navigator, 'languages', {get: () => ['es-CL','es','en-US','en']});
+        const _origPQ = navigator.permissions.query;
+        navigator.permissions.query = (p) =>
+            p.name === 'notifications'
+                ? Promise.resolve({state: Notification.permission})
+                : _origPQ(p);
+    """)
+    return pw, browser, ctx, owns_pw
+
+
+def _new_stealth_page(ctx):
+    """Crea una nueva página Playwright con playwright-stealth aplicado."""
+    try:
+        from playwright_stealth import stealth_sync
+        pg = ctx.new_page()
+        stealth_sync(pg)
+        return pg
+    except Exception:
+        return ctx.new_page()
+
+
 # ─── CACHE DE PREGUNTAS/RESPUESTAS ───────────────────────────────────────────
 # Guarda automáticamente las respuestas de Claude para reutilizarlas sin costo.
 # Formato: { "LABEL_NORMALIZADO|tipo": "respuesta" }
@@ -2532,24 +2595,7 @@ def get_trabajando_pw_session(uid: str, email: str, password: str):
                     pass
                 del _pw_sessions[key]
 
-    def _make_pw_context():
-        _pw = sync_playwright().start()
-        _browser = _pw.chromium.launch(
-            headless=_in_cloud_run,
-            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
-                  "--disable-blink-features=AutomationControlled"],
-        )
-        _ctx = _browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/148.0.0.0 Safari/537.36"
-            ),
-            locale="es-CL",
-            viewport={"width": 1280, "height": 800},
-            permissions=[],
-        )
-        return _pw, _browser, _ctx
+
 
     def _vue_set_pw(page, selector: str, value: str):
         page.evaluate(f"""(v) => {{
@@ -2565,7 +2611,7 @@ def get_trabajando_pw_session(uid: str, email: str, password: str):
 
     # ── 1. Intentar restaurar desde cookies ───────────────────────────────────
     if cookies:
-        pw, browser, context = _make_pw_context()
+        pw, browser, context, _ = _make_pw_context()
         ls_entries   = {c["name"][5:]: c["value"] for c in cookies if c.get("name", "").startswith("__ls_")}
         real_cookies = [c for c in cookies if not c.get("name", "").startswith("__ls_")]
         try:
@@ -2573,7 +2619,7 @@ def get_trabajando_pw_session(uid: str, email: str, password: str):
         except Exception as e:
             print(f"  -> Error inyectando cookies PW: {e}")
 
-        page = context.new_page()
+        page = _new_stealth_page(context)
         page.goto("https://www.trabajando.cl/", wait_until="domcontentloaded", timeout=20000)
         if ls_entries:
             try:
@@ -2626,7 +2672,7 @@ def get_trabajando_pw_session(uid: str, email: str, password: str):
         return None
 
     try:
-        pw, browser, context = _make_pw_context()
+        pw, browser, context, _ = _make_pw_context()
         ls_entries   = {c["name"][5:]: c["value"] for c in cookies if c.get("name", "").startswith("__ls_")}
         real_cookies = [c for c in cookies if not c.get("name", "").startswith("__ls_")]
         try:
@@ -2634,7 +2680,7 @@ def get_trabajando_pw_session(uid: str, email: str, password: str):
         except Exception as e:
             print(f"  -> Error inyectando cookies PW: {e}")
 
-        page = context.new_page()
+        page = _new_stealth_page(context)
         page.goto("https://www.trabajando.cl/", wait_until="domcontentloaded", timeout=20000)
         if ls_entries:
             for k, v in ls_entries.items():
@@ -2749,25 +2795,7 @@ def get_chiletrabajos_pw_session(uid: str, email: str = "", password: str = ""):
         pw = sync_playwright().start()
         owns_pw = True
 
-    browser = pw.chromium.launch(
-        headless=_in_cloud_run,
-        args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
-              "--disable-blink-features=AutomationControlled"],
-    )
-    context = browser.new_context(
-        user_agent=(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        ),
-        locale="es-CL",
-        viewport={"width": 1366, "height": 768},
-    )
-    context.add_init_script("""
-        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-        Object.defineProperty(navigator, 'languages', {get: () => ['es-CL', 'es', 'en']});
-        Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-        window.chrome = { runtime: {} };
-    """)
+    _, browser, context, _ = _make_pw_context(pw if not owns_pw else None)
 
     def _cleanup():
         try:
@@ -2780,7 +2808,7 @@ def get_chiletrabajos_pw_session(uid: str, email: str = "", password: str = ""):
             except Exception:
                 pass
 
-    page = context.new_page()
+    page = _new_stealth_page(context)
 
     # ── 1. Intentar cookies BQ ────────────────────────────────────────────────
     cookies = bq.get_portal_cookies(uid, "chiletrabajos")
@@ -2823,9 +2851,15 @@ def get_chiletrabajos_pw_session(uid: str, email: str = "", password: str = ""):
         page.goto("https://www.chiletrabajos.cl/chtlogin",
                   wait_until="domcontentloaded", timeout=30000)
         time.sleep(2)
+        import random as _rnd
         page.locator("#username").wait_for(state="visible", timeout=10000)
-        page.locator("#username").fill(email)
-        page.locator("#password").fill(password)
+        time.sleep(_rnd.uniform(0.5, 1.2))
+        page.locator("#username").click()
+        page.locator("#username").type(email, delay=_rnd.randint(50, 130))
+        time.sleep(_rnd.uniform(0.3, 0.8))
+        page.locator("#password").click()
+        page.locator("#password").type(password, delay=_rnd.randint(50, 130))
+        time.sleep(_rnd.uniform(0.4, 1.0))
         page.locator(
             "xpath=//input[@value='Iniciar Sesión'] | //button[@type='submit']"
         ).first.click()
@@ -3115,6 +3149,21 @@ def apply_trabajando_playwright(page, job_url: str, user: dict = {}, resumen: st
                     break
             except Exception:
                 pass
+
+        # Expandir acordeones de Trabajando.cl (Principales funciones, Perfil deseado, etc.)
+        try:
+            page.evaluate("""() => {
+                const triggers = document.querySelectorAll(
+                    '.accordion-toggle, .accordion-button, [data-toggle="collapse"], ' +
+                    '[data-bs-toggle="collapse"], .panel-heading, .card-header, ' +
+                    'h3[class*="titulo"], h4[class*="titulo"]'
+                );
+                triggers.forEach(t => { try { t.click(); } catch(e) {} });
+            }""")
+            page.wait_for_timeout(600)
+        except Exception:
+            pass
+
         # 1) Selectores específicos de Trabajando.cl — XPath primero, luego CSS
         for sel in ["xpath=//*[@id='detalleOferta']/div[3]/div[1]/div[3]",
                     "[class*='descripcion-oferta']", "[class*='descripcion-empleo']",
@@ -3162,6 +3211,14 @@ def apply_trabajando_playwright(page, job_url: str, user: dict = {}, resumen: st
                 }""") or ""
             except Exception:
                 pass
+
+        # Limpiar texto basura anti-scraping (palabras random solo-ASCII-minúsculas, sin acentos)
+        # Puede aparecer al inicio, al medio o al final — se elimina en cualquier posición
+        import re as _re
+        descripcion = _re.sub(r'(?:[a-z]+[ \t]+){9,}[a-z]+\.?', '', descripcion)
+        descripcion = _re.sub(r'[ \t]{2,}', ' ', descripcion)   # espacios dobles
+        descripcion = _re.sub(r'\n{3,}', '\n\n', descripcion)    # saltos excesivos
+        descripcion = descripcion.strip()
 
         def _ok():
             return {"ok": True, "empresa": empresa, "descripcion": descripcion}

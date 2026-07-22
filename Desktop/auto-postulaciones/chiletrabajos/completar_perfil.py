@@ -514,28 +514,24 @@ def _pw_completar_perfil_chiletrabajos(user_id: str, user: dict) -> bool:
         intereses = ""
 
     try:
+        from portal_accounts import _make_pw_context, _new_stealth_page
+        import random as _rnd
         with sync_playwright() as pw:
-            args = ["--no-sandbox", "--disable-dev-shm-usage",
-                    "--disable-blink-features=AutomationControlled"]
-            if cloud:
-                args.append("--single-process")
-            browser = pw.chromium.launch(headless=headless, args=args)
-            ctx = browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-                ),
-                viewport={"width": 1366, "height": 768},
-            )
-            page = ctx.new_page()
+            _pw, browser, ctx, _ = _make_pw_context(pw)
+            page = _new_stealth_page(ctx)
 
-            # Login — ChileTrabajos form clásico HTML, usar fill() no js setter
+            # Login — ChileTrabajos form clásico HTML, typing con delay humano
             page.goto(f"{BASE_URL}/chtlogin", wait_until="domcontentloaded", timeout=30000)
             page.wait_for_timeout(2000)
             try:
                 page.locator("#username").wait_for(state="visible", timeout=10000)
-                page.locator("#username").fill(cuenta["email"])
-                page.locator("#password").fill(cuenta["password"])
+                import time as _t
+                _t.sleep(_rnd.uniform(0.5, 1.2))
+                page.locator("#username").click()
+                page.locator("#username").type(cuenta["email"], delay=_rnd.randint(50, 130))
+                _t.sleep(_rnd.uniform(0.3, 0.8))
+                page.locator("#password").click()
+                page.locator("#password").type(cuenta["password"], delay=_rnd.randint(50, 130))
                 print(f"  [cht-pw-perfil] Credenciales llenadas")
             except Exception as _e:
                 print(f"  [cht-pw-perfil] Error llenando login: {_e}")

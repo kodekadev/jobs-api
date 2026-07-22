@@ -29,7 +29,8 @@ os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS", r"C:\Users\bastian\.secr
 from dotenv import load_dotenv
 load_dotenv(os.path.join(_dir, ".env"))
 
-SOLO_USUARIO = "jobs_1783652775361_um90s"  # ej: "jobs2" para probar uno solo
+# SOLO_USUARIO = "jobs_1783652775361_um90s"  # ej: "jobs2" para probar uno solo
+SOLO_USUARIO = None  # ej: "jobs2" para probar uno solo
 
 PLAN_LIMITS = {
     "FREE":    {"max_postulaciones_dia": 5},
@@ -112,12 +113,11 @@ def _run():
         restantes  = max(0, max_dia - ya_hoy)
 
         if restantes == 0:
-            print(f"  [{uid}] Límite diario alcanzado ({ya_hoy}/{max_dia}) — saltar")
+            print(f"  [{uid}] Limite diario alcanzado ({ya_hoy}/{max_dia}) a saltar")
             telegram(
                 f"[AplicAI] 0 postulaciones\n"
                 f"Usuario: {nombre} | Plan: {plan}\n"
-                f"{'─'*30}\n"
-                f"Límite diario ya alcanzado ({ya_hoy}/{max_dia})"
+                f"Limite diario ya alcanzado ({ya_hoy}/{max_dia})"
             )
             continue
 
@@ -139,7 +139,7 @@ def _run():
             )
             tbj_ok = res[0] if res else 0
         except Exception as e:
-            print(f"  [ERROR Trabajando {uid}] {e}")
+            print(f"  [ERROR Trabajando {uid}] {str(e).encode('ascii', 'replace').decode('ascii')}")
 
         # Rebalanceo: si Trabajando no llenó su cuota, ChileTrabajos toma el resto
         tbj_sobrante = max(0, cuota_tbj - tbj_ok)
@@ -164,12 +164,6 @@ def _run():
         if cht_sobrante and cht_ok < cuota_cht_final:
             print(f"  [{uid}] ChileTrabajos usó {cht_ok}/{cuota_cht_final} — {cht_sobrante} slots sin usar hoy")
 
-        # Cerrar browser Trabajando al terminar el usuario
-        try:
-            _pa.close_trabajando_session(uid)
-        except Exception:
-            pass
-
         total_user = tbj_ok + cht_ok
         print(f"\n  [{uid}] TOTAL: {total_user} postulaciones (Trabajando: {tbj_ok} | ChileTrabajos: {cht_ok})")
 
@@ -177,8 +171,7 @@ def _run():
         telegram(
             f"[AplicAI] {total_user} postulaciones enviadas\n"
             f"Usuario: {nombre} | Plan: {plan}\n"
-            f"{'─'*30}\n"
-            f"Canales: Trabajando {tbj_ok}/{cuota_tbj} | ChileTrabajos {cht_ok}/{cuota_cht_final} | Límite: {max_dia}/día"
+            f"Canales: Trabajando {tbj_ok}/{cuota_tbj} | ChileTrabajos {cht_ok}/{cuota_cht_final} | Limite: {max_dia}/dia"
         )
 
     print(f"\n{'='*60}")
