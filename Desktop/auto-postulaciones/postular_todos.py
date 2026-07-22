@@ -29,7 +29,7 @@ os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS", r"C:\Users\bastian\.secr
 from dotenv import load_dotenv
 load_dotenv(os.path.join(_dir, ".env"))
 
-SOLO_USUARIO = None  # ej: "jobs2" para probar uno solo
+SOLO_USUARIO = "jobs_1783652775361_um90s"  # ej: "jobs2" para probar uno solo
 
 PLAN_LIMITS = {
     "FREE":    {"max_postulaciones_dia": 5},
@@ -163,6 +163,12 @@ def _run():
         cht_sobrante = max(0, cuota_cht_final - cht_ok)
         if cht_sobrante and cht_ok < cuota_cht_final:
             print(f"  [{uid}] ChileTrabajos usó {cht_ok}/{cuota_cht_final} — {cht_sobrante} slots sin usar hoy")
+
+        # Cerrar browser Trabajando al terminar el usuario
+        try:
+            _pa.close_trabajando_session(uid)
+        except Exception:
+            pass
 
         total_user = tbj_ok + cht_ok
         print(f"\n  [{uid}] TOTAL: {total_user} postulaciones (Trabajando: {tbj_ok} | ChileTrabajos: {cht_ok})")
