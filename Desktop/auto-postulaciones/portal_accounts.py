@@ -3503,9 +3503,16 @@ def apply_trabajando_playwright(page, job_url: str, user: dict = {}, resumen: st
                     print(f"    [trabajando] Error click submit preguntas: {e}")
         except Exception as e:
             print(f"    [trabajando] Paso 3 error: {e}")
-            # No retornar aquí: algunos empleadores (Tottus, Falabella) abren
-            # #modalConfirmarPostulacion directamente sin #formularioPreguntasOferta.
-            # Dejar caer al paso 4 para intentar la confirmación directa.
+            if _comenzar_clickeado:
+                # Algunos empleadores (Tottus, Falabella) abren #modalConfirmarPostulacion
+                # directamente sin #formularioPreguntasOferta. Solo dejamos pasar
+                # al paso 4 si ese modal está realmente visible.
+                try:
+                    page.wait_for_selector("#modalConfirmarPostulacion", state="visible", timeout=3000)
+                    print(f"    [trabajando] Modal confirmación detectado — continuando a paso 4")
+                except Exception:
+                    print(f"    [trabajando] Preguntas no completadas — no postulado")
+                    return False
 
         # ── Paso 4: Modal confirmación directa ────────────────────────────────
         try:
