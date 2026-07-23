@@ -3503,9 +3503,9 @@ def apply_trabajando_playwright(page, job_url: str, user: dict = {}, resumen: st
                     print(f"    [trabajando] Error click submit preguntas: {e}")
         except Exception as e:
             print(f"    [trabajando] Paso 3 error: {e}")
-            if _comenzar_clickeado:
-                print(f"    [trabajando] Preguntas no completadas — no postulado")
-                return False
+            # No retornar aquí: algunos empleadores (Tottus, Falabella) abren
+            # #modalConfirmarPostulacion directamente sin #formularioPreguntasOferta.
+            # Dejar caer al paso 4 para intentar la confirmación directa.
 
         # ── Paso 4: Modal confirmación directa ────────────────────────────────
         try:
