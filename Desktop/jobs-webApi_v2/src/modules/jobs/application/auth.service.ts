@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { OAuth2Client } from 'google-auth-library';
 import { BigQueryService } from '../../shared/infrastructure/services/bigquery.service';
 import { EmailService } from '../../shared/infrastructure/services/email.service';
+import { TelegramService } from '../../shared/infrastructure/services/telegram.service';
 import env from '../../shared/infrastructure/environment';
 import { PLAN_VIGENTE_SQL } from './plan.service';
 
@@ -14,6 +15,7 @@ export class AuthService {
   constructor(
     private readonly bq: BigQueryService,
     private readonly email: EmailService,
+    private readonly telegram: TelegramService,
   ) {}
 
   // ─── LOGIN: single BigQuery JOIN that returns ALL user data ────────────────
@@ -124,6 +126,8 @@ export class AuthService {
       this.email.welcomeHtml(nombre),
     ).catch(() => null);
 
+    this.telegram.newUser(nombre, emailNorm, 'google');
+
     const newUser = { ID_USUARIO: id, NOMBRE: nombre, EMAIL: emailNorm, PLAN: 'FREE', AUTO_ACTIVO: false };
     return this.buildResponse(newUser);
   }
@@ -219,6 +223,8 @@ export class AuthService {
       '¡Bienvenido a AplicAI! Tu cuenta está activa',
       this.email.welcomeHtml(nombre),
     ).catch(() => null);
+
+    this.telegram.newUser(nombre, emailNorm, 'email');
 
     // Retornar sesión completa para auto-login al dashboard
     const fullUser = await this.bq.query<any>(`
