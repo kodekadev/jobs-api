@@ -3568,18 +3568,14 @@ def apply_trabajando_playwright(page, job_url: str, user: dict = {}, resumen: st
             except Exception:
                 pass
 
-        # 5. Si no hay mensaje de error explícito y se clickeó el botón, asumir éxito
-        #    (la SPA hace la llamada API en el click; si no hay error visible, fue exitoso)
+        # 5. Sin confirmación positiva explícita → no postulado
+        #    No asumir éxito por ausencia de error: puede ser falso positivo.
         if not exito:
-            errores = [
-                "error al postular", "no se pudo", "inténtalo de nuevo",
-                "ha ocurrido un error", "no puedes postular", "límite de postulaciones",
-            ]
-            hay_error = any(s in content for s in errores)
-            exito = not hay_error
+            print(f"    [trabajando] Sin confirmar postulación — no postulado")
+            return False
 
-        print(f"    [trabajando] {'OK Postulado' if exito else 'Sin confirmar exito'} -> {page.url[:60]}")
-        return _ok() if exito else False
+        print(f"    [trabajando] OK Postulado -> {page.url[:60]}")
+        return _ok()
 
     except Exception as e:
         # TargetClosedError debe propagarse para que el caller pueda reconectar
