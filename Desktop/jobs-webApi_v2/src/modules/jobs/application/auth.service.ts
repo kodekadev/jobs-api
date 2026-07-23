@@ -2,7 +2,6 @@ import { Injectable, UnauthorizedException, BadRequestException } from '@nestjs/
 import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
 import * as crypto from 'crypto';
-import { v4 as uuidv4 } from 'uuid';
 import { OAuth2Client } from 'google-auth-library';
 import { BigQueryService } from '../../shared/infrastructure/services/bigquery.service';
 import { EmailService } from '../../shared/infrastructure/services/email.service';
@@ -17,6 +16,16 @@ export class AuthService {
     private readonly email: EmailService,
     private readonly telegram: TelegramService,
   ) {}
+
+  // ─── ID SECUENCIAL: jobs1, jobs2, jobs3… ─────────────────────────────────
+  private async nextUserId(): Promise<string> {
+    const rows = await this.bq.query<any>(`
+      SELECT MAX(SAFE_CAST(REGEXP_EXTRACT(ID_USUARIO, r'^jobs(\\d+)$') AS INT64)) AS max_num
+      FROM ${this.bq.t('USUARIOS')}
+    `);
+    const max = rows[0]?.max_num ?? 0;
+    return `jobs${max + 1}`;
+  }
 
   // ─── LOGIN: single BigQuery JOIN that returns ALL user data ────────────────
   async login(emailRaw: string, password: string) {
@@ -112,7 +121,7 @@ export class AuthService {
 
     if (existing.length) return this.buildResponse(existing[0]);
 
-    const id = uuidv4();
+    const id = await this.nextUserId();
     await this.bq.query(`
       INSERT INTO ${this.bq.t('USUARIOS')}
         (ID_USUARIO, NOMBRE, EMAIL, CELULAR, PASSWORD, TERMINOS, ASIGNADO_LKD, FECHA_REGISTRO)
@@ -159,7 +168,7 @@ export class AuthService {
     if (dup.length) throw new BadRequestException('Email o celular ya registrado');
 
     const hash = await bcrypt.hash(body.password, 10);
-    const id = `jobs_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const id = await this.nextUserId();
 
     await this.bq.query(`
       INSERT INTO ${this.bq.t('USUARIOS')}
