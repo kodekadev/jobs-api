@@ -6,8 +6,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
-FROM_DOMAIN    = os.environ.get("FROM_DOMAIN", "jobs.ko-deka.com")
-APP_URL        = os.environ.get("APP_URL", "https://postulai.com")
+FROM_DOMAIN    = os.environ.get("FROM_DOMAIN", "aplicai.cl")
+APP_URL        = os.environ.get("APP_URL", "https://aplicai.cl")
 
 
 def _get_email_directo_hoy(uid: str) -> list[dict]:
@@ -147,7 +147,7 @@ def send_trial_warning(user: dict, days_left: int) -> None:
         </div>
 
         <p style="margin-top:20px;font-size:12px;color:#94a3b8;text-align:center">
-          Postulai · <a href="{APP_URL}" style="color:#2A8FA5">{APP_URL}</a>
+          AplicAI · <a href="{APP_URL}" style="color:#2A8FA5">aplicai.cl</a>
         </p>
       </div>
     </div>

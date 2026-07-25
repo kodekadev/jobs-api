@@ -10,7 +10,7 @@ from email.mime.base import MIMEBase
 from email import encoders
 
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
-FROM_DOMAIN     = os.environ.get("FROM_DOMAIN", "jobs.ko-deka.com")
+FROM_DOMAIN     = os.environ.get("FROM_DOMAIN", "aplicai.cl")
 
 # Emails a ignorar en descripciones (no son de contacto)
 _EXCLUDE = {"noreply", "no-reply", "donotreply", "linkedin", "indeed", "glassdoor",
