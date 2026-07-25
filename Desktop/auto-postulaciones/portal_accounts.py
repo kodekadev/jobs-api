@@ -2403,7 +2403,7 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
 
         # ── 3. Navegar a la página ─────────────────────────────────────────────
         driver.get(PAGE_URL)
-        time.sleep(3)
+        time.sleep(5)  # dar tiempo a Vue y reCAPTCHA para inicializarse
 
         # Cerrar banner de cookies si aparece
         for xp in ["//button[contains(text(),'Acepto')]", "//*[@id='aceptarCookies']"]:
@@ -2432,12 +2432,12 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
 
         # Esperar que el form esté listo
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'input[name="email"]')))
-        time.sleep(0.5)
+        time.sleep(1.5)  # Vue necesita terminar de montar el componente
 
         _vue_fill('input[name="email"]', email)
-        time.sleep(0.4)
+        time.sleep(0.8)
         _vue_fill('input[type="password"]', password)
-        time.sleep(0.6)
+        time.sleep(1.0)
 
         # Verificar valores rellenados
         email_val, pwd_len = driver.execute_script("""
@@ -2450,7 +2450,7 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
         # reCAPTCHA nativo corre automáticamente en el browser — no inyectamos nada.
         # El token se genera desde la IP de Cloud Run, que coincide con la petición de login.
         token = None
-        time.sleep(2)  # dar tiempo al reCAPTCHA nativo para inicializarse
+        time.sleep(5)  # dar tiempo al reCAPTCHA nativo para inicializarse y resolverse
 
         # ── 6. Debug: loggear estructura del formulario y respuesta reCAPTCHA ───
         try:
@@ -2482,7 +2482,7 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
 
         # ── 7. Click en el botón ───────────────────────────────────────────────
         btn_habilitado = None
-        for _ in range(8):
+        for _ in range(20):  # hasta 10s esperando que el botón se habilite
             for xp in [
                 "//button[contains(text(),'Entrar') and not(@disabled)]",
                 "//button[contains(text(),'Ingresar') and not(@disabled)]",
@@ -2500,12 +2500,18 @@ def _do_login(driver: webdriver.Chrome, email: str, password: str) -> bool:
         if btn_habilitado:
             txt = btn_habilitado.text.strip()
             driver.execute_script("arguments[0].scrollIntoView(true);", btn_habilitado)
-            time.sleep(_rnd.uniform(0.4, 0.9))
-            ActionChains(driver).move_to_element(btn_habilitado).pause(_rnd.uniform(0.3, 0.7)).click().perform()
+            time.sleep(_rnd.uniform(0.6, 1.2))
+            ActionChains(driver).move_to_element(btn_habilitado).pause(_rnd.uniform(0.4, 0.8)).click().perform()
             print(f"  [trabajando] Click btn habilitado: '{txt}'")
         else:
-            pwd_el.send_keys(Keys.RETURN)
-            print("  [trabajando] Submit via Keys.RETURN")
+            # Fallback: submit via JS si no encontramos botón habilitado
+            print("  [trabajando] Botón no encontrado — submit via JS")
+            driver.execute_script("""
+                var form = document.querySelector('form');
+                if (form) form.dispatchEvent(new Event('submit', {bubbles: true, cancelable: true}));
+                var btn = document.querySelector('button[type=submit]');
+                if (btn) btn.click();
+            """)
 
         # ── 7. Esperar hasta 20 segundos a que la URL cambie ──────────────────
         for _ in range(20):
