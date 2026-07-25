@@ -15,6 +15,7 @@ const env = {
   gcsBucketImages: process.env.GCS_BUCKET_IMAGES || 'jobs-profile-images',
   gcsBucketCv: process.env.GCS_BUCKET_CV || 'jobs-profile-cv',
   cronSecret: process.env.CRON_SECRET || '',
+  adminPin:   process.env.ADMIN_PIN   || '',
 };
 
 export default env;

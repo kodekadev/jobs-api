@@ -27,8 +27,8 @@ export class PostulacionesService {
 
     await this.bq.query(`
       INSERT INTO ${this.bq.t('EMPLEOS')}
-        (id_empleo, id_usuario, titulo_empleo, Fecha_Postulacion, cargo, Empresa, Descripcion, portal)
-      VALUES (@empleo, @id, @titulo, @fecha, @cargo, @empresa, @desc, @portal)
+        (id_empleo, id_usuario, titulo_empleo, Fecha_Postulacion, cargo, Empresa, Descripcion, link, portal)
+      VALUES (@empleo, @id, @titulo, @fecha, @cargo, @empresa, @desc, @link, @portal)
     `, {
       empleo:  body.id_empleo || '',
       id:      body.user_id,
@@ -36,7 +36,8 @@ export class PostulacionesService {
       fecha:   new Date().toISOString(),
       cargo:   body.cargo || '',
       empresa: body.empresa || '',
-      desc,
+      desc:    (body.descripcion || '').slice(0, 4000),
+      link:    (body.link || '').slice(0, 1024),
       portal,
     });
 
@@ -71,7 +72,7 @@ export class PostulacionesService {
         ) AS portales
       FROM ${this.bq.t('EMPLEOS')}
       WHERE id_usuario = @id
-        AND DATE(Fecha_Postulacion) = CURRENT_DATE()
+        AND DATE(Fecha_Postulacion, 'America/Santiago') = CURRENT_DATE('America/Santiago')
     `, { id: userId });
     const linkedin = Number(rows[0]?.linkedin ?? 0);
     const emails   = Number(rows[0]?.emails   ?? 0);
