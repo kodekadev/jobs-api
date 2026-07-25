@@ -1,0 +1,287 @@
+import { ForbiddenException, Injectable } from '@nestjs/common';
+import * as crypto from 'crypto';
+import { BigQueryService } from '../../shared/infrastructure/services/bigquery.service';
+import { EmailService } from '../../shared/infrastructure/services/email.service';
+import env from '../../shared/infrastructure/environment';
+
+const PLAN_PRICES: Record<string, number> = {
+  PRO: 9990,
+  SPRINT: 14990,   // pago único — 30 días, sin renovación
+  PREMIUM: 19990,
+};
+
+// Condición SQL de vigencia. Si FECHA_FIN está guardada se usa directamente;
+// si no, se calcula desde FECHA_INICIO (30 días pagados, 14 días TRIAL).
+export const PLAN_VIGENTE_SQL = `(
+  pc.PLAN = 'FREE'
+  OR (pc.PLAN = 'TRIAL' AND DATE(pc.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY))
+  OR (pc.PLAN NOT IN ('FREE', 'TRIAL') AND (
+    (pc.FECHA_FIN IS NOT NULL AND DATE(pc.FECHA_FIN) >= CURRENT_DATE())
+    OR (pc.FECHA_FIN IS NULL AND DATE(pc.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))
+  ))
+)`;
+
+const CV_OPT_LIMITS: Record<string, number> = {
+  FREE: 0, PRO: 2, SPRINT: 3, PREMIUM: 5, TRIAL: 1,
+};
+
+@Injectable()
+export class PlanService {
+  constructor(
+    private readonly bq: BigQueryService,
+    private readonly email: EmailService,
+  ) {}
+
+  async getCvOptimizaciones(userId: string): Promise<{ usadas: number; limite: number; restantes: number }> {
+    const planRows = await this.bq.query<any>(`
+      SELECT PLAN, FECHA_INICIO FROM ${this.bq.t('PLAN_CONTRATADO')} pc
+      WHERE pc.ID_USUARIO = @id AND pc.ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE')
+        AND ${PLAN_VIGENTE_SQL}
+      ORDER BY FECHA_INICIO DESC LIMIT 1
+    `, { id: userId });
+
+    const plan = planRows[0]?.PLAN || 'FREE';
+    const limite = CV_OPT_LIMITS[plan] ?? 0;
+    if (limite === 0) return { usadas: 0, limite: 0, restantes: 0 };
+
+    const rawFi = planRows[0]?.FECHA_INICIO?.value ?? planRows[0]?.FECHA_INICIO;
+    const desde = rawFi ? new Date(rawFi).toISOString() : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+    // CV_OPTIMIZACIONES ya existe con schema: id, id_usuario, fecha (DATE), tipo, created_at
+    const rows = await this.bq.query<any>(`
+      SELECT COUNT(*) AS total FROM ${this.bq.t('CV_OPTIMIZACIONES')}
+      WHERE id_usuario = @id AND tipo = 'cv_optimizacion' AND created_at >= TIMESTAMP(@desde)
+    `, { id: userId, desde }).catch(() => [{ total: 0 }]);
+
+    const usadas = Number(rows[0]?.total ?? 0);
+    return { usadas, limite, restantes: Math.max(0, limite - usadas) };
+  }
+
+  async registrarCvOptimizacion(userId: string, _plan: string): Promise<void> {
+    await this.bq.query(`
+      INSERT INTO ${this.bq.t('CV_OPTIMIZACIONES')} (id, id_usuario, fecha, tipo, created_at)
+      VALUES (GENERATE_UUID(), @id, CURRENT_DATE(), 'cv_optimizacion', CURRENT_TIMESTAMP())
+    `, { id: userId });
+  }
+
+  async getPlan(userId: string) {
+    const rows = await this.bq.query<any>(`
+      SELECT PLAN, ESTADO, FECHA_INICIO, FECHA_FIN FROM ${this.bq.t('PLAN_CONTRATADO')} pc
+      WHERE pc.ID_USUARIO = @id AND pc.ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE')
+        AND ${PLAN_VIGENTE_SQL}
+      ORDER BY FECHA_INICIO DESC LIMIT 1
+    `, { id: userId });
+
+    const row = rows[0];
+    let fecha_fin: string | null = null;
+
+    if (row && row.PLAN !== 'FREE') {
+      if (row.FECHA_FIN) {
+        // Leer FECHA_FIN directamente desde BQ (permite override manual)
+        const ff = row.FECHA_FIN?.value ? new Date(row.FECHA_FIN.value) : new Date(row.FECHA_FIN);
+        fecha_fin = ff.toISOString().split('T')[0];
+      } else if (row.FECHA_INICIO) {
+        // Fallback: calcular desde FECHA_INICIO
+        const fi = row.FECHA_INICIO?.value ? new Date(row.FECHA_INICIO.value) : new Date(row.FECHA_INICIO);
+        const dias = row.PLAN === 'TRIAL' ? 14 : 30;
+        fi.setDate(fi.getDate() + dias);
+        fecha_fin = fi.toISOString().split('T')[0];
+      }
+    }
+
+    return { plan: row?.PLAN || 'FREE', estado: row?.ESTADO || null, fecha_fin };
+  }
+
+  async cancelPlan(userId: string) {
+    await this.bq.query(`
+      UPDATE ${this.bq.t('PLAN_CONTRATADO')}
+      SET ESTADO = 'CANCELADO_PENDIENTE'
+      WHERE ID_USUARIO = @id AND ESTADO = 'ACTIVO'
+    `, { id: userId });
+
+    return { success: true };
+  }
+
+  // Endpoint público (autenticado): solo permite activar FREE.
+  // Los planes pagados SOLO se activan vía confirmación de pago de Flow
+  // (confirmPayment → activatePlan) — si no, cualquiera se da PREMIUM gratis.
+  async savePlan(userId: string, plan: string) {
+    if ((plan || '').toUpperCase() !== 'FREE') {
+      throw new ForbiddenException('Los planes pagados se activan solo tras confirmar el pago');
+    }
+    return this.activatePlan(userId, 'FREE');
+  }
+
+  async activateTrial(userId: string) {
+    const rows = await this.bq.query<any>(`
+      SELECT PLAN FROM ${this.bq.t('PLAN_CONTRATADO')}
+      WHERE ID_USUARIO = @id AND PLAN != 'FREE' LIMIT 1
+    `, { id: userId }).catch(() => []);
+
+    if (rows.length > 0) {
+      throw new ForbiddenException('Ya usaste tu prueba gratuita');
+    }
+    return this.activatePlan(userId, 'TRIAL');
+  }
+
+  // Uso interno — sin restricción de plan (la llama el flujo de pago confirmado).
+  private async activatePlan(userId: string, plan: string) {
+    const now = new Date().toISOString();
+    const fin = new Date();
+    fin.setDate(fin.getDate() + (plan === 'TRIAL' ? 14 : 30));
+    const fechaFin = fin.toISOString();
+
+    await this.bq.query(`
+      MERGE ${this.bq.t('PLAN_CONTRATADO')} T
+      USING (SELECT @id AS ID_USUARIO) S
+      ON T.ID_USUARIO = S.ID_USUARIO
+      WHEN MATCHED THEN
+        UPDATE SET PLAN = @plan, ESTADO = 'ACTIVO', FECHA_INICIO = @now, FECHA_FIN = @fechaFin, METODO_PAGO = 'APP'
+      WHEN NOT MATCHED THEN
+        INSERT (ID_USUARIO, PLAN, ESTADO, FECHA_INICIO, FECHA_FIN, METODO_PAGO)
+        VALUES (@id, @plan, 'ACTIVO', @now, @fechaFin, 'APP')
+    `, { id: userId, plan, now, fechaFin });
+
+    return { success: true };
+  }
+
+  // ─── CRON: NOTIFICAR PLANES POR VENCER ───────────────────────────────────
+  async notifyExpiringPlans(diasAntes: number): Promise<{ enviados: number }> {
+    const rows = await this.bq.query<any>(`
+      SELECT
+        u.NOMBRE, u.EMAIL, pc.PLAN,
+        COALESCE(DATE(pc.FECHA_FIN), DATE_ADD(DATE(pc.FECHA_INICIO), INTERVAL 30 DAY)) AS FECHA_FIN
+      FROM ${this.bq.t('USUARIOS')} u
+      JOIN ${this.bq.t('PLAN_CONTRATADO')} pc ON u.ID_USUARIO = pc.ID_USUARIO
+      WHERE pc.ESTADO = 'ACTIVO'
+        AND pc.PLAN NOT IN ('FREE', 'TRIAL')
+        AND COALESCE(DATE(pc.FECHA_FIN), DATE_ADD(DATE(pc.FECHA_INICIO), INTERVAL 30 DAY))
+            = DATE_ADD(CURRENT_DATE(), INTERVAL @dias DAY)
+    `, { dias: diasAntes });
+
+    await Promise.all(
+      rows.map((r: any) => {
+        const rawFin = r.FECHA_FIN?.value ?? r.FECHA_FIN;
+        const fechaFin = new Date(rawFin).toLocaleDateString('es-CL', {
+          day: 'numeric', month: 'long', year: 'numeric',
+        });
+        const subject = diasAntes <= 1
+          ? `⚠️ Tu plan ${r.PLAN} vence mañana`
+          : `Tu plan ${r.PLAN} vence en ${diasAntes} días`;
+        return this.email.send(
+          r.EMAIL,
+          subject,
+          this.email.planExpiryHtml(r.NOMBRE, r.PLAN, diasAntes, fechaFin),
+        ).catch(() => null);
+      }),
+    );
+
+    return { enviados: rows.length };
+  }
+
+  // ─── FLOW.CL: CREATE PAYMENT ORDER ────────────────────────────────────────
+  async createCheckout(userId: string, plan: string, userEmail: string) {
+    const amount = PLAN_PRICES[plan];
+    if (!amount) throw new Error('Plan inválido');
+
+    const orderId = `jobs-${userId}-${Date.now()}`;
+    const urlConfirmation = `${env.frontendUrl}/api/plan/notificacion`;
+    const urlReturn = `${env.frontendUrl}/pago/retorno`;
+
+    const params: Record<string, string> = {
+      apiKey: env.flowApiKey,
+      amount: String(amount),
+      currency: 'CLP',
+      email: userEmail,
+      commerceOrder: orderId, // Flow exige "commerceOrder" (error 104 si va como orderId)
+      subject: `Plan ${plan} — AplicAI`,
+      urlConfirmation,
+      urlReturn,
+    };
+
+    params.s = this.sign(params);
+
+    const formData = new URLSearchParams(params);
+
+    const res = await fetch(`${env.flowBaseUrl}/payment/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: formData.toString(),
+    });
+
+    const data: any = await res.json();
+    if (!data.token) {
+      console.error('Flow error response:', JSON.stringify(data));
+      throw new Error(data?.message || data?.code ? `Flow: ${data.code} - ${data.message}` : 'Error creando pago Flow');
+    }
+
+    // Store pending payment
+    await this.bq.query(`
+      INSERT INTO ${this.bq.t('PAGOS_PENDIENTES')} (ORDER_ID, ID_USUARIO, PLAN, TOKEN, FECHA)
+      VALUES (@orderId, @userId, @plan, @token, CURRENT_TIMESTAMP())
+    `, { orderId, userId, plan, token: data.token }).catch(() => null);
+
+    return { url: `${data.url}?token=${data.token}`, token: data.token };
+  }
+
+  // ─── FLOW.CL: HANDLE NOTIFICATION (webhook) ───────────────────────────────
+  async handleNotification(token: string) {
+    const status = await this.getFlowStatus(token);
+    if (status?.status === 2) {
+      await this.confirmPayment(token);
+    }
+    return { success: true };
+  }
+
+  async getReturnStatus(token: string) {
+    const status = await this.getFlowStatus(token);
+
+    if (status?.status === 2) {
+      await this.confirmPayment(token);
+    }
+
+    return {
+      paid: status?.status === 2,
+      flowOrder: status?.flowOrder,
+      amount: status?.amount,
+    };
+  }
+
+  // ─── INTERNAL ─────────────────────────────────────────────────────────────
+  private async getFlowStatus(token: string) {
+    const params: Record<string, string> = {
+      apiKey: env.flowApiKey,
+      token,
+    };
+    params.s = this.sign(params);
+
+    const qs = new URLSearchParams(params).toString();
+    const res = await fetch(`${env.flowBaseUrl}/payment/getStatus?${qs}`);
+    return res.json() as any;
+  }
+
+  private async confirmPayment(token: string) {
+    const rows = await this.bq.query<any>(`
+      SELECT ID_USUARIO, PLAN FROM ${this.bq.t('PAGOS_PENDIENTES')}
+      WHERE TOKEN = @token LIMIT 1
+    `, { token }).catch(() => []);
+
+    if (!rows.length) return;
+
+    await this.activatePlan(rows[0].ID_USUARIO, rows[0].PLAN);
+
+    await this.bq.query(`
+      DELETE FROM ${this.bq.t('PAGOS_PENDIENTES')} WHERE TOKEN = @token
+    `, { token }).catch(() => null);
+  }
+
+  private sign(params: Record<string, string>): string {
+    const sorted = Object.keys(params)
+      .filter((k) => k !== 's')
+      .sort()
+      .map((k) => `${k}${params[k]}`)
+      .join('');
+
+    return crypto.createHmac('sha256', env.flowSecretKey).update(sorted).digest('hex');
+  }
+}
