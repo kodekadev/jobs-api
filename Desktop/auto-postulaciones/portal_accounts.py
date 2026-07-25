@@ -222,8 +222,10 @@ _sessions_lock = threading.Lock()
 _portal_login_failures: dict[str, str] = {}
 
 
-def _classify_login_failure(net_log: list, errores: list) -> str:
+def _classify_login_failure(net_log: list | None, errores: list | None) -> str:
     """Clasifica el motivo de fallo de login en Trabajando.cl desde los logs de red."""
+    net_log = net_log or []
+    errores = errores or []
     for entry in net_log:
         st   = entry.get("status", 0)
         body = (entry.get("body", "") + entry.get("error", "")).lower()
@@ -896,26 +898,51 @@ def _pw_paso2_experiencia(page, user: dict):
     act_fallbacks = _ACT_FALLBACKS.get(actividad, ["Servicios", "Consultoría"])
     for inp in page.locator("input[placeholder='Escribe y selecciona una opción']").all():
         if inp.is_visible() and not (inp.input_value() or "").strip():
-            ok = _pw_autocomplete(page, inp, actividad, "Actividad", fallbacks=act_fallbacks)
-            if not ok:
-                # Último recurso: abrir modal de búsqueda con el botón 🔍 y tomar la primera opción
-                try:
-                    btn_buscar = inp.locator("xpath=following-sibling::button").first
-                    if not btn_buscar.count():
-                        btn_buscar = page.locator("button.btn-search, button[class*='search']").first
-                    btn_buscar.click(timeout=3000)
-                    page.wait_for_timeout(1500)
-                    # En el modal/panel que aparece, tomar la primera opción de la lista
+            # Estrategia 1: buscar en el modal con el botón 🔍 (método principal)
+            modal_ok = False
+            try:
+                btn_buscar = inp.locator("xpath=following-sibling::button").first
+                if not btn_buscar.count():
+                    btn_buscar = page.locator("button.btn-search, button[class*='search']").first
+                btn_buscar.click(timeout=3000)
+                page.wait_for_timeout(1500)
+
+                # Intentar buscar el término en el modal si hay un input de búsqueda
+                for search_term in [actividad] + act_fallbacks:
+                    for search_input_sel in [
+                        "[class*='modal'] input[type='text']",
+                        "[class*='modal'] input[type='search']",
+                        ".modal input",
+                    ]:
+                        try:
+                            si = page.locator(search_input_sel).first
+                            if si.is_visible():
+                                si.fill("")
+                                si.type(search_term, delay=40)
+                                page.wait_for_timeout(1000)
+                                break
+                        except Exception:
+                            pass
+
                     for modal_sel in ["li[role='option']", ".modal li", ".modal-body li",
-                                      "[class*='modal'] li", "ul.list-group li"]:
-                        opts = [o for o in page.locator(modal_sel).all() if o.is_visible() and o.inner_text().strip()]
+                                      "[class*='modal'] li", "ul.list-group li",
+                                      "[class*='dropdown'] li", "ul li.cursor-pointer"]:
+                        opts = [o for o in page.locator(modal_sel).all()
+                                if o.is_visible() and o.inner_text().strip()]
                         if opts:
                             txt = opts[0].inner_text().strip()[:40]
                             opts[0].click()
-                            print(f"  [pw-wiz] Actividad (modal): '{txt}'")
+                            print(f"  [pw-wiz] Actividad (modal '{search_term}'): '{txt}'")
+                            modal_ok = True
                             break
-                except Exception as e:
-                    print(f"  [pw-wiz] Actividad: modal fallback falló: {e}")
+                    if modal_ok:
+                        break
+            except Exception as e:
+                print(f"  [pw-wiz] Actividad: modal falló: {e}")
+
+            # Estrategia 2: autocomplete por texto si el modal no funcionó
+            if not modal_ok:
+                _pw_autocomplete(page, inp, actividad, "Actividad", fallbacks=act_fallbacks)
             break
 
     # Checkbox actualmente
@@ -2895,17 +2922,108 @@ def get_trabajando_pw_session(uid: str, email: str, password: str):
     else:
         print(f"  -> Sin cookies Playwright para {uid} — intentando login")
 
-    # ── 2. Fallback: usar Selenium (ya maneja reCAPTCHA) para obtener cookies ─
     if not email or not password:
         print(f"  -> Sin credenciales para login Trabajando de {uid}")
         return None
 
-    print(f"  -> Sin sesión PW para {uid} — usando Selenium para login (email={email!r})")
+    # ── 2. Intentar login Playwright stealth (funciona mejor que Selenium con reCAPTCHA) ──
+    print(f"  -> Intentando login Playwright stealth para {uid} ({email!r})...")
+    _pw2 = _browser2 = None
+    try:
+        import random as _rnd_pw
+        _pw2, _browser2, _ctx2, _ = _make_pw_context()
+        _page2 = _new_stealth_page(_ctx2)
+        _page2.goto("https://www.trabajando.cl/ingresa-a-tu-cuenta",
+                    wait_until="domcontentloaded", timeout=30000)
+        time.sleep(_rnd_pw.uniform(2, 4))
+
+        for _sel in ["button:has-text('Acepto')", "#aceptarCookies"]:
+            try:
+                if _page2.is_visible(_sel, timeout=1500):
+                    _page2.click(_sel)
+                    time.sleep(0.3)
+            except Exception:
+                pass
+
+        for _ in range(4):
+            _page2.mouse.move(_rnd_pw.randint(100, 900), _rnd_pw.randint(100, 600))
+            time.sleep(_rnd_pw.uniform(0.1, 0.3))
+
+        _page2.wait_for_selector('input[name="email"]', timeout=10000)
+        time.sleep(_rnd_pw.uniform(0.5, 1.0))
+        _page2.click('input[name="email"]')
+        for _ch in email:
+            _page2.keyboard.type(_ch, delay=_rnd_pw.randint(60, 160))
+        time.sleep(_rnd_pw.uniform(0.6, 1.2))
+        _page2.click('input[type="password"]')
+        for _ch in password:
+            _page2.keyboard.type(_ch, delay=_rnd_pw.randint(60, 160))
+        time.sleep(_rnd_pw.uniform(2.0, 4.0))  # dar tiempo al reCAPTCHA invisible
+
+        _btn_sel = "button:has-text('Entrar'), button:has-text('Ingresar'), button[type='submit']"
+        try:
+            _page2.hover(_btn_sel, timeout=5000)
+            time.sleep(_rnd_pw.uniform(0.3, 0.7))
+            _page2.click(_btn_sel, timeout=5000)
+        except Exception:
+            _page2.keyboard.press("Enter")
+
+        print(f"  [pw-stealth] Formulario enviado para {uid} — esperando redirect...")
+        for _ in range(30):
+            time.sleep(1)
+            if "ingresa-a-tu-cuenta" not in _page2.url:
+                break
+
+        if "ingresa-a-tu-cuenta" not in _page2.url and "trabajando.cl" in _page2.url:
+            print(f"  [pw-stealth] Login OK para {uid}: {_page2.url[:70]}")
+            _pw_cookies2 = _ctx2.cookies()
+            _sel_cookies2 = []
+            for _c in _pw_cookies2:
+                _sc = {"name": _c["name"], "value": _c["value"],
+                       "domain": _c.get("domain", ""), "path": _c.get("path", "/"),
+                       "secure": _c.get("secure", False), "httpOnly": _c.get("httpOnly", False)}
+                if _c.get("expires") and _c["expires"] > 0:
+                    _sc["expiry"] = int(_c["expires"])
+                _sel_cookies2.append(_sc)
+            bq.save_portal_cookies(uid, "trabajando", _sel_cookies2, email=email, password=password)
+            print(f"  [pw-stealth] {len(_sel_cookies2)} cookies guardadas para {uid}")
+            _page2.goto("https://www.trabajando.cl/mi-curriculum",
+                        wait_until="domcontentloaded", timeout=30000)
+            time.sleep(2)
+            with _pw_lock:
+                _pw_sessions[key] = {"pw": _pw2, "browser": _browser2, "context": _ctx2,
+                                     "page": _page2, "email": email, "password": password}
+            return _page2
+        else:
+            print(f"  [pw-stealth] Login FALLÓ para {uid}: {_page2.url[:70]}")
+            _page2.close()
+            try:
+                _browser2.close()
+                _pw2.stop()
+            except Exception:
+                pass
+    except Exception as _epw:
+        print(f"  [pw-stealth] Error en login para {uid}: {_epw}")
+        try:
+            _browser2.close()
+            _pw2.stop()
+        except Exception:
+            pass
+
+    # ── 3. Fallback: Selenium ─────────────────────────────────────────────────
+    print(f"  -> Playwright stealth falló — intentando Selenium para {uid} (email={email!r})")
     try:
         driver = get_trabajando_session(uid, email, password)
         if not driver:
             motivo = _portal_login_failures.get(email, "desconocido")
             print(f"  -> Login Selenium Trabajando FALLIDO para {uid} | MOTIVO: {motivo}")
+            if motivo == "recaptcha_bloqueado":
+                try:
+                    from telegram_notify import enviar as _tg
+                    _tg(f"⚠️ [AplicAI] reCAPTCHA bloquea login Trabajando.cl para *{uid}* ({email})\n"
+                        f"Ejecutar localmente: `python jenkins_refresh_cookies.py {uid}`")
+                except Exception:
+                    pass
             return None
         print(f"  -> Login Selenium OK para {uid} — convirtiendo a Playwright")
     except Exception as e:
