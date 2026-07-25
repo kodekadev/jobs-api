@@ -32,7 +32,19 @@ export class AdminService {
             DATE(Fecha_Postulacion, 'America/Santiago') = CURRENT_DATE('America/Santiago')
             AND portal NOT IN ('email_directo', '')
           ) AS hoy,
-          COUNT(*) AS total
+          COUNT(*) AS total,
+          COUNTIF(
+            DATE(Fecha_Postulacion, 'America/Santiago') >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL 7 DAY)
+          ) AS semana,
+          COUNTIF(
+            DATE(Fecha_Postulacion, 'America/Santiago') >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL 7 DAY)
+            AND portal = 'trabajando'
+          ) AS semana_tbj,
+          COUNTIF(
+            DATE(Fecha_Postulacion, 'America/Santiago') >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL 7 DAY)
+            AND portal = 'chiletrabajos'
+          ) AS semana_cht,
+          MAX(Fecha_Postulacion) AS ultima
         FROM ${this.bq.t('EMPLEOS')}
         GROUP BY id_usuario
       ),
@@ -41,7 +53,8 @@ export class AdminService {
           id_usuario,
           MAX(CASE WHEN portal = 'trabajando' THEN 1 ELSE 0 END) AS tiene_tbj,
           MAX(CASE WHEN portal = 'trabajando' AND cv_completo = TRUE THEN 1 ELSE 0 END) AS cv_tbj,
-          MAX(CASE WHEN portal = 'chiletrabajos' THEN 1 ELSE 0 END) AS tiene_cht
+          MAX(CASE WHEN portal = 'chiletrabajos' THEN 1 ELSE 0 END) AS tiene_cht,
+          MAX(CASE WHEN portal = 'chiletrabajos' AND cv_completo = TRUE THEN 1 ELSE 0 END) AS cv_cht
         FROM ${this.bq.t('CUENTAS_PORTALES')}
         GROUP BY id_usuario
       )
@@ -58,9 +71,14 @@ export class AdminService {
         pf.UBICACIONES,
         COALESCE(ps.hoy, 0) AS postulaciones_hoy,
         COALESCE(ps.total, 0) AS total_postulaciones,
+        COALESCE(ps.semana, 0) AS postulaciones_7dias,
+        COALESCE(ps.semana_tbj, 0) AS postulaciones_7dias_tbj,
+        COALESCE(ps.semana_cht, 0) AS postulaciones_7dias_cht,
+        ps.ultima AS ultima_postulacion,
         COALESCE(por.tiene_tbj, 0) AS tiene_trabajando,
         COALESCE(por.cv_tbj, 0) AS cv_trabajando,
         COALESCE(por.tiene_cht, 0) AS tiene_chiletrabajos,
+        COALESCE(por.cv_cht, 0) AS cv_chiletrabajos,
         CASE
           WHEN COALESCE(pl.PLAN, 'FREE') = 'FREE' THEN TRUE
           WHEN pl.PLAN = 'TRIAL'
@@ -91,14 +109,19 @@ export class AdminService {
       plan_vigente:         Boolean(r.plan_vigente),
       fecha_fin:            r.FECHA_FIN?.value ?? r.FECHA_FIN ?? null,
       autopilot_activo:     Boolean(r.autopilot_activo),
-      tiene_cargos:         this.parseJson(r.CARGOS).length > 0,
-      tiene_ubicaciones:    this.parseJson(r.UBICACIONES).length > 0,
-      tiene_trabajando:     Boolean(r.tiene_trabajando),
-      cv_trabajando:        Boolean(r.cv_trabajando),
-      tiene_chiletrabajos:  Boolean(r.tiene_chiletrabajos),
-      postulaciones_hoy:    Number(r.postulaciones_hoy ?? 0),
-      total_postulaciones:  Number(r.total_postulaciones ?? 0),
-      limite_dia:           PLAN_LIMITS[r.plan] ?? PLAN_LIMITS['FREE'],
+      tiene_cargos:            this.parseJson(r.CARGOS).length > 0,
+      tiene_ubicaciones:       this.parseJson(r.UBICACIONES).length > 0,
+      tiene_trabajando:        Boolean(r.tiene_trabajando),
+      cv_trabajando:           Boolean(r.cv_trabajando),
+      tiene_chiletrabajos:     Boolean(r.tiene_chiletrabajos),
+      cv_chiletrabajos:        Boolean(r.cv_chiletrabajos),
+      postulaciones_hoy:       Number(r.postulaciones_hoy ?? 0),
+      total_postulaciones:     Number(r.total_postulaciones ?? 0),
+      postulaciones_7dias:     Number(r.postulaciones_7dias ?? 0),
+      postulaciones_7dias_tbj: Number(r.postulaciones_7dias_tbj ?? 0),
+      postulaciones_7dias_cht: Number(r.postulaciones_7dias_cht ?? 0),
+      ultima_postulacion:      r.ultima_postulacion?.value ?? r.ultima_postulacion ?? null,
+      limite_dia:              PLAN_LIMITS[r.plan] ?? PLAN_LIMITS['FREE'],
     }));
   }
 
