@@ -31,6 +31,11 @@ import threading
 import bq
 
 
+class EmailTomadoError(Exception):
+    """El email ya está registrado en el portal — reintentar con otro."""
+    pass
+
+
 _CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 
 
@@ -573,11 +578,9 @@ def _selenium_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
         already_registered = ["ya existe", "correo registrado", "email en uso",
                                "ya está registrado", "already registered"]
         if any(s in content for s in already_registered):
-            # El email es generado aleatoriamente: "ya existe" casi siempre significa
-            # que el formulario se llenó mal. NO guardar credenciales inventadas.
-            print(f"  ! Portal dice 'email ya registrado' para email recién generado — FALLO")
+            print(f"  ! Portal dice 'email ya registrado' — reintentando con otro email")
             driver.quit()
-            return False
+            raise EmailTomadoError(mail)
 
         print(f"  ! Trabajando: formulario no avanzó, URL: {current_url}")
         driver.quit()
@@ -619,6 +622,27 @@ def _pw_make_context(pw):
     return browser, ctx
 
 
+_CIUDAD_NO_VALIDA = {
+    "remoto", "remote", "teletrabajo", "trabajo remoto",
+    "online", "virtual", "híbrido", "hibrido", "flexible",
+    "a distancia", "distancia", "sin comuna", "no aplica",
+}
+
+def _get_ciudad(user: dict) -> str:
+    """Devuelve la primera ciudad del perfil, normalizando valores no geográficos a 'Santiago'."""
+    ubs = (user.get("ubicaciones") or user.get("UBICACIONES") or [])
+    if isinstance(ubs, str):
+        try:
+            import json as _j
+            ubs = _j.loads(ubs)
+        except Exception:
+            ubs = [ubs]
+    raw = str(ubs[0]).split(",")[0].strip() if ubs else ""
+    if not raw or raw.lower() in _CIUDAD_NO_VALIDA:
+        return "Santiago"
+    return raw
+
+
 def _pw_vue_set(page, handle, value: str):
     """Setter nativo de Vue sobre un ElementHandle de Playwright."""
     page.evaluate("""
@@ -632,26 +656,70 @@ def _pw_vue_set(page, handle, value: str):
     """, [handle, value])
 
 
-def _pw_autocomplete(page, locator, text: str, label: str = "") -> bool:
-    """Escribe en un campo autocomplete y selecciona la primera sugerencia visible."""
+def _pw_autocomplete(page, locator, text: str, label: str = "",
+                     fallbacks: list[str] | None = None) -> bool:
+    """Escribe en un campo autocomplete y selecciona la primera sugerencia visible.
+    Si el texto original no produce sugerencias, reintenta con el primer token y
+    luego con cada valor en `fallbacks` antes de rendirse."""
+    _AC_SELS = ["li[role='option']", "ul li.cursor-pointer",
+                "[class*='suggestion'] li", "[class*='autocomplete'] li", "[class*='dropdown'] li"]
+
+    def _try(query: str) -> bool:
+        try:
+            locator.click()
+            locator.fill("")
+            page.wait_for_timeout(200)
+            locator.type(query, delay=40)
+            page.wait_for_timeout(1800)
+            for sel in _AC_SELS:
+                sugs = [s for s in page.locator(sel).all() if s.is_visible() and s.inner_text().strip()]
+                if sugs:
+                    exact = [s for s in sugs if s.inner_text().strip().lower() == query.lower()]
+                    chosen = exact[0] if exact else sugs[0]
+                    chosen.click()
+                    print(f"  [pw] autocomplete '{label}': '{chosen.inner_text().strip()[:40]}' (búsqueda: '{query}')")
+                    return True
+        except Exception as e:
+            print(f"  [pw] autocomplete '{label}' error buscando '{query}': {e}")
+        return False
+
     try:
-        locator.click()
-        locator.fill("")
-        page.wait_for_timeout(200)
-        locator.type(text, delay=40)
-        page.wait_for_timeout(2000)
-        for sel in ["li[role='option']", "ul li.cursor-pointer",
-                    "[class*='suggestion'] li", "[class*='autocomplete'] li", "[class*='dropdown'] li"]:
-            sugs = [s for s in page.locator(sel).all() if s.is_visible() and s.inner_text().strip()]
-            if sugs:
-                exact = [s for s in sugs if s.inner_text().strip().lower() == text.lower()]
-                chosen = exact[0] if exact else sugs[0]
-                txt = chosen.inner_text().strip()[:40]
-                chosen.click()
-                print(f"  [pw] autocomplete '{label}': '{txt}'")
+        # Intento 1: texto completo
+        if _try(text):
+            return True
+
+        # Intento 2: primera palabra (por si el valor completo no está en la lista)
+        first_word = text.split()[0] if " " in text else ""
+        if first_word and first_word.lower() != text.lower():
+            if _try(first_word):
                 return True
-        locator.press("Tab")
-        print(f"  [pw] autocomplete '{label}': sin sugerencias para '{text}', Tab")
+
+        # Intentos 3+: fallbacks explícitos
+        for fb in (fallbacks or []):
+            if fb.lower() not in (text.lower(), first_word.lower()):
+                if _try(fb):
+                    return True
+
+        # Nuclear fallback: cualquier letra genérica → tomar la primera opción disponible
+        for letter in ("S", "C", "A", "T"):
+            try:
+                locator.click()
+                locator.fill("")
+                page.wait_for_timeout(200)
+                locator.type(letter, delay=40)
+                page.wait_for_timeout(1500)
+                for sel in _AC_SELS:
+                    sugs = [s for s in page.locator(sel).all() if s.is_visible() and s.inner_text().strip()]
+                    if sugs:
+                        txt = sugs[0].inner_text().strip()[:40]
+                        sugs[0].click()
+                        print(f"  [pw] autocomplete '{label}': nuclear fallback → '{txt}'")
+                        return True
+            except Exception:
+                pass
+
+        locator.fill("")
+        print(f"  [pw] autocomplete '{label}': sin coincidencias para '{text}' — campo vacío")
         return False
     except Exception as e:
         print(f"  [pw] autocomplete '{label}' error: {e}")
@@ -708,11 +776,7 @@ def _pw_paso1_datos_personales(page, user: dict):
             fn_ano, fn_mes, fn_dia = p[0], p[1].zfill(2), p[2].zfill(2)
         except Exception:
             pass
-    ubicaciones = user.get("ubicaciones") or []
-    if isinstance(ubicaciones, str):
-        try: ubicaciones = json.loads(ubicaciones)
-        except: ubicaciones = [ubicaciones]
-    ciudad = ubicaciones[0].split(",")[0].strip() if ubicaciones else "Santiago"
+    ciudad = _get_ciudad(user)
 
     # Radio RUN
     for r in page.locator("input[type='radio'][value='RUN']").all():
@@ -732,10 +796,11 @@ def _pw_paso1_datos_personales(page, user: dict):
                 print(f"  [pw-wiz] RUT: '{rut}'")
                 break
 
-    # Ciudad autocomplete
+    # Ciudad autocomplete — fallback a Santiago si el valor no está en la lista
     for inp in page.locator("input[placeholder='Escribe y selecciona una opción']").all():
         if inp.is_visible() and not (inp.input_value() or "").strip():
-            _pw_autocomplete(page, inp, ciudad, "Ciudad")
+            _pw_autocomplete(page, inp, ciudad, "Ciudad",
+                             fallbacks=["Santiago", "Metropolitana", "Región Metropolitana"])
             break
 
     # Selects: día, mes, año, género
@@ -810,10 +875,47 @@ def _pw_paso2_experiencia(page, user: dict):
                     print("  [pw-wiz] Jornada: opción 1")
                 except Exception: pass
 
-    # Actividad autocomplete
+    # Actividad autocomplete — fallbacks para que siempre se seleccione algo válido
+    _ACT_FALLBACKS = {
+        "Salud":           ["Salud", "Hospital", "Medicina", "Clínica"],
+        "Educación":       ["Educación", "Enseñanza", "Universidad", "Colegio"],
+        "Tecnología":      ["Tecnología", "Software", "Informática", "Sistemas"],
+        "Retail":          ["Retail", "Comercio", "Tiendas"],
+        "Comercio":        ["Comercio", "Retail", "Ventas"],
+        "Construcción":    ["Construcción", "Inmobiliaria", "Obras"],
+        "Ingeniería":      ["Ingeniería", "Construcción", "Minería"],
+        "Banca":           ["Banca", "Finanzas", "Financiero"],
+        "Seguros":         ["Seguros", "Banca", "Financiero"],
+        "Transporte":      ["Transporte", "Logística", "Distribución"],
+        "Alimentos":       ["Alimentos", "Gastronomía", "Alimentación"],
+        "Telecomunicaciones": ["Telecomunicaciones", "Telecom"],
+        "Administración Pública": ["Administración Pública", "Administración", "Servicios Públicos", "Municipalidad", "Servicios", "Gobierno"],
+        "Organizaciones":  ["Organizaciones", "ONG", "Fundación", "Servicios"],
+        "Servicios":       ["Servicios", "Consultoría", "Administración"],
+    }
+    act_fallbacks = _ACT_FALLBACKS.get(actividad, ["Servicios", "Consultoría"])
     for inp in page.locator("input[placeholder='Escribe y selecciona una opción']").all():
         if inp.is_visible() and not (inp.input_value() or "").strip():
-            _pw_autocomplete(page, inp, actividad, "Actividad")
+            ok = _pw_autocomplete(page, inp, actividad, "Actividad", fallbacks=act_fallbacks)
+            if not ok:
+                # Último recurso: abrir modal de búsqueda con el botón 🔍 y tomar la primera opción
+                try:
+                    btn_buscar = inp.locator("xpath=following-sibling::button").first
+                    if not btn_buscar.count():
+                        btn_buscar = page.locator("button.btn-search, button[class*='search']").first
+                    btn_buscar.click(timeout=3000)
+                    page.wait_for_timeout(1500)
+                    # En el modal/panel que aparece, tomar la primera opción de la lista
+                    for modal_sel in ["li[role='option']", ".modal li", ".modal-body li",
+                                      "[class*='modal'] li", "ul.list-group li"]:
+                        opts = [o for o in page.locator(modal_sel).all() if o.is_visible() and o.inner_text().strip()]
+                        if opts:
+                            txt = opts[0].inner_text().strip()[:40]
+                            opts[0].click()
+                            print(f"  [pw-wiz] Actividad (modal): '{txt}'")
+                            break
+                except Exception as e:
+                    print(f"  [pw-wiz] Actividad: modal fallback falló: {e}")
             break
 
     # Checkbox actualmente
@@ -906,7 +1008,35 @@ def _pw_paso3_formacion(page, user: dict):
             break
         page.wait_for_timeout(500)
 
-    # Carrera autocomplete
+    # Sede (buscar por label, esperar hasta 5s a que carguen las opciones)
+    pw_sede_sel = None
+    for _ in range(10):
+        try:
+            loc = page.locator("xpath=//label[contains(text(),'Sede')]/following-sibling::select | xpath=//div[.//label[contains(text(),'Sede')]]//select")
+            if loc.count() > 0 and loc.first.is_visible():
+                opts = [o.get_attribute("value") for o in loc.first.locator("option").all()]
+                non_empty = [v for v in opts if v and v not in ("", "0")]
+                if non_empty:
+                    pw_sede_sel = loc.first
+        except Exception:
+            pass
+        if pw_sede_sel:
+            break
+        page.wait_for_timeout(500)
+
+    if pw_sede_sel:
+        opts = [o.get_attribute("value") for o in pw_sede_sel.locator("option").all()]
+        non_empty = [v for v in opts if v and v not in ("", "0")]
+        cur = pw_sede_sel.input_value() or ""
+        if cur in non_empty:
+            print(f"  [pw-wiz] Sede ya: {cur}")
+        elif non_empty:
+            _pw_select_option(page, pw_sede_sel, non_empty[0], "Sede")
+            page.wait_for_timeout(1500)
+    else:
+        print(f"  [pw-wiz] Sede: no apareció (institución sin sede o no en catálogo)")
+
+    # Carrera autocomplete (habilitada tras seleccionar Sede)
     for _ in range(10):
         inp = _first_active_input()
         if inp:
@@ -994,10 +1124,16 @@ def _pw_wizard_trabajando(page, user: dict) -> bool:
                 print(f"  [pw-wiz] CV ya existente — OK")
                 return True
 
-        # Esperar wizard
-        page.wait_for_selector(
-            "button:has-text('Continuar'), button:has-text('Finalizar')", timeout=15000
-        )
+        # Esperar wizard — usar state="attached" porque btn-disabled puede estar oculto
+        # para Playwright (CSS de Trabajando) aunque esté en el DOM. Los campos se
+        # llenan después, lo que habilita el botón antes de que _pw_click_continuar lo clickee.
+        try:
+            page.wait_for_selector(
+                "button:has-text('Continuar'), button:has-text('Finalizar')",
+                timeout=15000, state="attached"
+            )
+        except Exception:
+            pass  # continuar de todas formas e intentar llenar campos
         print(f"  [pw-wiz] Wizard cargado: {page.url}")
 
         if "paso-2" not in page.url and "paso-3" not in page.url:
@@ -1077,10 +1213,8 @@ def _pw_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
 
             already = ["ya existe","correo registrado","ya está registrado","already registered"]
             if any(s in content for s in already):
-                # El email es generado aleatoriamente: "ya existe" casi siempre significa
-                # que el formulario se llenó mal. NO tratar como éxito.
-                print(f"  [pw-tbj] ! Portal dice 'ya registrado' para email recién generado — FALLO")
-                return False
+                print(f"  [pw-tbj] ! Portal dice 'ya registrado' — reintentando con otro email")
+                raise EmailTomadoError(mail)
 
             success_urls = ["cuenta-creada", "como-quieres", "mi-curriculum", "completar"]
             if not (any(s in url for s in success_urls) or has_auth):
@@ -1112,8 +1246,9 @@ def _pw_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
                                                 "domain": ".trabajando.cl", "path": "/"})
                 except Exception as _lse:
                     print(f"  [pw-tbj] localStorage error: {_lse}")
-                bq.save_portal_cookies(uid, "trabajando", cookies, email=mail, password=clave)
-                print(f"  [pw-tbj] {len(cookies)} cookies guardadas para {uid}")
+                bq.save_portal_cookies(uid, "trabajando", cookies, email=mail, password=clave,
+                                       cv_completo=wizard_ok)
+                print(f"  [pw-tbj] {len(cookies)} cookies guardadas para {uid} (cv_completo={wizard_ok})")
 
             return True
 
@@ -1135,6 +1270,8 @@ def crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
         if _pw_crear_cuenta_trabajando(nombre, apellido, celular, mail, clave, uid=uid, user=user):
             return True
         print(f"  [tbj] Playwright no tuvo éxito — fallback a Selenium...")
+    except EmailTomadoError:
+        raise  # propagar para que get_or_create_account reintente con otro email
     except Exception as e:
         print(f"  [tbj] Playwright error: {e} — fallback a Selenium...")
 
@@ -1239,22 +1376,47 @@ def _inferir_actividad(user: dict) -> str:
     ]).lower()
     if any(k in texto for k in ["telecom", "wom", "claro", "entel", "movistar", "postpago"]):
         return "Telecomunicaciones"
-    if any(k in texto for k in ["banco", "financier", "segur", "afp", "isapre", "fintech"]):
-        return "Banca / Seguros / Finanzas"
-    if any(k in texto for k in ["retail", "tienda", "comercio", "venta", "falabella", "ripley"]):
-        return "Retail / Comercio"
-    if any(k in texto for k in ["salud", "clínica", "hospital", "farmac", "médic"]):
+    if any(k in texto for k in ["banco", "financier", "afp", "fintech"]):
+        return "Banca"
+    if any(k in texto for k in ["seguro", "asegura", "isapre", "mutual", "previsio"]):
+        return "Seguros"
+    if any(k in texto for k in ["retail", "tienda", "falabella", "ripley", "paris", "sodimac", "homecenter"]):
+        return "Retail"
+    if any(k in texto for k in ["comercio", "venta", "distribucion", "proveedor"]):
+        return "Comercio"
+    if any(k in texto for k in [
+        "salud", "clínica", "clinic", "hospital", "farmac", "médic", "medic",
+        "cesfam", "cosam", "samu", "urgencia", "posta", "consultorio", "maternidad",
+        "nutricion", "nutrit", "enferm", "kinesio", "fonoaudiol", "odontolog",
+        "psicolog", "psiquiatr", "terapeuta", "terapia", "fisio",
+        "dentist", "veterinar", "laboratorio clínic",
+    ]):
         return "Salud"
-    if any(k in texto for k in ["educac", "universid", "colegio", "enseñ"]):
+    if any(k in texto for k in ["educac", "universid", "colegio", "enseñ", "escuela", "jardín infantil", "jardín", "liceo", "instituto"]):
         return "Educación"
-    if any(k in texto for k in ["construc", "inmobiliar", "obra", "ingeni"]):
-        return "Construcción / Inmobiliaria"
-    if any(k in texto for k in ["aliment", "gastrón", "restaur", "agrícol"]):
-        return "Alimentos / Bebidas"
-    if any(k in texto for k in ["transporte", "logístic", "bodega"]):
-        return "Transporte / Logística"
-    if any(k in texto for k in ["tecnol", "software", "sistema", "ti ", "it ", "desar", "program"]):
+    if any(k in texto for k in ["construc", "inmobiliar", "obra", "arquitect", "urban"]):
+        return "Construcción"
+    if any(k in texto for k in ["ingeni", "minería", "miner"]):
+        return "Ingeniería"
+    if any(k in texto for k in ["aliment", "gastrón", "restaur", "agrícol", "agricol", "viña", "pesquer"]):
+        return "Alimentos"
+    if any(k in texto for k in ["transporte", "logístic", "logistic", "bodega", "carga", "courier"]):
+        return "Transporte"
+    if any(k in texto for k in ["tecnol", "software", "sistema", "ti ", "it ", "desar", "program", "digital", "datos", "cloud"]):
         return "Tecnología"
+    if any(k in texto for k in [
+        "municipal", "gobierno", "ministerio", "ilustre", "servicio público",
+        "carabinero", "prevision", "previsión", "ejercito", "ejército",
+        "fuerzas armadas", "armada", "policía", "policia",
+        "gendarmería", "gendarmeria", "pdi", "investigaciones",
+        "sii ", "seremi", "servel", "subtel", "conaf", "sag ", "inia",
+    ]):
+        return "Administración Pública"
+    if any(k in texto for k in ["ong", "fundación", "fundacion", "corporación", "nonprofit"]):
+        return "Organizaciones"
+    if any(k in texto for k in ["trabajo social", "trabajadora social", "trabajador social",
+                                  "asistente social", "bienestar"]):
+        return "Salud"
     return "Servicios"
 
 
@@ -1390,14 +1552,7 @@ def _paso1_datos_personales(driver: webdriver.Chrome, user: dict) -> None:
         except Exception:
             pass
 
-    ubicaciones = user.get("ubicaciones") or []
-    if isinstance(ubicaciones, str):
-        import json as _json
-        try:
-            ubicaciones = _json.loads(ubicaciones)
-        except Exception:
-            ubicaciones = [ubicaciones]
-    ciudad = ubicaciones[0] if ubicaciones else "Santiago"
+    ciudad = _get_ciudad(user)
     rut    = str(user.get("rut") or "").strip()
 
     # ── Tipo documento: seleccionar radio RUN ──────────────────────────────
@@ -1692,9 +1847,57 @@ def _paso3_generico(driver: webdriver.Chrome, user: dict) -> None:
             except Exception:
                 pass
         print(f"  [cv] Paso3 institucion: {institucion} (busqueda: '{inst_search}')")
-        time.sleep(2)  # Vue habilita Carrera tras llenar Institucion
+        time.sleep(2)  # Vue habilita Sede tras llenar Institucion
 
-    # ── 3. Carrera (autocomplete, disabled hasta que Institucion tiene valor) ─
+    # ── 2b. Sede (buscar por label, esperar hasta 5s a que carguen las opciones) ──
+    _SEDE_XPATHS = [
+        "//label[contains(text(),'Sede')]/following-sibling::select",
+        "//div[.//label[contains(text(),'Sede')]]//select",
+        "//*[@id='contenedor']/form/div[1]/div[4]/select",
+    ]
+    def _opts_con_valor(sel_el):
+        """Devuelve [(value, text)] solo para opciones con atributo value explícito (no placeholder)."""
+        opts = sel_el.find_elements(By.TAG_NAME, "option")
+        result = []
+        for o in opts:
+            v = driver.execute_script("return arguments[0].getAttribute('value')", o)
+            if v is not None:
+                result.append((v, o.text.strip()))
+        return result
+
+    print(f"  [cv] Paso3 buscando Sede...")
+    sede_sel = None
+    for _ in range(10):
+        for xp in _SEDE_XPATHS:
+            try:
+                els = [e for e in driver.find_elements(By.XPATH, xp) if e.is_displayed()]
+                if not els:
+                    continue
+                non_empty = _opts_con_valor(els[0])
+                print(f"  [cv] Sede encontrada, opciones reales: {[t for _, t in non_empty[:3]]}")
+                if non_empty:
+                    sede_sel = els[0]
+                    break
+            except Exception as e:
+                print(f"  [cv] Sede xpath error: {e}")
+        if sede_sel:
+            break
+        time.sleep(0.5)
+
+    if sede_sel:
+        non_empty = _opts_con_valor(sede_sel)
+        cur_val = driver.execute_script("return arguments[0].value", sede_sel)
+        real_vals = [v for v, _ in non_empty]
+        if cur_val in real_vals:
+            print(f"  [cv] Paso3 sede ya: {cur_val}")
+        elif non_empty:
+            _select_by_value_safe(driver, sede_sel, non_empty[0][0])
+            print(f"  [cv] Paso3 sede: {non_empty[0][1]}")
+            time.sleep(1.5)
+    else:
+        print(f"  [cv] Paso3 sede: no apareció")
+
+    # ── 3. Carrera (autocomplete, disabled hasta que Sede tiene valor) ──────────
     carrera_inp = None
     for _ in range(10):
         carrera_inp = _first_active_input()
@@ -2585,7 +2788,7 @@ def get_trabajando_pw_session(uid: str, email: str, password: str):
         if key in _pw_sessions:
             try:
                 page = _pw_sessions[key]["page"]
-                _ = page.url  # verifica que sigue vivo
+                page.evaluate("() => 1")  # round-trip real; falla si el browser está cerrado
                 return page
             except Exception:
                 try:
@@ -2634,17 +2837,55 @@ def get_trabajando_pw_session(uid: str, email: str, password: str):
         time.sleep(3)
 
         if "mi-curriculum" in page.url:
-            print(f"  -> Sesion PW restaurada via cookies OK para {uid}")
-            with _pw_lock:
-                _pw_sessions[key] = {"pw": pw, "browser": browser, "context": context, "page": page,
-                                     "email": email, "password": password}
-            return page
+            # Verificar que el usuario logueado sea el correcto comparando email
+            _sesion_ok = True
+            if email:
+                try:
+                    logged_email = page.evaluate("""() => {
+                        // Buscar email en localStorage (SPA Trabajando guarda datos de usuario)
+                        for (let k of Object.keys(localStorage)) {
+                            try {
+                                let v = JSON.parse(localStorage.getItem(k));
+                                if (v && typeof v === 'object') {
+                                    if (v.email) return v.email.toLowerCase();
+                                    if (v.correo) return v.correo.toLowerCase();
+                                    if (v.emailAddress) return v.emailAddress.toLowerCase();
+                                }
+                            } catch(e) {}
+                        }
+                        // Fallback: buscar input con email en la página
+                        let inp = document.querySelector('input[type=email], input[name=email], input[name=correo]');
+                        return inp ? inp.value.toLowerCase() : null;
+                    }""")
+                    if logged_email and logged_email != email.lower():
+                        print(f"  -> SESION INCORRECTA para {uid}: esperado '{email}' pero logueado como '{logged_email}'")
+                        _sesion_ok = False
+                    elif logged_email:
+                        print(f"  -> Sesion PW restaurada via cookies OK para {uid} ({logged_email})")
+                    else:
+                        print(f"  -> Sesion PW restaurada via cookies OK para {uid} (email no verificable)")
+                except Exception:
+                    print(f"  -> Sesion PW restaurada via cookies OK para {uid}")
+            else:
+                print(f"  -> Sesion PW restaurada via cookies OK para {uid}")
 
-        print(f"  -> Cookies PW invalidas o expiradas para {uid} — intentando login")
-        try:
-            browser.close(); pw.stop()
-        except Exception:
-            pass
+            if _sesion_ok:
+                with _pw_lock:
+                    _pw_sessions[key] = {"pw": pw, "browser": browser, "context": context, "page": page,
+                                         "email": email, "password": password}
+                return page
+            # Sesión incorrecta → limpiar y forzar login fresco
+            try:
+                browser.close(); pw.stop()
+            except Exception:
+                pass
+
+        else:
+            print(f"  -> Cookies PW invalidas o expiradas para {uid} — intentando login")
+            try:
+                browser.close(); pw.stop()
+            except Exception:
+                pass
     else:
         print(f"  -> Sin cookies Playwright para {uid} — intentando login")
 
@@ -3031,6 +3272,13 @@ def _responder_preguntas_playwright(page, user: dict = {}, job_title: str = "") 
                 if resp:
                     answers[global_i] = (resp, "Claude")
 
+        # ── Paso 2b: segunda pasada de perfil para lo que Claude no respondió ─
+        for idx, item in enumerate(pending):
+            if idx not in answers:
+                resp = _standard_answer(item, user, _norm)
+                if resp is not None:
+                    answers[idx] = (resp, "perfil")
+
         _NUMERIC_LABEL_KEYS = {
             "PRETENSION", "SUELDO", "RENTA", "SALARIO", "REMUNERACION", "LIQUID",
             "ANOS DE EXP", "AÑOS DE EXP", "ANOS EXP", "CUANTOS ANOS", "CUANTOS AÑO",
@@ -3052,6 +3300,10 @@ def _responder_preguntas_playwright(page, user: dict = {}, job_title: str = "") 
         def _fallback_pw(it: dict) -> str:
             """Fallback cuando ni perfil ni Claude respondieron — nunca "Sí" para texto."""
             t = it.get("type", "text")
+            lbl = ((it.get("label") or "") + " " + (it.get("placeholder") or "")).lower()
+            # Detectar campo de celular/teléfono por label antes de asumir textarea = resumen
+            if any(k in lbl for k in ("celular", "telefono", "teléfono", "fono", "phone", "movil", "móvil")):
+                return re.sub(r"\D", "", str(user.get("celular") or ""))[-9:]
             if _is_numeric_field(it):
                 return re.sub(r"[^\d]", "", str(user.get("pretension_general") or "")) or str(user.get("experiencia") or "5")
             if t == "textarea":
@@ -3121,7 +3373,11 @@ def apply_trabajando_playwright(page, job_url: str, user: dict = {}, resumen: st
             page.wait_for_load_state("networkidle", timeout=8000)
         except Exception:
             pass
-        time.sleep(3)
+        # Esperar a que el SPA resuelva la URL real (sale de about:blank)
+        for _ in range(20):
+            if page.url not in ("about:blank", "") and "trabajando" in page.url:
+                break
+            page.wait_for_timeout(500)
 
         if "ingresa-a-tu-cuenta" in page.url:
             print(f"    [trabajando] Redirigido a login")
@@ -3259,78 +3515,86 @@ def apply_trabajando_playwright(page, job_url: str, user: dict = {}, resumen: st
                 print(f"    [trabajando] Sin boton postular en {job_url[:70]}")
             return False
 
-        time.sleep(2)
+        time.sleep(1)
 
-        # ── Paso 2a: Modal CV interno ──────────────────────────────────────────
+        # Esperar cualquier modal relevante con UN selector — evita timeouts secuenciales
         try:
-            if page.locator("text=solicita un CV Trabajando").is_visible(timeout=2000):
-                print(f"    [trabajando] Requiere CV interno — saltando")
-                return False
+            page.wait_for_selector(
+                '#modalConfirmarPreguntas, #modalConfirmarPostulacion, '
+                '#modalPostulacionLinkExterno',
+                state="visible", timeout=6000
+            )
         except Exception:
-            pass
+            pass  # Sin modal visible — puede ser CV interno o postulación directa
 
-        # ── Paso 2b: Modal "postular con tu archivo" ───────────────────────────
-        try:
-            if page.locator("text=postular con tu archivo").is_visible(timeout=4000):
-                print(f"    [trabajando] Modal CV detectado")
-                time.sleep(0.8)
-                btns = page.locator("button:has-text('Postular')").all()
-                if btns:
-                    btns[-1].click()
-                    print(f"    [trabajando] Click Postular (modal CV)")
+        # ── Paso 2a: CV interno ────────────────────────────────────────────────
+        if page.locator("text=solicita un CV Trabajando").is_visible():
+            print(f"    [trabajando] Requiere CV interno — saltando")
+            return False
+
+        # ── Paso 2b: Archivo CV ────────────────────────────────────────────────
+        if page.locator("text=postular con tu archivo").is_visible():
+            print(f"    [trabajando] Modal CV detectado")
+            time.sleep(0.8)
+            btns = page.locator("button:has-text('Postular')").all()
+            if btns:
+                btns[-1].click()
+                print(f"    [trabajando] Click Postular (modal CV)")
+            time.sleep(2)
+
+        # ── Paso 2b2: Redirección externa ─────────────────────────────────────
+        if page.locator('#modalPostulacionLinkExterno').is_visible():
+            print(f"    [trabajando] Redirección externa — saltando")
+            try:
+                page.locator("button:has-text('No quiero completar')").first.click()
+            except Exception:
+                try:
+                    page.locator("button[data-bs-dismiss='modal']").first.click()
+                except Exception:
+                    pass
+            return False
+
+        # ── Paso 2c: Confirmación directa (sin preguntas del reclutador) ───────
+        # Algunos empleos no tienen formulario: Trabajando muestra confirmación directa.
+        # Verificar ANTES de buscar "Comenzar" para no desperdiciar 15+8s esperando el form.
+        if page.locator('#modalConfirmarPostulacion').is_visible():
+            conf_btns = page.locator('#modalConfirmarPostulacion button').all()
+            if conf_btns:
+                conf_btns[-1].click()
                 time.sleep(2)
-        except Exception:
-            pass
+                print(f"    [trabajando] OK Postulado (confirmacion directa)")
+                return _ok()
 
-        # ── Paso 2b2: Modal redirección externa ───────────────────────────────
-        # "Aviso de redireccionamiento" — el empleo pide terminar en sitio externo.
-        # No podemos auto-postular, cerramos y saltamos.
-        try:
-            if page.locator('#modalPostulacionLinkExterno, text=Aviso de redireccionamiento').first.is_visible(timeout=1500):
-                print(f"    [trabajando] Redirección externa — saltando")
-                try:
-                    page.locator("button:has-text('No quiero completar')").first.click()
-                except Exception:
-                    try:
-                        page.locator("button[data-bs-dismiss='modal']").first.click()
-                    except Exception:
-                        pass
-                return False
-        except Exception:
-            pass
-
-        # ── Paso 2c: Modal "Comenzar preguntas del reclutador" ────────────────
-        # Hay DOS botones Comenzar: uno mobile (d-block d-md-none, oculto en desktop)
-        # y uno desktop (d-none d-md-block, visible). Hay que iterar y clickear el visible.
+        # ── Paso 2d: Modal con preguntas → Comenzar ───────────────────────────
         _comenzar_clickeado = False
-        try:
-            for sel_comenzar in [
-                'button[data-bs-target="#modalConfirmarPreguntas"]',
-                'button[aria-label="modal confirmar responder preguntas"]',
-                '.modal.show button:has-text("Comenzar")',
-                '.modal-body button:has-text("Comenzar")',
-                'button:has-text("Comenzar")',
-            ]:
-                if _comenzar_clickeado:
-                    break
-                try:
-                    for btn in page.locator(sel_comenzar).all():
-                        if btn.is_visible():
-                            btn.click()
-                            print(f"    [trabajando] Click Comenzar [{sel_comenzar[:50]}]")
-                            time.sleep(3)
-                            _comenzar_clickeado = True
-                            break
-                except Exception:
-                    continue
-            if not _comenzar_clickeado:
-                print(f"    [trabajando] Sin modal Comenzar en página")
-        except Exception as e:
-            print(f"    [trabajando] Comenzar error: {e}")
+        for sel_comenzar in [
+            'button[data-bs-target="#modalConfirmarPreguntas"]',
+            'button[aria-label="modal confirmar responder preguntas"]',
+            '.modal.show button:has-text("Comenzar")',
+            '.modal-body button:has-text("Comenzar")',
+            'button:has-text("Comenzar")',
+        ]:
+            if _comenzar_clickeado:
+                break
+            try:
+                for btn in page.locator(sel_comenzar).all():
+                    if btn.is_visible():
+                        btn.click()
+                        print(f"    [trabajando] Click Comenzar [{sel_comenzar[:50]}]")
+                        time.sleep(3)
+                        _comenzar_clickeado = True
+                        break
+            except Exception:
+                continue
+        if not _comenzar_clickeado:
+            print(f"    [trabajando] Sin modal Comenzar en página")
 
         # ── Paso 3: Formulario de preguntas (#formularioPreguntasOferta) ─────────
         try:
             print(f"    [trabajando] URL tras Comenzar: {page.url[:80]}")
+            # Si no hubo Comenzar, no hay preguntas → saltar directo a verificación
+            if not _comenzar_clickeado:
+                raise Exception("Sin preguntas del reclutador — saltar a verificacion")
             # Esperar el form en el modal o en la página; timeout mayor por animación Bootstrap + Vue
             try:
                 page.wait_for_selector("#formularioPreguntasOferta", state="visible", timeout=15000)
@@ -3426,10 +3690,16 @@ def apply_trabajando_playwright(page, job_url: str, user: dict = {}, resumen: st
                         if resp:
                             answers[global_i] = (resp, "Claude")
 
-                # Rellenar campos — locator.fill() activa focus/input/change (Vue-compatible)
-                _rsm_fallback = (user.get("resumen") or user.get("RESUMEN") or "")
+                # Segunda pasada de perfil para preguntas sin respuesta de Claude
                 for idx, item in enumerate(preguntas):
-                    resp, source = answers.get(idx, (_rsm_fallback, "fallback"))
+                    if idx not in answers:
+                        resp = _standard_answer(item, user)
+                        if resp is not None:
+                            answers[idx] = (resp, "perfil")
+
+                # Rellenar campos — locator.fill() activa focus/input/change (Vue-compatible)
+                for idx, item in enumerate(preguntas):
+                    resp, source = answers.get(idx, ("", "fallback"))
                     resp = (resp or "")[:3000]
                     # Si el campo es numérico, extraer solo dígitos de la respuesta
                     if item.get("type") in ("number", "tel"):
@@ -3526,18 +3796,20 @@ def apply_trabajando_playwright(page, job_url: str, user: dict = {}, resumen: st
             pass
 
         # ── Verificar resultado ────────────────────────────────────────────────
-        # Esperar hasta 6s a que Vue actualice el estado del botón
         _EXITO_TEXTS = [
             "ya postulaste", "ya te postulaste", "postulado", "aplicaste",
             "postulación enviada", "te has postulado", "gracias por postular",
             "postulaste exitosamente", "ya postulé", "postulé",
         ]
 
-        # 1. Esperar selector de texto en #columnaPostular (más confiable que content())
+        # 1. Esperar hasta 6s a que Vue actualice el estado del botón
         for _ in range(6):
             page.wait_for_timeout(1000)
             try:
-                columna_text = page.locator("#columnaPostular").inner_text().strip().lower()
+                col = page.locator("#columnaPostular")
+                if not col.is_visible(timeout=500):
+                    continue
+                columna_text = col.inner_text(timeout=2000).strip().lower()
                 if any(s in columna_text for s in _EXITO_TEXTS):
                     print(f"    [trabajando] OK Postulado")
                     return _ok()
@@ -3547,16 +3819,20 @@ def apply_trabajando_playwright(page, job_url: str, user: dict = {}, resumen: st
         # 2. Verificar si el botón está deshabilitado (Trabajando deshabilita btn al postular)
         try:
             btn = page.locator("#columnaPostular button").first
-            disabled = btn.get_attribute("disabled")
-            btn_text  = btn.inner_text().strip().lower()
-            if disabled is not None or any(s in btn_text for s in _EXITO_TEXTS):
-                print(f"    [trabajando] OK Postulado (btn disabled/texto='{btn_text}')")
-                return _ok()
+            if btn.is_visible(timeout=500):
+                disabled = btn.get_attribute("disabled", timeout=2000)
+                btn_text  = btn.inner_text(timeout=2000).strip().lower()
+                if disabled is not None or any(s in btn_text for s in _EXITO_TEXTS):
+                    print(f"    [trabajando] OK Postulado (btn disabled/texto='{btn_text}')")
+                    return _ok()
         except Exception:
             pass
 
         # 3. Revisar contenido general de la página
-        content = page.content().lower()
+        try:
+            content = page.evaluate("() => document.body.innerText").lower()
+        except Exception:
+            content = ""
         exito = any(s in content for s in _EXITO_TEXTS)
 
         # 4. Si el modal de preguntas sigue abierto, no se postulo
@@ -3588,6 +3864,70 @@ def apply_trabajando_playwright(page, job_url: str, user: dict = {}, resumen: st
 
 import functools
 import unicodedata as _uc
+
+
+# ── Match de cargos (mismo algoritmo que scraper/main.py) ────────────────────
+
+import unicodedata as _uc2
+
+def _jau_normalize(text: str) -> str:
+    text = _uc2.normalize("NFKD", text or "")
+    text = "".join(ch for ch in text if not _uc2.combining(ch))
+    return " ".join(text.lower().split())
+
+_JAU_STOPWORDS = {"de", "del", "la", "el", "los", "las", "para", "con", "por", "y", "o", "en"}
+
+_JAU_SINONIMOS: list[set] = [
+    {"vendedor", "ventas", "comercial", "ejecutivo comercial", "ejecutivo de ventas"},
+    {"desarrollador", "programador", "developer", "dev"},
+    {"administrativo", "asistente administrativo", "auxiliar administrativo"},
+    {"contador", "contabilidad", "analista contable"},
+    {"secretaria", "secretario", "recepcionista"},
+    {"bodeguero", "bodega", "operario de bodega"},
+    {"conductor", "chofer"},
+    {"garzon", "mesero", "camarero"},
+    {"guardia", "vigilante", "seguridad"},
+    {"jefe de proyectos", "project manager", "jefe de proyecto"},
+    {"rrhh", "recursos humanos", "people"},
+    {"marketing", "mercadeo", "marketing digital"},
+    {"disenador", "diseno", "designer"},
+    {"ingeniero comercial", "ing comercial"},
+    {"practica", "practicante", "trainee"},
+]
+
+def _jau_sinonimos(cargo_norm: str) -> set:
+    variantes = {cargo_norm}
+    for grupo in _JAU_SINONIMOS:
+        if any(s in cargo_norm or cargo_norm in s for s in grupo):
+            variantes |= grupo
+    return variantes
+
+def _jau_tokens(text: str) -> set:
+    return {w for w in _jau_normalize(text).split() if len(w) > 2 and w not in _JAU_STOPWORDS}
+
+def _jau_match_score(titulo_empleo: str, user_cargos: list) -> int:
+    """Score 0-100: qué tan bien calza el título con los cargos del usuario."""
+    op = _jau_normalize(titulo_empleo)
+    if not user_cargos or not op:
+        return 0
+    mejor = 0
+    for cargo in user_cargos:
+        c = _jau_normalize(cargo)
+        if not c:
+            continue
+        for variante in _jau_sinonimos(c):
+            if variante == op:
+                mejor = max(mejor, 100)
+            elif variante in op or op in variante:
+                mejor = max(mejor, 85)
+        palabras = _jau_tokens(c)
+        if palabras and op:
+            comunes = sum(1 for w in palabras if w in op)
+            if comunes:
+                mejor = max(mejor, int(80 * comunes / len(palabras)))
+    return min(mejor, 100)
+
+_JAU_SCORE_MINIMO = 40
 
 
 def job_aplica_al_usuario(titulo: str, empresa: str, user: dict) -> tuple[bool, str]:
@@ -3622,7 +3962,6 @@ def job_aplica_al_usuario(titulo: str, empresa: str, user: dict) -> tuple[bool, 
         return False, "es práctica (usuario busca empleo)"
 
     if tipo == "PRACTICA":
-        # Excluir cargos senior/directivos para usuarios que buscan práctica
         _SENIOR = [
             "GERENTE", "DIRECTOR", "SUBGERENTE", " VP ", "HEAD OF",
             "CTO", "CFO", "CEO", "JEFE DE ", "LÍDER ", "LIDER ",
@@ -3636,6 +3975,19 @@ def job_aplica_al_usuario(titulo: str, empresa: str, user: dict) -> tuple[bool, 
 
     if jornada == "FULL_TIME" and es_part:
         return False, "part-time (usuario busca full-time)"
+
+    # Match con perfil del usuario (score ≥ 40 para aplicar)
+    import json as _json2
+    cargos = user.get("CARGOS") or user.get("cargos") or []
+    if isinstance(cargos, str):
+        try:    cargos = _json2.loads(cargos)
+        except: cargos = [cargos]
+    profesion = user.get("PROFESION") or user.get("profesion") or ""
+    perfil_cargos = [c for c in list(cargos) + [profesion] if c]
+    if perfil_cargos:
+        score = _jau_match_score(titulo, perfil_cargos)
+        if score < _JAU_SCORE_MINIMO:
+            return False, f"sin match con perfil (score={score})"
 
     return True, ""
 
@@ -3686,14 +4038,7 @@ def _standard_answer(item: dict, user: dict, norm_fn=None) -> "str | None":
     rut_val        = str(user.get("rut") or user.get("RUT") or "")
     fn_val         = str(user.get("fecha_nacimiento") or user.get("FECHA_NACIMIENTO") or "")
 
-    ubicaciones = user.get("ubicaciones") or user.get("UBICACIONES") or []
-    if isinstance(ubicaciones, str):
-        import json as _j
-        try:
-            ubicaciones = _j.loads(ubicaciones)
-        except Exception:
-            ubicaciones = [ubicaciones]
-    ciudad_val = (ubicaciones[0] if ubicaciones else "Santiago").split(",")[0].strip()
+    ciudad_val = _get_ciudad(user)
 
     desc_exp = resumen_val[:400] if resumen_val else f"Soy {profesion_val} con {exp} años de experiencia en el área."
 
@@ -4201,8 +4546,7 @@ def _responder_preguntas(driver, user: dict = {}):
         if "SEMANAS" in p:
             return "1"
         if any(k in p for k in ["CIUDAD", "CITY", "UBICACION"]):
-            ubs = user.get("ubicaciones") or "Santiago"
-            return (ubs[0] if isinstance(ubs, list) else str(ubs).split(",")[0]).strip()
+            return _get_ciudad(user)
         if any(k in p for k in ["LICENCIA", "CONDUCIR", "MANEJO"]):
             return "No"
         if "COMENTE CARRERA" in p or ("CARRERA" in p and "ESTADO" in p):
@@ -4406,9 +4750,7 @@ def _responder_preguntas(driver, user: dict = {}):
             if any(k in lbl for k in ("RUT", "CEDULA", "DOCUMENTO", "DNI")):
                 return str(user.get("rut") or user.get("RUT") or "")[:15]
             if any(k in lbl for k in ("CIUDAD", "LOCALIDAD", "UBICACION", "REGION", "COMUNA")):
-                return str(user.get("ubicaciones") or user.get("UBICACIONES") or ["Santiago"])[0] if isinstance(
-                    (user.get("ubicaciones") or user.get("UBICACIONES") or []), list
-                ) else "Santiago"
+                return _get_ciudad(user)
             # Campo requerido genérico — usar teléfono si disponible, sino nombre profesión
             celular = re.sub(r"\D", "", str(user.get("celular") or user.get("CELULAR") or ""))
             if celular:
@@ -4831,8 +5173,15 @@ def get_or_create_account(user: dict, portal: str) -> dict | None:
 
     ok = False
     if portal == "trabajando":
-        print(f"  -> Creando cuenta en Trabajando.cl para {nombre} {apellido} ({portal_email})")
-        ok = crear_cuenta_trabajando(nombre, apellido, celular, portal_email, clave, uid=uid, user=user)
+        for intento in range(1, 6):  # hasta 5 emails distintos
+            print(f"  -> Creando cuenta en Trabajando.cl para {nombre} {apellido} ({portal_email})")
+            try:
+                ok = crear_cuenta_trabajando(nombre, apellido, celular, portal_email, clave, uid=uid, user=user)
+                break
+            except EmailTomadoError:
+                n += 1
+                portal_email = f"{prefix}{n}@gmail.com"
+                print(f"  -> Email tomado — reintentando con {portal_email} (intento {intento+1})")
 
     elif portal == "chiletrabajos":
         # El módulo genera email/clave y guarda en CUENTAS_PORTALES por sí mismo
