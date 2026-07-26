@@ -122,6 +122,7 @@ export class AdminService {
       postulaciones_7dias_cht: Number(r.postulaciones_7dias_cht ?? 0),
       ultima_postulacion:      r.ultima_postulacion?.value ?? r.ultima_postulacion ?? null,
       limite_dia:              PLAN_LIMITS[r.plan] ?? PLAN_LIMITS['FREE'],
+      cargos:                  this.parseJson(r.CARGOS),
     }));
   }
 
@@ -267,6 +268,28 @@ export class AdminService {
         VALUES (@id, @plan, 'ACTIVO', @now, @fechaFin, 'ADMIN')
     `, { id: userId, plan, now: new Date().toISOString(), fechaFin: fin });
 
+    return { success: true };
+  }
+
+  async updateCargos(userId: string, cargos: string[]) {
+    const json = JSON.stringify(cargos.map(c => c.trim()).filter(Boolean));
+    await this.bq.query(`
+      MERGE ${this.bq.t('POSTULA_FACIL')} T
+      USING (SELECT @id AS ID_USUARIO) S
+      ON LOWER(T.ID_USUARIO) = LOWER(S.ID_USUARIO)
+      WHEN MATCHED THEN UPDATE SET CARGOS = @cargos
+      WHEN NOT MATCHED THEN INSERT (ID_USUARIO, CARGOS) VALUES (@id, @cargos)
+    `, { id: userId, cargos: json });
+    return { success: true };
+  }
+
+  async deletePortalAccount(userId: string, portal: string) {
+    const allowed = ['trabajando', 'chiletrabajos'];
+    if (!allowed.includes(portal)) throw new ForbiddenException('Portal no válido');
+    await this.bq.query(`
+      DELETE FROM ${this.bq.t('CUENTAS_PORTALES')}
+      WHERE LOWER(id_usuario) = LOWER(@id) AND portal = @portal
+    `, { id: userId, portal });
     return { success: true };
   }
 

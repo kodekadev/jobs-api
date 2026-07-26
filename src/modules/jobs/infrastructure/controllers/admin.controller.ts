@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Param, Body, HttpCode, Request, ForbiddenException } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Param, Body, HttpCode, Request, ForbiddenException } from '@nestjs/common';
 import { AdminService } from '../../application/admin.service';
 import env from '../../../shared/infrastructure/environment';
 
@@ -39,5 +39,27 @@ export class AdminController {
   ) {
     this.service.checkAdmin(req.user.email);
     return this.service.setPlan(userId, body.plan, body.fecha_fin);
+  }
+
+  @Put('users/:userId/cargos')
+  @HttpCode(200)
+  updateCargos(
+    @Request() req: any,
+    @Param('userId') userId: string,
+    @Body() body: { cargos: string[] },
+  ) {
+    this.service.checkAdmin(req.user.email);
+    return this.service.updateCargos(userId, body.cargos);
+  }
+
+  @Delete('users/:userId/portal/:portal')
+  @HttpCode(200)
+  deletePortalAccount(
+    @Request() req: any,
+    @Param('userId') userId: string,
+    @Param('portal') portal: string,
+  ) {
+    this.service.checkAdmin(req.user.email);
+    return this.service.deletePortalAccount(userId, portal);
   }
 }
