@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Put, Delete, Param, Body, HttpCode, Request, ForbiddenException } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Param, Body, HttpCode, Request, Query, ForbiddenException } from '@nestjs/common';
 import { AdminService } from '../../application/admin.service';
 import env from '../../../shared/infrastructure/environment';
 
@@ -61,5 +61,15 @@ export class AdminController {
   ) {
     this.service.checkAdmin(req.user.email);
     return this.service.deletePortalAccount(userId, portal);
+  }
+
+  @Get('users/:userId/postulaciones')
+  getPostulaciones(
+    @Request() req: any,
+    @Param('userId') userId: string,
+    @Query('limit') limit?: string,
+  ) {
+    this.service.checkAdmin(req.user.email);
+    return this.service.getPostulaciones(userId, limit ? Number(limit) : 100);
   }
 }

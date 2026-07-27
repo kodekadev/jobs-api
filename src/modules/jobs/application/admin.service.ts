@@ -283,6 +283,33 @@ export class AdminService {
     return { success: true };
   }
 
+  async getPostulaciones(userId: string, limit = 100) {
+    const rows = await this.bq.query<any>(`
+      SELECT
+        id_empleo,
+        titulo_empleo,
+        Empresa,
+        cargo,
+        COALESCE(portal, 'linkedin') AS portal,
+        link,
+        Fecha_Postulacion
+      FROM ${this.bq.t('EMPLEOS')}
+      WHERE LOWER(id_usuario) = LOWER(@id)
+      ORDER BY Fecha_Postulacion DESC
+      LIMIT @lim
+    `, { id: userId, lim: limit });
+
+    return rows.map(r => ({
+      id:        r.id_empleo,
+      titulo:    r.titulo_empleo || '(sin título)',
+      empresa:   r.Empresa || '',
+      cargo:     r.cargo || '',
+      portal:    r.portal || 'linkedin',
+      link:      r.link || null,
+      fecha:     r.Fecha_Postulacion?.value ?? r.Fecha_Postulacion ?? null,
+    }));
+  }
+
   async deletePortalAccount(userId: string, portal: string) {
     const allowed = ['trabajando', 'chiletrabajos'];
     if (!allowed.includes(portal)) throw new ForbiddenException('Portal no válido');
