@@ -10,8 +10,15 @@ El LLM evalúa lotes de empleos en una sola llamada API para minimizar costo y l
 
 import os
 import json
+import unicodedata
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+
+
+def _strip_accents(text: str) -> str:
+    """Elimina acentos para comparación insensible a tilde."""
+    nfkd = unicodedata.normalize("NFKD", text or "")
+    return "".join(ch for ch in nfkd if not unicodedata.combining(ch))
 
 # Rechazados para quien busca EMPLEO (no quiere prácticas)
 _REJECT_EMPLEO = [
@@ -57,22 +64,23 @@ def _keyword_filter(job: dict, user: dict) -> tuple[bool, str]:
     desc   = (job.get("descripcion") or "").lower()
     texto  = titulo + " " + desc
 
+    # Versiones sin acentos para comparación robusta
+    titulo_norm = _strip_accents(titulo)
+    texto_norm  = _strip_accents(texto)
+
     tipo = (user.get("TIPO_BUSQUEDA") or user.get("tipo_busqueda") or "EMPLEO").upper()
     es_practica = tipo == "PRACTICA"
 
     if es_practica:
-        # Rechazar términos incompatibles con práctica
         for kw in _REJECT_PRACTICA:
-            if kw in texto:
+            if kw in texto_norm:
                 return False, f"rechazado para practicante: '{kw}'"
-        # Debe tener al menos una señal de práctica en el texto completo
-        if not any(kw in texto for kw in _ACCEPT_PRACTICA):
+        if not any(kw in texto_norm for kw in _ACCEPT_PRACTICA):
             return False, "sin indicador de práctica/trainee/egresado"
         return True, "empleo de práctica detectado"
     else:
-        # Rechazar prácticas para quien busca empleo
         for kw in _REJECT_EMPLEO:
-            if kw in texto:
+            if kw in texto_norm:
                 return False, f"rechazado: '{kw}'"
 
     # Al menos una palabra relevante del cargo buscado debe aparecer en el título
@@ -80,18 +88,18 @@ def _keyword_filter(job: dict, user: dict) -> tuple[bool, str]:
     if not cargos:
         return True, "sin cargos definidos"
 
+    # Construir palabras del cargo normalizadas (sin acentos)
     cargo_words = set()
     for cargo in cargos:
-        for w in cargo.lower().split():
+        for w in _strip_accents(cargo).lower().split():
             if len(w) > 3:
                 cargo_words.add(w)
 
-    hits = [w for w in cargo_words if w in titulo]
+    hits = [w for w in cargo_words if w in titulo_norm]
     if hits:
         return True, f"keyword match: {hits}"
 
     # Si el título no tiene la palabra del cargo, revisar si la fuente es jobspy
-    # (jobspy ya filtró por cargo, así que confiamos en él)
     if job.get("fuente") in ("linkedin", "indeed"):
         return True, "jobspy ya filtró por cargo"
 
@@ -155,12 +163,12 @@ EMPLEOS A EVALUAR:
 {empleos_txt}
 
 CRITERIOS DE MATCHING (en orden de prioridad):
-1. ACEPTA SIEMPRE si el título contiene las palabras clave del cargo buscado (match directo).
+1. ACEPTA si el título contiene las palabras clave del cargo buscado (match directo o relacionado).
 2. Si el candidato busca PRÁCTICA: ACEPTA solo empleos de práctica/pasantía/trainee/egresado/sin experiencia. RECHAZA empleos que requieren experiencia, cargos senior, jefaturas o gerencias.
 3. Si el candidato busca EMPLEO: RECHAZA empleos de práctica profesional, pasantía, sin experiencia, multinivel, ventas puerta a puerta.
-4. RECHAZA si la industria es claramente incompatible con la formación del candidato.
-5. En caso de duda, ACEPTA. Es mejor postular a un empleo borderline que perder la oportunidad.
-6. Si la descripción está vacía, evalúa solo por título y sé generoso.
+4. RECHAZA SIEMPRE si la profesión del empleo es claramente diferente a la del candidato. Ejemplos de rechazo: un Fonoaudiólogo/a no debe postular a Técnico Calderas, Ejecutivo de Ventas, Asistente Jurídico, Psiquiatra, Neurólogo, Terapeuta Ocupacional, etc. Un Contador no debe postular a Guardia de Seguridad.
+5. En caso de duda genuina entre empleos relacionados con la profesión buscada, RECHAZA si la incompatibilidad es obvia y ACEPTA solo si hay una conexión real con la formación del candidato.
+6. Si la descripción está vacía, evalúa solo por título con criterio estricto.
 
 Responde SOLO con JSON válido: {{"match": [lista de índices que son buen match]}}
 No incluyas texto adicional, solo el JSON."""

@@ -37,6 +37,46 @@ PORTAL_ID = "chiletrabajos"
 _NUMERIC_KWS = {"PRETENSION", "SUELDO", "RENTA", "SALARIO", "ANOS DE EXP",
                 "AÑOS DE EXP", "EXPERIENCIA", "CUANTOS ANOS"}
 
+# Mapa de ciudades/comunas del usuario a opciones del select de ChileTrabajos
+_CHT_REGION_MAP = {
+    "santiago":      "Metropolitana",
+    "providencia":   "Metropolitana",
+    "nuñoa":         "Metropolitana",
+    "ñuñoa":         "Metropolitana",
+    "las condes":    "Metropolitana",
+    "vitacura":      "Metropolitana",
+    "la florida":    "Metropolitana",
+    "maipu":         "Metropolitana",
+    "maipú":         "Metropolitana",
+    "puente alto":   "Metropolitana",
+    "pudahuel":      "Metropolitana",
+    "quilicura":     "Metropolitana",
+    "renca":         "Metropolitana",
+    "cerrillos":     "Metropolitana",
+    "estacion central": "Metropolitana",
+    "valparaiso":    "Valparaíso",
+    "valparaíso":    "Valparaíso",
+    "viña del mar":  "Valparaíso",
+    "quilpue":       "Valparaíso",
+    "quilpué":       "Valparaíso",
+    "concepcion":    "Biobío",
+    "concepción":    "Biobío",
+    "talcahuano":    "Biobío",
+    "temuco":        "La Araucanía",
+    "rancagua":      "O'Higgins",
+    "talca":         "Maule",
+}
+
+# Ciudades que indican trabajo fuera de la RM (o fuera de Chile), para filtrar por título
+_OFFSITE_CITY_KEYWORDS = {
+    "puerto montt", "puerto-montt", "valdivia", "temuco", "antofagasta",
+    "arica", "iquique", "copiapo", "copiapó", "la serena", "coquimbo",
+    "rancagua", "talca", "chillan", "chillán", "puerto varas", "osorno",
+    "coyhaique", "punta arenas", "calama", "ovalle", "curico", "curicó",
+    "linares", "los angeles", "angol", "curacavi", "curacaví",
+    "eeuu", "ee.uu", "estados unidos", "exterior", "internacional", "remoto exterior",
+}
+
 
 def _norm(texto: str) -> str:
     t = (texto or "").upper().strip().replace("?", "").replace("¿", "")
@@ -527,6 +567,10 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
                     continue
 
                 # Seleccionar región
+                # Mapear la ubicación del usuario al nombre de región de ChileTrabajos
+                _ub_key = unicodedata.normalize("NFKD", ubicacion.lower())
+                _ub_key = "".join(ch for ch in _ub_key if not unicodedata.combining(ch))
+                _region_target = _CHT_REGION_MAP.get(_ub_key, "Metropolitana")
                 try:
                     selects = page.locator("select").all()
                     for sel in selects:
@@ -537,8 +581,11 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
                                 opt_text = opt.inner_text() or ""
                             except Exception:
                                 pass
-                            if ubicacion.lower() in opt_text.lower():
+                            # Comparar con el nombre de región mapeado
+                            if (_region_target.lower() in opt_text.lower()
+                                    or ubicacion.lower() in opt_text.lower()):
                                 sel.select_option(label=opt_text.strip())
+                                print(f"[cht] Región seleccionada: '{opt_text.strip()}'")
                                 break
                 except Exception:
                     pass
@@ -576,6 +623,13 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
 
                 print(f"[cht] Empleos encontrados: {len(jobs)}")
 
+                # Ciudades válidas para este usuario (normalizadas sin acentos)
+                _user_cities_norm = set()
+                for _ub in ubicaciones:
+                    _n = unicodedata.normalize("NFKD", _ub.lower())
+                    _n = "".join(ch for ch in _n if not unicodedata.combining(ch))
+                    _user_cities_norm.add(_n)
+
                 for j, job in enumerate(jobs[:20]):
                     job_id = job["link"].split("/")[-1].split("?")[0]
                     if job_id in applied_ids:
@@ -583,6 +637,17 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
                         continue
 
                     titulo = job["titulo"]
+                    titulo_norm = unicodedata.normalize("NFKD", titulo.lower())
+                    titulo_norm = "".join(ch for ch in titulo_norm if not unicodedata.combining(ch))
+
+                    # Filtro: ciudad fuera del target mencionada en el título
+                    ciudad_offsita = next(
+                        (c for c in _OFFSITE_CITY_KEYWORDS if c in titulo_norm), None
+                    )
+                    if ciudad_offsita and not any(c in titulo_norm for c in _user_cities_norm):
+                        print(f"[cht] {j+1}/{len(jobs)} SALTADO (ciudad '{ciudad_offsita}'): '{titulo[:40]}'")
+                        continue
+
                     aplica, motivo = job_aplica_al_usuario(titulo, "", user)
                     if not aplica:
                         print(f"[cht] {j+1}/{len(jobs)} SALTADO ({motivo}): '{titulo[:40]}'")
