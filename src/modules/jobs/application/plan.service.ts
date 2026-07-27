@@ -13,9 +13,9 @@ const PLAN_PRICES: Record<string, number> = {
 // Condición SQL de vigencia. Si FECHA_FIN está guardada se usa directamente;
 // si no, se calcula desde FECHA_INICIO (30 días pagados, 14 días TRIAL).
 export const PLAN_VIGENTE_SQL = `(
-  pc.PLAN = 'FREE'
+  pc.PLAN IN ('FREE', 'OWNER')
   OR (pc.PLAN = 'TRIAL' AND DATE(pc.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY))
-  OR (pc.PLAN NOT IN ('FREE', 'TRIAL') AND (
+  OR (pc.PLAN NOT IN ('FREE', 'OWNER', 'TRIAL') AND (
     (pc.FECHA_FIN IS NOT NULL AND DATE(pc.FECHA_FIN) >= CURRENT_DATE())
     OR (pc.FECHA_FIN IS NULL AND DATE(pc.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))
   ))

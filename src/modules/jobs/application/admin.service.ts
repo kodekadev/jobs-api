@@ -2,7 +2,7 @@ import { Injectable, ForbiddenException } from '@nestjs/common';
 import { BigQueryService } from '../../shared/infrastructure/services/bigquery.service';
 
 const PLAN_LIMITS: Record<string, number> = {
-  FREE: 5, PRO: 25, PREMIUM: 50, TRIAL: 25, TURBO: 40,
+  FREE: 5, PRO: 25, PREMIUM: 50, TRIAL: 25, TURBO: 40, OWNER: 9999,
 };
 
 const ADMIN_EMAILS = ['bastian.alfaro@gmail.com'];
@@ -80,10 +80,10 @@ export class AdminService {
         COALESCE(por.tiene_cht, 0) AS tiene_chiletrabajos,
         COALESCE(por.cv_cht, 0) AS cv_chiletrabajos,
         CASE
-          WHEN COALESCE(pl.PLAN, 'FREE') = 'FREE' THEN TRUE
+          WHEN COALESCE(pl.PLAN, 'FREE') IN ('FREE', 'OWNER') THEN TRUE
           WHEN pl.PLAN = 'TRIAL'
             AND DATE(pl.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY) THEN TRUE
-          WHEN pl.PLAN NOT IN ('FREE', 'TRIAL') AND (
+          WHEN pl.PLAN NOT IN ('FREE', 'OWNER', 'TRIAL') AND (
             (pl.FECHA_FIN IS NOT NULL AND DATE(pl.FECHA_FIN) >= CURRENT_DATE())
             OR (pl.FECHA_FIN IS NULL
               AND DATE(pl.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))
@@ -136,10 +136,10 @@ export class AdminService {
       this.bq.query<any>(`
         SELECT PLAN, ESTADO, FECHA_INICIO, FECHA_FIN,
           CASE
-            WHEN PLAN = 'FREE' THEN TRUE
+            WHEN PLAN IN ('FREE', 'OWNER') THEN TRUE
             WHEN PLAN = 'TRIAL'
               AND DATE(FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY) THEN TRUE
-            WHEN PLAN NOT IN ('FREE', 'TRIAL') AND (
+            WHEN PLAN NOT IN ('FREE', 'OWNER', 'TRIAL') AND (
               (FECHA_FIN IS NOT NULL AND DATE(FECHA_FIN) >= CURRENT_DATE())
               OR (FECHA_FIN IS NULL
                 AND DATE(FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))
