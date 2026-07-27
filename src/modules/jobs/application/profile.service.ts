@@ -130,16 +130,6 @@ export class ProfileService {
     comentario: string,
   ) {
     const now = new Date().toISOString();
-    // Crear tabla si no existe
-    await this.bq.query(`
-      CREATE TABLE IF NOT EXISTS ${this.bq.t('FEEDBACK_AUTOPILOT')} (
-        ID_USUARIO STRING,
-        RATING_SERVICIO INT64,
-        RATING_POSTULACIONES INT64,
-        COMENTARIO STRING,
-        FECHA TIMESTAMP
-      )
-    `);
     await this.bq.query(`
       INSERT INTO ${this.bq.t('FEEDBACK_AUTOPILOT')}
         (ID_USUARIO, RATING_SERVICIO, RATING_POSTULACIONES, COMENTARIO, FECHA)

@@ -430,23 +430,16 @@ export class AuthService {
 
     const now = new Date().toISOString();
 
-    // Guardar feedback de baja antes de eliminar datos
-    if (motivos?.length || comentario) {
-      await this.bq.query(`
-        CREATE TABLE IF NOT EXISTS ${this.bq.t('FEEDBACK_BAJA')} (
-          ID_USUARIO STRING, MOTIVOS JSON, COMENTARIO STRING, FECHA TIMESTAMP
-        )
-      `).catch(() => null);
-      await this.bq.query(`
-        INSERT INTO ${this.bq.t('FEEDBACK_BAJA')} (ID_USUARIO, MOTIVOS, COMENTARIO, FECHA)
-        VALUES (@id, @motivos, @comentario, @now)
-      `, {
-        id: userId,
-        motivos: JSON.stringify(motivos || []),
-        comentario: comentario || '',
-        now,
-      }).catch(() => null);
-    }
+    // Guardar feedback de baja antes de eliminar datos (siempre, aunque venga vacío)
+    await this.bq.query(`
+      INSERT INTO ${this.bq.t('FEEDBACK_BAJA')} (ID_USUARIO, MOTIVOS, COMENTARIO, FECHA)
+      VALUES (@id, @motivos, @comentario, @now)
+    `, {
+      id: userId,
+      motivos: JSON.stringify(motivos || []),
+      comentario: comentario || '',
+      now,
+    }).catch((e) => console.warn('[FEEDBACK_BAJA] insert error:', e?.message));
 
     // Soft-delete: eliminar datos sensibles y marcar como eliminado
     await Promise.all([
