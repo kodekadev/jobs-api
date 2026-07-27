@@ -437,35 +437,55 @@ def _postular_empleo_pw(page, job_url: str, user: dict, titulo: str) -> "dict | 
             print(f"    [cht] Sin botón postular en {job_url[:60]}")
             return False
 
-        page.wait_for_timeout(3000)
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=8000)
+        except Exception:
+            pass
+        page.wait_for_timeout(2000)
+
         if "chtlogin" in page.url:
             print(f"    [cht] Redirigido a login tras click")
             return False
 
-        # Update description after the detail page fully loads (post-click may have more content)
+        # Comprobar si el click de "Postular" ya fue suficiente (aplicación directa)
+        content_after = page.content().lower()
+        if any(s in content_after for s in [
+            "postulación enviada", "postulacion enviada", "gracias por postular",
+            "aplicación enviada", "te has postulado", "ya te has postulado",
+            "exitosamente", "hemos recibido tu postulación",
+        ]):
+            print(f"    [cht] Postulado directamente (sin form adicional)")
+            if not descripcion:
+                descripcion = _extraer_descripcion_cht(page)
+            return {"ok": True, "descripcion": descripcion, "empresa": empresa}
+
+        # Update description
         if not descripcion:
             descripcion = _extraer_descripcion_cht(page)
 
-        # Formulario de preguntas
+        # Formulario de preguntas — selector ampliado
         form_loc = page.locator(
-            "form[id*='postular'], form:has(input.enviar-postulacion)"
+            "form[id*='postular'], form:has(input.enviar-postulacion), form:has([type='submit']), form:has(button[type='submit'])"
         )
         if form_loc.count() > 0:
             try:
                 if form_loc.first.is_visible():
                     _responder_preguntas_cht_pw(page, user, job_title=titulo)
-                    page.wait_for_timeout(1000)
+                    page.wait_for_timeout(1500)
             except Exception:
                 pass
 
-        # Submit
+        # Submit — selectors ampliados + forzar click si disabled
         submit_selectors = [
             "xpath=//input[contains(@class,'enviar-postulacion')]",
             "xpath=//input[@value='Enviar postulación']",
             "xpath=//input[@value='Enviar postulacion']",
-            "xpath=//button[contains(translate(.,'ENVIAR','enviar'),'enviar') and not(@disabled)]",
-            "xpath=//input[@type='submit' and not(@disabled)]",
-            "xpath=//button[@type='submit' and not(@disabled)]",
+            "xpath=//input[@value='Postular']",
+            "xpath=//button[contains(translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'enviar')]",
+            "xpath=//button[contains(translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'postular')]",
+            "xpath=//input[@type='submit']",
+            "xpath=//button[@type='submit']",
+            "xpath=//a[contains(@class,'postular') or contains(@class,'enviar')]",
         ]
         enviado = ""
         for sel in submit_selectors:
@@ -476,7 +496,14 @@ def _postular_empleo_pw(page, job_url: str, user: dict, titulo: str) -> "dict | 
                             enviado = el.get_attribute("value") or el.inner_text() or "submit"
                         except Exception:
                             enviado = "submit"
-                        el.click()
+                        # Intentar click normal; si falla, forzar con JS
+                        try:
+                            el.click(timeout=3000)
+                        except Exception:
+                            try:
+                                el.evaluate("el => el.click()")
+                            except Exception:
+                                pass
                         print(f"    [cht] Submit: '{enviado[:30]}'")
                         break
                 except Exception:
@@ -485,7 +512,7 @@ def _postular_empleo_pw(page, job_url: str, user: dict, titulo: str) -> "dict | 
                 break
 
         if not enviado:
-            print(f"    [cht] Sin botón submit")
+            print(f"    [cht] Sin botón submit — URL: {page.url[:80]}")
             return False
 
         page.wait_for_timeout(4000)

@@ -658,6 +658,44 @@ def _pw_vue_set(page, handle, value: str):
     """, [handle, value])
 
 
+def _clean_institution(name: str) -> str:
+    """Limpia nombre de institución para autocomplete: quita facultad/campus/sede tras coma o guión."""
+    # "Universidad de Chile, FEN" → "Universidad de Chile"
+    # "UDLA – Sede Santiago" → "UDLA"
+    clean = re.split(r"\s*[,–\-]\s*(?:sede|facultad|escuela|campus|fen|fau|fau|fam|fac|fi\b)",
+                     name, flags=re.IGNORECASE)[0]
+    # Si no hubo ese patrón, al menos quita todo lo que esté tras la primera coma
+    if clean == name and "," in name:
+        clean = name.split(",")[0]
+    return clean.strip()
+
+
+def _pick_institution_claude(original: str, suggestions: list[str]) -> int:
+    """
+    Usa Claude para elegir cuál sugerencia del autocomplete corresponde a la institución.
+    Retorna índice 0-based de la mejor opción, o -1 si ninguna es aceptable.
+    """
+    try:
+        import anthropic
+        client = anthropic.Anthropic()
+        opts_text = "\n".join(f"{i+1}. {t}" for i, t in enumerate(suggestions))
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=10,
+            messages=[{"role": "user", "content":
+                f"El usuario estudió en: '{original}'\n"
+                f"Opciones en el portal:\n{opts_text}\n\n"
+                f"Responde SOLO con el número de la opción que mejor representa '{original}'. "
+                f"Si ninguna coincide razonablemente, responde 0."}])
+        num_str = resp.content[0].text.strip()
+        m = re.search(r'\d+', num_str)
+        num = int(m.group()) if m else 0
+        return num - 1 if 1 <= num <= len(suggestions) else -1
+    except Exception as e:
+        print(f"  [pw] Claude institución error: {e}")
+        return 0  # fallback: primera opción
+
+
 def _pw_autocomplete(page, locator, text: str, label: str = "",
                      fallbacks: list[str] | None = None) -> bool:
     """Escribe en un campo autocomplete y selecciona la primera sugerencia visible.
@@ -1016,8 +1054,10 @@ def _pw_paso3_formacion(page, user: dict):
             page.wait_for_timeout(2000)
         break
 
-    # Institución autocomplete — usar exactamente lo que ingresó el usuario
-    inst_search = institucion
+    # Institución autocomplete — limpiar nombre y usar Claude para elegir la mejor coincidencia
+    inst_clean = _clean_institution(institucion)
+    _AC_SELS_INST = ["li[role='option']", "ul li.cursor-pointer",
+                     "[class*='suggestion'] li", "[class*='autocomplete'] li", "[class*='dropdown'] li"]
 
     def _first_active_input():
         return next((i for i in page.locator("input:not([disabled])").all()
@@ -1025,12 +1065,35 @@ def _pw_paso3_formacion(page, user: dict):
                      and i.get_attribute("type") not in ("checkbox","radio","hidden","file")
                      and not (i.input_value() or "").strip()), None)
 
+    def _pw_autocomplete_inst(loc) -> bool:
+        """Autocomplete de institución con selección Claude si hay múltiples sugerencias."""
+        for query in [inst_clean, inst_clean.split()[-1] if " " in inst_clean else None]:
+            if not query:
+                continue
+            try:
+                loc.click(); loc.fill(""); page.wait_for_timeout(200)
+                loc.type(query, delay=40); page.wait_for_timeout(1800)
+                for ac_sel in _AC_SELS_INST:
+                    sugs = [s for s in page.locator(ac_sel).all()
+                            if s.is_visible() and s.inner_text().strip()]
+                    if sugs:
+                        texts = [s.inner_text().strip() for s in sugs[:10]]
+                        idx = _pick_institution_claude(institucion, texts) if len(texts) > 1 else 0
+                        chosen = sugs[max(0, idx)]
+                        chosen.click()
+                        print(f"  [pw-wiz] Institución elegida: '{texts[max(0,idx)][:50]}'")
+                        return True
+            except Exception as e:
+                print(f"  [pw-wiz] autocomplete_inst error: {e}")
+        return False
+
     for _ in range(5):
         inp = _first_active_input()
         if inp:
-            if not _pw_autocomplete(page, inp, inst_search, "Institución"):
-                inp.fill(institucion); inp.press("Tab")
-            print(f"  [pw-wiz] Institución: {institucion} (búsqueda: '{inst_search}')")
+            if not _pw_autocomplete_inst(inp):
+                inp.fill(inst_clean); inp.press("Tab")
+                print(f"  [pw-wiz] Institución fallback texto: '{inst_clean}'")
+            print(f"  [pw-wiz] Institución original: '{institucion}' → búsqueda: '{inst_clean}'")
             page.wait_for_timeout(2000)
             break
         page.wait_for_timeout(500)
@@ -1856,24 +1919,48 @@ def _paso3_generico(driver: webdriver.Chrome, user: dict) -> None:
         time.sleep(2)
         break
 
-    # ── 2. Institucion (primer autocomplete activo tras nivel) ────────────────
-    # Terminos de busqueda: palabras mas especificas del nombre (ej "Portales" para Diego Portales)
-    # Buscar por la palabra más específica del nombre (excluir genéricas como "de", "del", "universidad")
-    # Institución autocomplete — usar exactamente lo que ingresó el usuario
-    inst_search = institucion
+    # ── 2. Institucion — limpiar nombre y usar Claude para elegir mejor coincidencia ──
+    inst_clean = _clean_institution(institucion)
+
+    def _autocomplete_inst_selenium(inp_el) -> bool:
+        """Autocomplete de institución Selenium con Claude para elegir de sugerencias."""
+        _AC_CSS = [
+            "li[role='option']", "ul li.cursor-pointer",
+            "[class*='suggestion'] li", "[class*='autocomplete'] li", "[class*='dropdown'] li",
+        ]
+        for query in [inst_clean, inst_clean.split()[-1] if " " in inst_clean else None]:
+            if not query:
+                continue
+            try:
+                inp_el.clear()
+                for ch in query:
+                    inp_el.send_keys(ch)
+                    time.sleep(0.04)
+                time.sleep(1.8)
+                for css in _AC_CSS:
+                    sugs = [s for s in driver.find_elements(By.CSS_SELECTOR, css)
+                            if s.is_displayed() and s.text.strip()]
+                    if sugs:
+                        texts = [s.text.strip() for s in sugs[:10]]
+                        idx = _pick_institution_claude(institucion, texts) if len(texts) > 1 else 0
+                        sugs[max(0, idx)].click()
+                        print(f"  [cv] Institución elegida: '{texts[max(0,idx)][:50]}'")
+                        return True
+            except Exception as e:
+                print(f"  [cv] autocomplete_inst_selenium error: {e}")
+        return False
 
     inp = _first_active_input()
     if inp:
-        found = _autocomplete_pick(driver, inp, inst_search, label="Paso3-inst")
+        found = _autocomplete_inst_selenium(inp)
         if not found:
-            # Fallback: sin sugerencias → escribir texto directamente y Tab
             try:
                 inp.clear()
-                inp.send_keys(institucion)
+                inp.send_keys(inst_clean)
                 inp.send_keys(Keys.TAB)
             except Exception:
                 pass
-        print(f"  [cv] Paso3 institucion: {institucion} (busqueda: '{inst_search}')")
+        print(f"  [cv] Paso3 institución: '{institucion}' → búsqueda: '{inst_clean}'")
         time.sleep(2)  # Vue habilita Sede tras llenar Institucion
 
     # ── 2b. Sede (buscar por label, esperar hasta 5s a que carguen las opciones) ──
