@@ -883,6 +883,10 @@ def _pw_paso2_experiencia(page, user: dict):
                  "Gestión y coordinación de equipos, optimización de procesos "
                  "y cumplimiento de objetivos estratégicos.")
 
+    # Si empresa está vacía, generar con Claude (campo requerido en Trabajando.cl)
+    if not empresa:
+        empresa = _empresa_fallback_claude(user)
+
     # Cargo
     for sel in ["input[placeholder='Ingresa tu cargo']", "input[placeholder*='cargo']"]:
         inps = [i for i in page.locator(sel).all() if i.is_visible()]
@@ -892,13 +896,12 @@ def _pw_paso2_experiencia(page, user: dict):
             break
 
     # Empresa
-    if empresa:
-        for kw in ["empresa", "ompañ", "rganiz"]:
-            inps = [i for i in page.locator(f"input[placeholder*='{kw}']").all() if i.is_visible()]
-            if inps and not (inps[0].input_value() or "").strip():
-                _pw_vue_set(page, inps[0].element_handle(), empresa)
-                print(f"  [pw-wiz] Empresa: '{empresa}'")
-                break
+    for kw in ["empresa", "ompañ", "rganiz"]:
+        inps = [i for i in page.locator(f"input[placeholder*='{kw}']").all() if i.is_visible()]
+        if inps and not (inps[0].input_value() or "").strip():
+            _pw_vue_set(page, inps[0].element_handle(), empresa)
+            print(f"  [pw-wiz] Empresa: '{empresa}'")
+            break
 
     # Selects jornada/jerarquía
     for sel in [s for s in page.locator("select").all() if s.is_visible()]:
@@ -1510,6 +1513,49 @@ def _inferir_actividad(user: dict) -> str:
     return "Servicios"
 
 
+_EMPRESA_DEFAULTS_POR_SECTOR = {
+    "Salud": "Centro Médico",
+    "Educación": "Establecimiento Educacional",
+    "Tecnología": "Empresa de Tecnología",
+    "Retail": "Empresa Comercial",
+    "Construcción": "Empresa Constructora",
+    "Ingeniería": "Empresa de Ingeniería",
+    "Banca": "Institución Financiera",
+    "Seguros": "Compañía de Seguros",
+    "Transporte": "Empresa de Logística",
+    "Alimentos": "Empresa de Alimentos",
+    "Telecomunicaciones": "Empresa de Telecomunicaciones",
+    "Administración Pública": "Servicio Público",
+    "Organizaciones": "Organización",
+}
+
+
+def _empresa_fallback_claude(user: dict) -> str:
+    """Genera nombre de empresa genérico con Claude cuando el usuario no tiene empresa registrada."""
+    actividad = _inferir_actividad(user)
+    cargos = user.get("cargos") or []
+    if isinstance(cargos, str):
+        try: cargos = json.loads(cargos)
+        except: cargos = [cargos]
+    profesion = str(user.get("profesion") or (cargos[0] if cargos else "")).strip()
+    try:
+        import anthropic
+        client = anthropic.Anthropic()
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=20,
+            messages=[{"role": "user", "content":
+                f"Un {profesion} trabaja en sector '{actividad}' en Chile. "
+                f"Nombre de empresa corto y genérico (ej: 'Clínica Central', 'Centro de Salud', 'Empresa de Servicios'). "
+                f"Responde SOLO el nombre, sin comillas ni explicación."}])
+        result = resp.content[0].text.strip()[:60]
+        print(f"  [pw-wiz] Empresa generada por Claude: '{result}'")
+        return result
+    except Exception as e:
+        print(f"  [pw-wiz] Claude empresa error: {e}")
+        return _EMPRESA_DEFAULTS_POR_SECTOR.get(actividad, "Empresa")
+
+
 def _llenar_informacion_personal(driver: webdriver.Chrome, user: dict) -> bool:
     """
     Rellena la sección #/informacion-personal del CV interno de Trabajando.cl.
@@ -1733,6 +1779,10 @@ def _paso2_experiencia(driver: webdriver.Chrome, user: dict) -> None:
     actualmente = bool(user.get("actualmente_trabajando") if user.get("actualmente_trabajando") is not None else True)
     anio_fin    = str(user.get("anio_fin") or "").strip()
 
+    # Si empresa está vacía, generar con Claude (campo requerido)
+    if not empresa:
+        empresa = _empresa_fallback_claude(user)
+
     # Cargo
     cargo_inps = [i for i in driver.find_elements(By.XPATH, "//input[@placeholder='Ingresa tu cargo']") if i.is_displayed()]
     if not cargo_inps:
@@ -1745,15 +1795,14 @@ def _paso2_experiencia(driver: webdriver.Chrome, user: dict) -> None:
         print(f"  [cv] Cargo: '{cargo}'")
 
     # Empresa
-    if empresa:
-        emp_inps = [
-            i for i in driver.find_elements(By.XPATH, "//input[@placeholder]")
-            if i.is_displayed() and any(k in (i.get_attribute("placeholder") or "").lower()
-                for k in ["empresa", "compañ", "organiz", "instituc"])
-        ]
-        if emp_inps and not (emp_inps[0].get_attribute("value") or "").strip():
-            _js_set(driver, emp_inps[0], empresa)
-            print(f"  [cv] Empresa: '{empresa}'")
+    emp_inps = [
+        i for i in driver.find_elements(By.XPATH, "//input[@placeholder]")
+        if i.is_displayed() and any(k in (i.get_attribute("placeholder") or "").lower()
+            for k in ["empresa", "compañ", "organiz", "instituc"])
+    ]
+    if emp_inps and not (emp_inps[0].get_attribute("value") or "").strip():
+        _js_set(driver, emp_inps[0], empresa)
+        print(f"  [cv] Empresa: '{empresa}'")
 
     # Selects: jornada, jerarquía
     sels2 = _selects_visibles(driver)
