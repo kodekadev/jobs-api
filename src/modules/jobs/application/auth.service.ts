@@ -416,7 +416,7 @@ export class AuthService {
   }
 
   // ─── DELETE ACCOUNT ───────────────────────────────────────────────────────
-  async deleteAccount(userId: string, password: string) {
+  async deleteAccount(userId: string, password: string, motivos?: string[], comentario?: string) {
     const rows = await this.bq.query<any>(`
       SELECT PASSWORD FROM ${this.bq.t('USUARIOS')} WHERE ID_USUARIO = @id LIMIT 1
     `, { id: userId });
@@ -426,6 +426,26 @@ export class AuthService {
     if (rows[0].PASSWORD) {
       const ok = await bcrypt.compare(password, rows[0].PASSWORD);
       if (!ok) throw new UnauthorizedException('Contraseña incorrecta');
+    }
+
+    const now = new Date().toISOString();
+
+    // Guardar feedback de baja antes de eliminar datos
+    if (motivos?.length || comentario) {
+      await this.bq.query(`
+        CREATE TABLE IF NOT EXISTS ${this.bq.t('FEEDBACK_BAJA')} (
+          ID_USUARIO STRING, MOTIVOS JSON, COMENTARIO STRING, FECHA TIMESTAMP
+        )
+      `).catch(() => null);
+      await this.bq.query(`
+        INSERT INTO ${this.bq.t('FEEDBACK_BAJA')} (ID_USUARIO, MOTIVOS, COMENTARIO, FECHA)
+        VALUES (@id, @motivos, @comentario, @now)
+      `, {
+        id: userId,
+        motivos: JSON.stringify(motivos || []),
+        comentario: comentario || '',
+        now,
+      }).catch(() => null);
     }
 
     // Soft-delete: eliminar datos sensibles y marcar como eliminado

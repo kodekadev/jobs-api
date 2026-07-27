@@ -83,7 +83,7 @@ export class AuthController {
 
   @Post('delete')
   @HttpCode(200)
-  deleteAccount(@Body() body: { id: string; password: string }) {
-    return this.authService.deleteAccount(body.id, body.password);
+  deleteAccount(@Body() body: { id: string; password: string; motivos?: string[]; comentario?: string }) {
+    return this.authService.deleteAccount(body.id, body.password, body.motivos, body.comentario);
   }
 }
