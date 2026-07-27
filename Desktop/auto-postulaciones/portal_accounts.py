@@ -3651,6 +3651,25 @@ def apply_trabajando_playwright(page, job_url: str, user: dict = {}, resumen: st
         except Exception:
             pass  # Sin modal visible — puede ser CV interno o postulación directa
 
+        # ── Detección modal "CV incompleto" (Trabajando pide completar CV antes de postular) ──
+        try:
+            cv_incompleto_visible = page.evaluate("""() => {
+                const body = document.body.innerText || '';
+                return body.includes('currículum aún tiene datos sin completar')
+                    || body.includes('curriculum aun tiene datos sin completar')
+                    || body.includes('Completar mi CV antes de postular');
+            }""")
+            if cv_incompleto_visible:
+                print(f"    [trabajando] Modal 'CV incompleto' detectado — cv_completo reseteado")
+                # Cerrar el modal si hay botón de cerrar
+                try:
+                    page.locator("button:has-text('Guardar empleo')").first.click()
+                except Exception:
+                    pass
+                return {"ok": False, "cv_incompleto": True}
+        except Exception:
+            pass
+
         # ── Paso 2a: CV interno ────────────────────────────────────────────────
         if page.locator("text=solicita un CV Trabajando").is_visible():
             print(f"    [trabajando] Requiere CV interno — saltando")

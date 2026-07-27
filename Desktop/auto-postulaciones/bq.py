@@ -83,6 +83,46 @@ def get_users_postula_facil() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_users_sin_cv_completo() -> list[dict]:
+    """Retorna usuarios que tienen cuenta en al menos un portal pero sin cv_completo = TRUE.
+    Filtra en BQ para no traer usuarios que ya tienen el CV listo en todos sus portales."""
+    query = f"""
+        SELECT {_pf_select('pf')}, u.EMAIL, u.NOMBRE, u.CELULAR
+        FROM `{PROJECT}.{DATASET}.POSTULA_FACIL` pf
+        LEFT JOIN `{PROJECT}.{DATASET}.USUARIOS` u
+            ON LOWER(u.ID_USUARIO) = LOWER(pf.ID_USUARIO)
+        WHERE pf.ID_USUARIO IS NOT NULL AND pf.ID_USUARIO != ''
+          AND COALESCE(u.EMAIL, '') != ''
+          AND EXISTS (
+            SELECT 1 FROM `{PROJECT}.{DATASET}.CUENTAS_PORTALES` cp
+            WHERE LOWER(cp.id_usuario) = LOWER(pf.ID_USUARIO)
+              AND COALESCE(cp.cv_completo, FALSE) IS DISTINCT FROM TRUE
+          )
+    """
+    rows = list(_query(query).result())
+    return [dict(r) for r in rows]
+
+
+def get_users_sin_cuentas() -> list[dict]:
+    """Retorna usuarios de Postula Fácil que les falta cuenta en al menos un portal.
+    Filtra en BQ para no traer usuarios que ya tienen todo creado."""
+    query = f"""
+        SELECT {_pf_select('pf')}, u.EMAIL, u.NOMBRE, u.CELULAR
+        FROM `{PROJECT}.{DATASET}.POSTULA_FACIL` pf
+        LEFT JOIN `{PROJECT}.{DATASET}.USUARIOS` u
+            ON LOWER(u.ID_USUARIO) = LOWER(pf.ID_USUARIO)
+        LEFT JOIN `{PROJECT}.{DATASET}.CUENTAS_PORTALES` cp_tbj
+            ON LOWER(cp_tbj.id_usuario) = LOWER(pf.ID_USUARIO) AND cp_tbj.portal = 'trabajando'
+        LEFT JOIN `{PROJECT}.{DATASET}.CUENTAS_PORTALES` cp_cht
+            ON LOWER(cp_cht.id_usuario) = LOWER(pf.ID_USUARIO) AND cp_cht.portal = 'chiletrabajos'
+        WHERE pf.ID_USUARIO IS NOT NULL AND pf.ID_USUARIO != ''
+          AND COALESCE(u.EMAIL, '') != ''
+          AND (cp_tbj.id_usuario IS NULL OR cp_cht.id_usuario IS NULL)
+    """
+    rows = list(_query(query).result())
+    return [dict(r) for r in rows]
+
+
 def get_active_users() -> list[dict]:
     """Retorna usuarios con POSTULACIONES_AUTO activo=1 y POSTULA_FACIL completo.
     El plan se lee desde PLAN_CONTRATADO (fuente de verdad) aplicando la lógica
@@ -111,7 +151,9 @@ def get_active_users() -> list[dict]:
                  pc.PLAN        AS pc_plan,
                  pc.FECHA_INICIO AS pc_fecha_inicio,
                  pc.FECHA_FIN    AS pc_fecha_fin,
-                 u.EMAIL
+                 u.EMAIL,
+                 u.NOMBRE,
+                 u.CELULAR
           FROM `{PROJECT}.{DATASET}.POSTULA_FACIL` pf
           INNER JOIN `{PROJECT}.{DATASET}.POSTULACIONES_AUTO` pa
               ON LOWER(pa.id_usuario) = LOWER(pf.ID_USUARIO)
@@ -231,11 +273,12 @@ def perfil_necesita_actualizar(user_id: str, portal: str, current_hash: str) -> 
 
 
 def save_perfil_completado(user_id: str, portal: str, hash_valor: str) -> None:
-    """Marca el perfil como completado guardando el hash actual del perfil."""
+    """Marca el perfil como completado guardando el hash actual y cv_completo = TRUE."""
     query = f"""
         UPDATE `{PROJECT}.{DATASET}.CUENTAS_PORTALES`
         SET perfil_completado_at = CURRENT_TIMESTAMP(),
-            perfil_hash = @hash
+            perfil_hash = @hash,
+            cv_completo = TRUE
         WHERE id_usuario = @uid AND portal = @portal
     """
     cfg = bigquery.QueryJobConfig(query_parameters=[
@@ -263,7 +306,8 @@ def count_portal_emails_like(prefix: str) -> int:
 def get_portal_account(user_id: str, portal: str) -> dict | None:
     """Retorna credenciales guardadas para un portal, o None si no existen."""
     query = f"""
-        SELECT email, password
+        SELECT email, password,
+               COALESCE(cv_completo, FALSE) AS cv_completo
         FROM `{PROJECT}.{DATASET}.CUENTAS_PORTALES`
         WHERE id_usuario = @uid AND portal = @portal
         LIMIT 1
@@ -275,7 +319,11 @@ def get_portal_account(user_id: str, portal: str) -> dict | None:
     rows = list(_query(query, cfg).result())
     if rows:
         r = rows[0]
-        return {"email": r.email, "password": r.password}
+        try:
+            cv_ok = bool(r.cv_completo)
+        except Exception:
+            cv_ok = True
+        return {"email": r.email, "password": r.password, "cv_completo": cv_ok}
     return None
 
 
@@ -301,30 +349,53 @@ def save_portal_account(user_id: str, portal: str, email: str, password: str) ->
 
 
 def save_portal_cookies(user_id: str, portal: str, cookies: list[dict],
-                        email: str = "", password: str = "") -> None:
+                        email: str = "", password: str = "",
+                        cv_completo: bool | None = None) -> None:
     """Guarda cookies de sesión en CUENTAS_PORTALES. Crea la fila si no existe."""
     import json
     cookies_str = json.dumps(cookies)
+    cv_set = "" if cv_completo is None else ", cv_completo = @cv_completo"
+    cv_ins_col = "" if cv_completo is None else ", cv_completo"
+    cv_ins_val = "" if cv_completo is None else ", @cv_completo"
     query = f"""
         MERGE `{PROJECT}.{DATASET}.CUENTAS_PORTALES` AS t
         USING (SELECT @uid AS id_usuario, @portal AS portal) AS s
         ON t.id_usuario = s.id_usuario AND t.portal = s.portal
         WHEN MATCHED THEN
             UPDATE SET cookies_json = @cookies, cookies_at = CURRENT_TIMESTAMP(),
-                       updated_at = CURRENT_TIMESTAMP()
+                       updated_at = CURRENT_TIMESTAMP(){cv_set}
         WHEN NOT MATCHED THEN
-            INSERT (id_usuario, portal, email, password, cookies_json, cookies_at, created_at, updated_at)
+            INSERT (id_usuario, portal, email, password, cookies_json, cookies_at, created_at, updated_at{cv_ins_col})
             VALUES (@uid, @portal, @email, @password, @cookies, CURRENT_TIMESTAMP(),
-                    CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP())
+                    CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(){cv_ins_val})
     """
-    cfg = bigquery.QueryJobConfig(query_parameters=[
+    params = [
         bigquery.ScalarQueryParameter("uid",      "STRING", user_id),
         bigquery.ScalarQueryParameter("portal",   "STRING", portal),
         bigquery.ScalarQueryParameter("email",    "STRING", email),
         bigquery.ScalarQueryParameter("password", "STRING", password),
         bigquery.ScalarQueryParameter("cookies",  "STRING", cookies_str),
-    ])
-    _query(query, cfg).result()
+    ]
+    if cv_completo is not None:
+        params.append(bigquery.ScalarQueryParameter("cv_completo", "BOOL", cv_completo))
+    _query(query, bigquery.QueryJobConfig(query_parameters=params)).result()
+
+
+def update_portal_account(user_id: str, portal: str, cv_completo: bool | None = None) -> None:
+    """Actualiza campos de CUENTAS_PORTALES sin tocar cookies."""
+    if cv_completo is None:
+        return
+    query = f"""
+        UPDATE `{PROJECT}.{DATASET}.CUENTAS_PORTALES`
+        SET cv_completo = @cv_completo, updated_at = CURRENT_TIMESTAMP()
+        WHERE id_usuario = @uid AND portal = @portal
+    """
+    params = [
+        bigquery.ScalarQueryParameter("uid",         "STRING", user_id),
+        bigquery.ScalarQueryParameter("portal",      "STRING", portal),
+        bigquery.ScalarQueryParameter("cv_completo", "BOOL",   cv_completo),
+    ]
+    _query(query, bigquery.QueryJobConfig(query_parameters=params)).result()
 
 
 def get_cookie_age_hours(user_id: str, portal: str) -> float | None:

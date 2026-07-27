@@ -96,7 +96,7 @@ def _process_user(user: dict, bq, get_trabajando_pw_session, apply_trabajando_pl
 
         # Filtrar ya postulados
         nuevos = [j for j in jobs if (j.get('link') or j.get('id', '')) not in ya_postulados]
-        print(f"  [{uid}] {len(jobs)} encontrados, {len(nuevos)} nuevos para '{cargo}'")
+        print(f"  [{uid}] {len(jobs)} encontrados, {len(nuevos)} nuevos para '{cargo}'", flush=True)
 
         for i, j in enumerate(nuevos, 1):
             titulo = j['titulo']
@@ -106,7 +106,7 @@ def _process_user(user: dict, bq, get_trabajando_pw_session, apply_trabajando_pl
             # Filtrar empleos que no aplican al perfil del usuario
             aplica, motivo = job_aplica_al_usuario(titulo, empresa_scrape, user)
             if not aplica:
-                print(f"\n    {i:>3}/{len(nuevos)}. SALTADO ({motivo}): '{titulo}'")
+                print(f"\n    {i:>3}/{len(nuevos)}. SALTADO ({motivo}): '{titulo}'", flush=True)
                 continue
 
             print(f"\n    {i:>3}/{len(nuevos)}. '{titulo}' — {empresa_scrape}")
@@ -123,7 +123,11 @@ def _process_user(user: dict, bq, get_trabajando_pw_session, apply_trabajando_pl
                         print(f"         [RECONECTADO] Nueva sesión OK — reintentando...")
                         result = apply_trabajando_playwright(page, url, user=user, job_title=titulo)
                     except Exception as re_e:
+                        re_str = str(re_e)
                         print(f"         [ERROR RECONEXION] {re_e}")
+                        if "closed" in re_str.lower() or "TargetClosed" in str(type(re_e)):
+                            print(f"         [ABORT] Sesión no recuperable — deteniendo usuario {uid}")
+                            return ok_count, err_count
                         err_count += 1
                         time.sleep(1.5)
                         continue
@@ -136,6 +140,14 @@ def _process_user(user: dict, bq, get_trabajando_pw_session, apply_trabajando_pl
             if result and isinstance(result, dict):
                 exito       = result.get("ok") or result.get("exito") or result.get("success")
                 ya_aplicado = result.get("ya_postulado", False)
+                # Trabajando detectó modal "CV incompleto" → resetear flag para re-completar
+                if result.get("cv_incompleto"):
+                    try:
+                        bq.update_portal_account(uid, "trabajando", cv_completo=False)
+                        print(f"         [cv_completo] Reseteado a FALSE para {uid} — se re-completará en próximo ciclo")
+                    except Exception as _bqe:
+                        print(f"         [cv_completo] Error reseteando: {_bqe}")
+                    return ok_count, err_count  # detener para evitar más errores de CV
             else:
                 exito       = bool(result)
                 ya_aplicado = False
@@ -187,7 +199,7 @@ def _process_user(user: dict, bq, get_trabajando_pw_session, apply_trabajando_pl
 
             time.sleep(1.5)
 
-    print(f"\n  [{uid}] Fin: {ok_count} postulados / {err_count} sin postular")
+    print(f"\n  [{uid}] Fin: {ok_count} postulados / {err_count} sin postular", flush=True)
 
     return ok_count, err_count
 
