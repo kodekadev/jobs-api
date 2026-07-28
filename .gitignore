@@ -41,3 +41,6 @@ lerna-debug.log*
 *.swp
 *.swo
 *~
+
+# Directorios del sistema Windows (junctions accidentales)
+Desktop/
