@@ -59,11 +59,14 @@ export class AdminService {
       portal_stats AS (
         SELECT
           id_usuario,
-          MAX(CASE WHEN portal = 'trabajando' THEN 1 ELSE 0 END)                        AS tiene_tbj,
-          MAX(CASE WHEN portal = 'trabajando' AND cv_completo = TRUE THEN 1 ELSE 0 END) AS cv_tbj,
-          MAX(CASE WHEN portal = 'chiletrabajos' THEN 1 ELSE 0 END)                     AS tiene_cht,
-          MAX(CASE WHEN portal = 'computrabajo' THEN 1 ELSE 0 END)                      AS tiene_cpt,
-          MAX(CASE WHEN portal = 'laborum' THEN 1 ELSE 0 END)                           AS tiene_lab
+          MAX(CASE WHEN portal = 'trabajando'    THEN 1 ELSE 0 END)                        AS tiene_tbj,
+          MAX(CASE WHEN portal = 'trabajando'    AND cv_completo = TRUE THEN 1 ELSE 0 END) AS cv_tbj,
+          MAX(CASE WHEN portal = 'chiletrabajos' THEN 1 ELSE 0 END)                        AS tiene_cht,
+          MAX(CASE WHEN portal = 'chiletrabajos' AND cv_completo = TRUE THEN 1 ELSE 0 END) AS cv_cht,
+          MAX(CASE WHEN portal = 'computrabajo'  THEN 1 ELSE 0 END)                        AS tiene_cpt,
+          MAX(CASE WHEN portal = 'computrabajo'  AND cv_completo = TRUE THEN 1 ELSE 0 END) AS cv_cpt,
+          MAX(CASE WHEN portal = 'laborum'       THEN 1 ELSE 0 END)                        AS tiene_lab,
+          MAX(CASE WHEN portal = 'laborum'       AND cv_completo = TRUE THEN 1 ELSE 0 END) AS cv_lab
         FROM ${this.bq.t('CUENTAS_PORTALES')}
         GROUP BY id_usuario
       )
@@ -125,8 +128,11 @@ export class AdminService {
       tiene_trabajando:        Boolean(r.tiene_trabajando),
       cv_trabajando:           Boolean(r.cv_trabajando),
       tiene_chiletrabajos:     Boolean(r.tiene_chiletrabajos),
+      cv_chiletrabajos:        Boolean(r.cv_cht),
       tiene_computrabajo:      Boolean(r.tiene_computrabajo),
+      cv_computrabajo:         Boolean(r.cv_cpt),
       tiene_laborum:           Boolean(r.tiene_laborum),
+      cv_laborum:              Boolean(r.cv_lab),
       postulaciones_hoy:       Number(r.postulaciones_hoy ?? 0),
       total_postulaciones:     Number(r.total_postulaciones ?? 0),
       postulaciones_7dias:     Number(r.postulaciones_7dias ?? 0),
