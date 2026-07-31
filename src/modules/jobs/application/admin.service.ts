@@ -110,6 +110,8 @@ export class AdminService {
       LEFT JOIN ${this.bq.t('POSTULA_FACIL')} pf ON u.ID_USUARIO = pf.ID_USUARIO
       LEFT JOIN post_stats ps ON u.ID_USUARIO = ps.id_usuario
       LEFT JOIN portal_stats por ON u.ID_USUARIO = por.id_usuario
+      WHERE u.NOMBRE != 'CUENTA_ELIMINADA'
+        AND u.EMAIL NOT LIKE 'deleted\\_%@aplicai.cl'
       ORDER BY postulaciones_hoy DESC, total_postulaciones DESC
     `);
 
