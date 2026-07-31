@@ -2,7 +2,7 @@ import { Injectable, ForbiddenException } from '@nestjs/common';
 import { BigQueryService } from '../../shared/infrastructure/services/bigquery.service';
 
 const PLAN_LIMITS: Record<string, number> = {
-  FREE: 5, PRO: 25, PREMIUM: 50, TRIAL: 25, TURBO: 40, OWNER: 9999,
+  FREE: 5, PRO: 25, PREMIUM: 50, TRIAL: 25, TURBO: 40,
 };
 
 const ADMIN_EMAILS = ['bastian.alfaro@gmail.com'];
@@ -35,26 +35,35 @@ export class AdminService {
           COUNT(*) AS total,
           COUNTIF(
             DATE(Fecha_Postulacion, 'America/Santiago') >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL 7 DAY)
+            AND portal NOT IN ('email_directo', '')
           ) AS semana,
           COUNTIF(
             DATE(Fecha_Postulacion, 'America/Santiago') >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL 7 DAY)
             AND portal = 'trabajando'
-          ) AS semana_tbj,
+          ) AS sem_tbj,
           COUNTIF(
             DATE(Fecha_Postulacion, 'America/Santiago') >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL 7 DAY)
             AND portal = 'chiletrabajos'
-          ) AS semana_cht,
-          MAX(Fecha_Postulacion) AS ultima
+          ) AS sem_cht,
+          COUNTIF(
+            DATE(Fecha_Postulacion, 'America/Santiago') >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL 7 DAY)
+            AND portal = 'computrabajo'
+          ) AS sem_cpt,
+          COUNTIF(
+            DATE(Fecha_Postulacion, 'America/Santiago') >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL 7 DAY)
+            AND portal = 'laborum'
+          ) AS sem_lab
         FROM ${this.bq.t('EMPLEOS')}
         GROUP BY id_usuario
       ),
       portal_stats AS (
         SELECT
           id_usuario,
-          MAX(CASE WHEN portal = 'trabajando' THEN 1 ELSE 0 END) AS tiene_tbj,
+          MAX(CASE WHEN portal = 'trabajando' THEN 1 ELSE 0 END)                        AS tiene_tbj,
           MAX(CASE WHEN portal = 'trabajando' AND cv_completo = TRUE THEN 1 ELSE 0 END) AS cv_tbj,
-          MAX(CASE WHEN portal = 'chiletrabajos' THEN 1 ELSE 0 END) AS tiene_cht,
-          MAX(CASE WHEN portal = 'chiletrabajos' AND cv_completo = TRUE THEN 1 ELSE 0 END) AS cv_cht
+          MAX(CASE WHEN portal = 'chiletrabajos' THEN 1 ELSE 0 END)                     AS tiene_cht,
+          MAX(CASE WHEN portal = 'computrabajo' THEN 1 ELSE 0 END)                      AS tiene_cpt,
+          MAX(CASE WHEN portal = 'laborum' THEN 1 ELSE 0 END)                           AS tiene_lab
         FROM ${this.bq.t('CUENTAS_PORTALES')}
         GROUP BY id_usuario
       )
@@ -69,21 +78,23 @@ export class AdminService {
         COALESCE(pa.ACTIVO, 0) AS autopilot_activo,
         pf.CARGOS,
         pf.UBICACIONES,
-        COALESCE(ps.hoy, 0) AS postulaciones_hoy,
-        COALESCE(ps.total, 0) AS total_postulaciones,
-        COALESCE(ps.semana, 0) AS postulaciones_7dias,
-        COALESCE(ps.semana_tbj, 0) AS postulaciones_7dias_tbj,
-        COALESCE(ps.semana_cht, 0) AS postulaciones_7dias_cht,
-        ps.ultima AS ultima_postulacion,
+        COALESCE(ps.hoy, 0)      AS postulaciones_hoy,
+        COALESCE(ps.total, 0)    AS total_postulaciones,
+        COALESCE(ps.semana, 0)   AS postulaciones_7dias,
+        COALESCE(ps.sem_tbj, 0)  AS postulaciones_7dias_tbj,
+        COALESCE(ps.sem_cht, 0)  AS postulaciones_7dias_cht,
+        COALESCE(ps.sem_cpt, 0)  AS postulaciones_7dias_cpt,
+        COALESCE(ps.sem_lab, 0)  AS postulaciones_7dias_lab,
         COALESCE(por.tiene_tbj, 0) AS tiene_trabajando,
-        COALESCE(por.cv_tbj, 0) AS cv_trabajando,
+        COALESCE(por.cv_tbj, 0)    AS cv_trabajando,
         COALESCE(por.tiene_cht, 0) AS tiene_chiletrabajos,
-        COALESCE(por.cv_cht, 0) AS cv_chiletrabajos,
+        COALESCE(por.tiene_cpt, 0) AS tiene_computrabajo,
+        COALESCE(por.tiene_lab, 0) AS tiene_laborum,
         CASE
-          WHEN COALESCE(pl.PLAN, 'FREE') IN ('FREE', 'OWNER') THEN TRUE
+          WHEN COALESCE(pl.PLAN, 'FREE') = 'FREE' THEN TRUE
           WHEN pl.PLAN = 'TRIAL'
             AND DATE(pl.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY) THEN TRUE
-          WHEN pl.PLAN NOT IN ('FREE', 'OWNER', 'TRIAL') AND (
+          WHEN pl.PLAN NOT IN ('FREE', 'TRIAL') AND (
             (pl.FECHA_FIN IS NOT NULL AND DATE(pl.FECHA_FIN) >= CURRENT_DATE())
             OR (pl.FECHA_FIN IS NULL
               AND DATE(pl.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))
@@ -100,29 +111,30 @@ export class AdminService {
     `);
 
     return rows.map((r: any) => ({
-      id:                   r.ID_USUARIO,
-      nombre:               r.NOMBRE || '',
-      email:                r.EMAIL || '',
-      fecha_registro:       r.FECHA_REGISTRO?.value ?? r.FECHA_REGISTRO ?? null,
-      plan:                 r.plan || 'FREE',
-      plan_estado:          r.plan_estado || null,
-      plan_vigente:         Boolean(r.plan_vigente),
-      fecha_fin:            r.FECHA_FIN?.value ?? r.FECHA_FIN ?? null,
-      autopilot_activo:     Boolean(r.autopilot_activo),
+      id:                      r.ID_USUARIO,
+      nombre:                  r.NOMBRE || '',
+      email:                   r.EMAIL || '',
+      fecha_registro:          r.FECHA_REGISTRO?.value ?? r.FECHA_REGISTRO ?? null,
+      plan:                    r.plan || 'FREE',
+      plan_estado:             r.plan_estado || null,
+      plan_vigente:            Boolean(r.plan_vigente),
+      fecha_fin:               r.FECHA_FIN?.value ?? r.FECHA_FIN ?? null,
+      autopilot_activo:        Boolean(r.autopilot_activo),
       tiene_cargos:            this.parseJson(r.CARGOS).length > 0,
       tiene_ubicaciones:       this.parseJson(r.UBICACIONES).length > 0,
       tiene_trabajando:        Boolean(r.tiene_trabajando),
       cv_trabajando:           Boolean(r.cv_trabajando),
       tiene_chiletrabajos:     Boolean(r.tiene_chiletrabajos),
-      cv_chiletrabajos:        Boolean(r.cv_chiletrabajos),
+      tiene_computrabajo:      Boolean(r.tiene_computrabajo),
+      tiene_laborum:           Boolean(r.tiene_laborum),
       postulaciones_hoy:       Number(r.postulaciones_hoy ?? 0),
       total_postulaciones:     Number(r.total_postulaciones ?? 0),
       postulaciones_7dias:     Number(r.postulaciones_7dias ?? 0),
       postulaciones_7dias_tbj: Number(r.postulaciones_7dias_tbj ?? 0),
       postulaciones_7dias_cht: Number(r.postulaciones_7dias_cht ?? 0),
-      ultima_postulacion:      r.ultima_postulacion?.value ?? r.ultima_postulacion ?? null,
+      postulaciones_7dias_cpt: Number(r.postulaciones_7dias_cpt ?? 0),
+      postulaciones_7dias_lab: Number(r.postulaciones_7dias_lab ?? 0),
       limite_dia:              PLAN_LIMITS[r.plan] ?? PLAN_LIMITS['FREE'],
-      cargos:                  this.parseJson(r.CARGOS),
     }));
   }
 
@@ -136,10 +148,10 @@ export class AdminService {
       this.bq.query<any>(`
         SELECT PLAN, ESTADO, FECHA_INICIO, FECHA_FIN,
           CASE
-            WHEN PLAN IN ('FREE', 'OWNER') THEN TRUE
+            WHEN PLAN = 'FREE' THEN TRUE
             WHEN PLAN = 'TRIAL'
               AND DATE(FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY) THEN TRUE
-            WHEN PLAN NOT IN ('FREE', 'OWNER', 'TRIAL') AND (
+            WHEN PLAN NOT IN ('FREE', 'TRIAL') AND (
               (FECHA_FIN IS NOT NULL AND DATE(FECHA_FIN) >= CURRENT_DATE())
               OR (FECHA_FIN IS NULL
                 AND DATE(FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))
@@ -184,8 +196,10 @@ export class AdminService {
     const hoy        = Number(stat?.hoy ?? 0);
     const hoyLkd     = Number(stat?.hoy_linkedin ?? 0);
     const semana     = Number(stat?.semana ?? 0);
-    const tbj        = (portalRows as any[]).find(p => p.portal === 'trabajando');
-    const cht        = (portalRows as any[]).find(p => p.portal === 'chiletrabajos');
+    const tbj = (portalRows as any[]).find(p => p.portal === 'trabajando');
+    const cht = (portalRows as any[]).find(p => p.portal === 'chiletrabajos');
+    const cpt = (portalRows as any[]).find(p => p.portal === 'computrabajo');
+    const lab = (portalRows as any[]).find(p => p.portal === 'laborum');
 
     return {
       plan: planStr,
@@ -238,6 +252,18 @@ export class AdminService {
           detalle: cht?.email || 'Sin cuenta',
         },
         {
+          key: 'cuenta_cpt',
+          label: 'Cuenta Computrabajo',
+          ok: Boolean(cpt),
+          detalle: cpt?.email || 'Sin cuenta',
+        },
+        {
+          key: 'cuenta_lab',
+          label: 'Cuenta Laborum',
+          ok: Boolean(lab),
+          detalle: lab?.email || 'Sin cuenta',
+        },
+        {
           key: 'linkedin',
           label: 'LinkedIn extensión hoy',
           ok: hoyLkd > 0,
@@ -268,55 +294,6 @@ export class AdminService {
         VALUES (@id, @plan, 'ACTIVO', @now, @fechaFin, 'ADMIN')
     `, { id: userId, plan, now: new Date().toISOString(), fechaFin: fin });
 
-    return { success: true };
-  }
-
-  async updateCargos(userId: string, cargos: string[]) {
-    const json = JSON.stringify(cargos.map(c => c.trim()).filter(Boolean));
-    await this.bq.query(`
-      MERGE ${this.bq.t('POSTULA_FACIL')} T
-      USING (SELECT @id AS ID_USUARIO) S
-      ON LOWER(T.ID_USUARIO) = LOWER(S.ID_USUARIO)
-      WHEN MATCHED THEN UPDATE SET CARGOS = @cargos
-      WHEN NOT MATCHED THEN INSERT (ID_USUARIO, CARGOS) VALUES (@id, @cargos)
-    `, { id: userId, cargos: json });
-    return { success: true };
-  }
-
-  async getPostulaciones(userId: string, limit = 100) {
-    const rows = await this.bq.query<any>(`
-      SELECT
-        id_empleo,
-        titulo_empleo,
-        Empresa,
-        cargo,
-        COALESCE(portal, 'linkedin') AS portal,
-        link,
-        Fecha_Postulacion
-      FROM ${this.bq.t('EMPLEOS')}
-      WHERE LOWER(id_usuario) = LOWER(@id)
-      ORDER BY Fecha_Postulacion DESC
-      LIMIT @lim
-    `, { id: userId, lim: limit });
-
-    return rows.map(r => ({
-      id:        r.id_empleo,
-      titulo:    r.titulo_empleo || '(sin título)',
-      empresa:   r.Empresa || '',
-      cargo:     r.cargo || '',
-      portal:    r.portal || 'linkedin',
-      link:      r.link || null,
-      fecha:     r.Fecha_Postulacion?.value ?? r.Fecha_Postulacion ?? null,
-    }));
-  }
-
-  async deletePortalAccount(userId: string, portal: string) {
-    const allowed = ['trabajando', 'chiletrabajos'];
-    if (!allowed.includes(portal)) throw new ForbiddenException('Portal no válido');
-    await this.bq.query(`
-      DELETE FROM ${this.bq.t('CUENTAS_PORTALES')}
-      WHERE LOWER(id_usuario) = LOWER(@id) AND portal = @portal
-    `, { id: userId, portal });
     return { success: true };
   }
 

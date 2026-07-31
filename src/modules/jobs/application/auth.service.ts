@@ -387,25 +387,6 @@ export class AuthService {
     return { success: true };
   }
 
-  // ─── SET CELULAR (usuarios Google sin celular) ────────────────────────────
-  async setCelular(userId: string, celular: string) {
-    const celularRegex = /^\+56[0-9]{9}$/;
-    if (!celularRegex.test(celular)) throw new BadRequestException('Celular inválido (+56XXXXXXXXX)');
-
-    const dup = await this.bq.query<any>(`
-      SELECT ID_USUARIO FROM ${this.bq.t('USUARIOS')}
-      WHERE CELULAR = @celular AND ID_USUARIO != @id LIMIT 1
-    `, { celular, id: userId });
-
-    if (dup.length) throw new BadRequestException('Ese celular ya está registrado');
-
-    await this.bq.query(`
-      UPDATE ${this.bq.t('USUARIOS')} SET CELULAR = @celular WHERE ID_USUARIO = @id
-    `, { celular, id: userId });
-
-    return { success: true };
-  }
-
   // ─── DEACTIVATE ACCOUNT ───────────────────────────────────────────────────
   async deactivateAccount(userId: string) {
     await this.bq.query(`
@@ -416,7 +397,7 @@ export class AuthService {
   }
 
   // ─── DELETE ACCOUNT ───────────────────────────────────────────────────────
-  async deleteAccount(userId: string, password: string, motivos?: string[], comentario?: string) {
+  async deleteAccount(userId: string, password: string) {
     const rows = await this.bq.query<any>(`
       SELECT PASSWORD FROM ${this.bq.t('USUARIOS')} WHERE ID_USUARIO = @id LIMIT 1
     `, { id: userId });
@@ -427,19 +408,6 @@ export class AuthService {
       const ok = await bcrypt.compare(password, rows[0].PASSWORD);
       if (!ok) throw new UnauthorizedException('Contraseña incorrecta');
     }
-
-    const now = new Date().toISOString();
-
-    // Guardar feedback de baja antes de eliminar datos (siempre, aunque venga vacío)
-    await this.bq.query(`
-      INSERT INTO ${this.bq.t('FEEDBACK_BAJA')} (ID_USUARIO, MOTIVOS, COMENTARIO, FECHA)
-      VALUES (@id, @motivos, @comentario, @now)
-    `, {
-      id: userId,
-      motivos: JSON.stringify(motivos || []),
-      comentario: comentario || '',
-      now,
-    }).catch((e) => console.warn('[FEEDBACK_BAJA] insert error:', e?.message));
 
     // Soft-delete: eliminar datos sensibles y marcar como eliminado
     await Promise.all([

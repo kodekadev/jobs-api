@@ -75,15 +75,9 @@ export class AuthController {
     return this.authService.deactivateAccount(body.id);
   }
 
-  @Post('set-celular')
-  @HttpCode(200)
-  setCelular(@Body() body: { id: string; celular: string }) {
-    return this.authService.setCelular(body.id, body.celular);
-  }
-
   @Post('delete')
   @HttpCode(200)
-  deleteAccount(@Body() body: { id: string; password: string; motivos?: string[]; comentario?: string }) {
-    return this.authService.deleteAccount(body.id, body.password, body.motivos, body.comentario);
+  deleteAccount(@Body() body: { id: string; password: string }) {
+    return this.authService.deleteAccount(body.id, body.password);
   }
 }
