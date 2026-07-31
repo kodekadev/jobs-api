@@ -91,8 +91,11 @@ export class AdminService {
         COALESCE(por.tiene_tbj, 0) AS tiene_trabajando,
         COALESCE(por.cv_tbj, 0)    AS cv_trabajando,
         COALESCE(por.tiene_cht, 0) AS tiene_chiletrabajos,
+        COALESCE(por.cv_cht, 0)    AS cv_chiletrabajos,
         COALESCE(por.tiene_cpt, 0) AS tiene_computrabajo,
+        COALESCE(por.cv_cpt, 0)    AS cv_computrabajo,
         COALESCE(por.tiene_lab, 0) AS tiene_laborum,
+        COALESCE(por.cv_lab, 0)    AS cv_laborum,
         CASE
           WHEN COALESCE(pl.PLAN, 'FREE') = 'FREE' THEN TRUE
           WHEN pl.PLAN = 'TRIAL'
@@ -130,11 +133,11 @@ export class AdminService {
       tiene_trabajando:        Boolean(r.tiene_trabajando),
       cv_trabajando:           Boolean(r.cv_trabajando),
       tiene_chiletrabajos:     Boolean(r.tiene_chiletrabajos),
-      cv_chiletrabajos:        Boolean(r.cv_cht),
+      cv_chiletrabajos:        Boolean(r.cv_chiletrabajos),
       tiene_computrabajo:      Boolean(r.tiene_computrabajo),
-      cv_computrabajo:         Boolean(r.cv_cpt),
+      cv_computrabajo:         Boolean(r.cv_computrabajo),
       tiene_laborum:           Boolean(r.tiene_laborum),
-      cv_laborum:              Boolean(r.cv_lab),
+      cv_laborum:              Boolean(r.cv_laborum),
       postulaciones_hoy:       Number(r.postulaciones_hoy ?? 0),
       total_postulaciones:     Number(r.total_postulaciones ?? 0),
       postulaciones_7dias:     Number(r.postulaciones_7dias ?? 0),
