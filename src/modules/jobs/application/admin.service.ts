@@ -111,7 +111,7 @@ export class AdminService {
       LEFT JOIN post_stats ps ON u.ID_USUARIO = ps.id_usuario
       LEFT JOIN portal_stats por ON u.ID_USUARIO = por.id_usuario
       WHERE u.NOMBRE != 'CUENTA_ELIMINADA'
-        AND u.EMAIL NOT LIKE 'deleted\\_%@aplicai.cl'
+        AND u.EMAIL NOT LIKE 'deleted!_%@aplicai.cl' ESCAPE '!'
       ORDER BY postulaciones_hoy DESC, total_postulaciones DESC
     `);
 
