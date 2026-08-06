@@ -128,6 +128,7 @@ export class AdminService {
       plan_vigente:            Boolean(r.plan_vigente),
       fecha_fin:               r.FECHA_FIN?.value ?? r.FECHA_FIN ?? null,
       autopilot_activo:        Boolean(r.autopilot_activo),
+      cargos:                  this.parseJson(r.CARGOS),
       tiene_cargos:            this.parseJson(r.CARGOS).length > 0,
       tiene_ubicaciones:       this.parseJson(r.UBICACIONES).length > 0,
       tiene_trabajando:        Boolean(r.tiene_trabajando),
@@ -312,6 +313,144 @@ export class AdminService {
     if (!val) return 'sin fecha';
     const d = new Date(val?.value ?? val);
     return isNaN(d.getTime()) ? 'sin fecha' : d.toLocaleDateString('es-CL');
+  }
+
+  async setCargos(userId: string, cargos: string[]) {
+    const json = JSON.stringify(cargos);
+    await this.bq.query(`
+      UPDATE ${this.bq.t('POSTULA_FACIL')}
+      SET CARGOS = @cargos
+      WHERE ID_USUARIO = @id
+    `, { id: userId, cargos: json });
+    return { success: true };
+  }
+
+  async deletePortal(userId: string, portal: string) {
+    await this.bq.query(`
+      DELETE FROM ${this.bq.t('CUENTAS_PORTALES')}
+      WHERE LOWER(id_usuario) = LOWER(@id) AND LOWER(portal) = LOWER(@portal)
+    `, { id: userId, portal });
+    return { success: true };
+  }
+
+  async getAnalytics() {
+    const rows = await this.bq.query<any>(`
+      SELECT
+        pf.PROFESION,
+        pf.CARGOS,
+        pf.UBICACIONES,
+        pf.ACTUALMENTE_TRABAJANDO,
+        pf.PRETENSION_GENERAL,
+        EXTRACT(YEAR FROM CURRENT_DATE())
+          - EXTRACT(YEAR FROM SAFE_CAST(pf.FECHA_NACIMIENTO AS DATE)) AS edad_aprox,
+        u.NOMBRE,
+        u.EMAIL,
+        COALESCE(pc.PLAN, 'FREE') AS plan,
+        pc.FECHA_FIN,
+        DATE_DIFF(DATE(pc.FECHA_FIN), CURRENT_DATE(), DAY) AS dias_para_vencer
+      FROM ${this.bq.t('POSTULA_FACIL')} pf
+      LEFT JOIN ${this.bq.t('USUARIOS')} u
+        ON LOWER(u.ID_USUARIO) = LOWER(pf.ID_USUARIO)
+      LEFT JOIN (
+        SELECT ID_USUARIO, PLAN, ESTADO, FECHA_FIN, FECHA_INICIO
+        FROM ${this.bq.t('PLAN_CONTRATADO')}
+        WHERE ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE')
+        QUALIFY ROW_NUMBER() OVER (
+          PARTITION BY LOWER(ID_USUARIO) ORDER BY FECHA_INICIO DESC
+        ) = 1
+      ) pc ON LOWER(pc.ID_USUARIO) = LOWER(pf.ID_USUARIO)
+      WHERE COALESCE(u.NOMBRE, '') != 'CUENTA_ELIMINADA'
+        AND NOT STARTS_WITH(COALESCE(u.EMAIL, ''), 'deleted_')
+    `);
+
+    const total = rows.length;
+    const porPlan: Record<string, number> = {};
+    const edades: Record<string, number> = { '18-25': 0, '26-35': 0, '36-45': 0, '46-55': 0, '55+': 0, 'sin_dato': 0 };
+    const profesionesCnt: Record<string, number> = {};
+    const ubicacionesCnt: Record<string, number> = {};
+    const cargosCnt: Record<string, number> = {};
+    const pretensiones: Record<string, number> = { '<500k': 0, '500k-800k': 0, '800k-1.2M': 0, '1.2M-2M': 0, '>2M': 0, 'sin_dato': 0 };
+    let conEmpleo = 0, sinEmpleo = 0;
+    const porVencer: any[] = [];
+
+    for (const r of rows) {
+      const plan = r.plan || 'FREE';
+      porPlan[plan] = (porPlan[plan] || 0) + 1;
+
+      // Edad
+      const edad = Number(r.edad_aprox);
+      if (!r.edad_aprox || isNaN(edad) || edad < 15 || edad > 90) edades['sin_dato']++;
+      else if (edad <= 25) edades['18-25']++;
+      else if (edad <= 35) edades['26-35']++;
+      else if (edad <= 45) edades['36-45']++;
+      else if (edad <= 55) edades['46-55']++;
+      else edades['55+']++;
+
+      // Profesión
+      const prof = (r.PROFESION || '').trim();
+      if (prof) profesionesCnt[prof] = (profesionesCnt[prof] || 0) + 1;
+
+      // Empleo actual
+      if (r.ACTUALMENTE_TRABAJANDO === true || r.ACTUALMENTE_TRABAJANDO === 1) conEmpleo++;
+      else if (r.ACTUALMENTE_TRABAJANDO === false || r.ACTUALMENTE_TRABAJANDO === 0) sinEmpleo++;
+
+      // Pretensión
+      const raw = String(r.PRETENSION_GENERAL || '')
+        .replace(/[$ \.]/g, '').replace(/,/g, '').replace(/k$/i, '000');
+      const val = parseInt(raw, 10);
+      if (!val || isNaN(val)) pretensiones['sin_dato']++;
+      else if (val < 500_000)   pretensiones['<500k']++;
+      else if (val < 800_000)   pretensiones['500k-800k']++;
+      else if (val < 1_200_000) pretensiones['800k-1.2M']++;
+      else if (val < 2_000_000) pretensiones['1.2M-2M']++;
+      else                      pretensiones['>2M']++;
+
+      // Ubicaciones
+      for (const ub of this.parseJson(r.UBICACIONES)) {
+        const u = ub.trim();
+        if (u) ubicacionesCnt[u] = (ubicacionesCnt[u] || 0) + 1;
+      }
+
+      // Cargos
+      for (const c of this.parseJson(r.CARGOS)) {
+        const c2 = c.trim();
+        if (c2) cargosCnt[c2] = (cargosCnt[c2] || 0) + 1;
+      }
+
+      // Planes por vencer (≤7 días, excluye FREE y ya vencidos)
+      const dias = Number(r.dias_para_vencer);
+      if (plan !== 'FREE' && r.FECHA_FIN && !isNaN(dias) && dias >= 0 && dias <= 7) {
+        porVencer.push({
+          nombre: r.NOMBRE || '',
+          email: r.EMAIL || '',
+          plan,
+          fecha_fin: r.FECHA_FIN?.value ?? r.FECHA_FIN,
+          dias,
+        });
+      }
+    }
+
+    const topN = (obj: Record<string, number>, n = 10) =>
+      Object.entries(obj)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, n)
+        .map(([nombre, count]) => ({ nombre, count }));
+
+    return {
+      total,
+      porPlan,
+      edades,
+      profesiones: topN(profesionesCnt),
+      ubicaciones: topN(ubicacionesCnt),
+      cargos:      topN(cargosCnt),
+      pretensiones,
+      empleo: {
+        con:      conEmpleo,
+        sin:      sinEmpleo,
+        sin_dato: total - conEmpleo - sinEmpleo,
+      },
+      porVencer: porVencer.sort((a, b) => a.dias - b.dias),
+    };
   }
 
   private parseJson(val: any): string[] {

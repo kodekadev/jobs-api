@@ -1,12 +1,16 @@
-import { Controller, Get, Post, Param, Body, HttpCode, Request, ForbiddenException } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Param, Body, HttpCode, Request, ForbiddenException, Query } from '@nestjs/common';
 import { AdminService } from '../../application/admin.service';
+import { PostulacionesService } from '../../application/postulaciones.service';
 import env from '../../../shared/infrastructure/environment';
 
 // Nota: usa :userId (no :id) para no disparar el check anti-IDOR del JWT guard,
 // que bloquearía al admin operar sobre otros usuarios.
 @Controller('admin')
 export class AdminController {
-  constructor(private readonly service: AdminService) {}
+  constructor(
+    private readonly service: AdminService,
+    private readonly postulaciones: PostulacionesService,
+  ) {}
 
   @Post('verify-pin')
   @HttpCode(200)
@@ -39,5 +43,38 @@ export class AdminController {
   ) {
     this.service.checkAdmin(req.user.email);
     return this.service.setPlan(userId, body.plan, body.fecha_fin);
+  }
+
+  @Get('users/:userId/postulaciones')
+  getPostulaciones(@Request() req: any, @Param('userId') userId: string) {
+    this.service.checkAdmin(req.user.email);
+    return this.postulaciones.getByUser(userId);
+  }
+
+  @Put('users/:userId/cargos')
+  @HttpCode(200)
+  setCargos(
+    @Request() req: any,
+    @Param('userId') userId: string,
+    @Body() body: { cargos: string[] },
+  ) {
+    this.service.checkAdmin(req.user.email);
+    return this.service.setCargos(userId, body.cargos);
+  }
+
+  @Get('analytics')
+  getAnalytics(@Request() req: any) {
+    this.service.checkAdmin(req.user.email);
+    return this.service.getAnalytics();
+  }
+
+  @Delete('users/:userId/portal/:portal')
+  deletePortal(
+    @Request() req: any,
+    @Param('userId') userId: string,
+    @Param('portal') portal: string,
+  ) {
+    this.service.checkAdmin(req.user.email);
+    return this.service.deletePortal(userId, portal);
   }
 }
