@@ -418,6 +418,28 @@ export class AuthService {
     }
   }
 
+  async deleteUser(userId: string, password: string) {
+    const rows = await this.bq.query<any>(
+      `SELECT PASSWORD FROM ${this.bq.t('USUARIOS')} WHERE ID_USUARIO = @id LIMIT 1`,
+      { id: userId },
+    );
+    if (!rows.length) throw new UnauthorizedException('Usuario no encontrado');
+
+    // Usuarios con contraseña: verificar antes de eliminar
+    if (rows[0].PASSWORD) {
+      const ok = await bcrypt.compare(password, rows[0].PASSWORD);
+      if (!ok) throw new UnauthorizedException('Contraseña incorrecta');
+    }
+
+    await this.bq.query(
+      `UPDATE ${this.bq.t('USUARIOS')} SET ACTIVO = FALSE WHERE ID_USUARIO = @id`,
+      { id: userId },
+    );
+    const { JwtAuthGuard } = await import('../../shared/infrastructure/guards/jwt-auth.guard');
+    JwtAuthGuard.invalidateCache(userId);
+    return { success: true };
+  }
+
   async deactivateUser(userId: string) {
     await this.bq.query(
       `UPDATE ${this.bq.t('USUARIOS')} SET ACTIVO = FALSE WHERE ID_USUARIO = @id`,

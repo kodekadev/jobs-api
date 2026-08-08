@@ -56,6 +56,12 @@ export class AuthController {
     return this.authService.changePassword(body.id, body.currentPassword, body.newPassword);
   }
 
+  @Post('delete')
+  @HttpCode(200)
+  deleteAccount(@Body() body: { id: string; password: string }) {
+    return this.authService.deleteUser(body.id, body.password);
+  }
+
   // ── Admin: desactivar / reactivar cuenta ──────────────────────────────────
   // Protegido por cabecera x-admin-secret (no expuesto al frontend)
   @Post('admin/deactivate')
