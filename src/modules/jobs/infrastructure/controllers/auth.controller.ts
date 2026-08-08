@@ -32,6 +32,12 @@ export class AuthController {
     return this.authService.register(body);
   }
 
+  @Post('set-celular')
+  @HttpCode(200)
+  setCelular(@Body() body: { id: string; celular: string }) {
+    return this.authService.setCelular(body.id, body.celular);
+  }
+
   @Post('forgot-password')
   @HttpCode(200)
   forgotPassword(@Body() body: { email: string }) {

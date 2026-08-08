@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Param, Body, HttpCode, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, HttpCode, Query, UseGuards, Header } from '@nestjs/common';
 import { PlanService } from '../../application/plan.service';
 import { JwtAuthGuard } from '../../../shared/infrastructure/guards/jwt-auth.guard';
 
@@ -8,6 +8,7 @@ export class PlanController {
 
   @Get(':id')
   @UseGuards(JwtAuthGuard)
+  @Header('Cache-Control', 'no-store')
   getPlan(@Param('id') id: string) {
     return this.planService.getPlan(id);
   }

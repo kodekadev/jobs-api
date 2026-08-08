@@ -291,6 +291,27 @@ export class AuthService {
     return { success: true };
   }
 
+  // ─── SET CELULAR (usuarios Google que no lo tienen al registrarse) ─────────
+  async setCelular(userId: string, celular: string) {
+    const celularRegex = /^\+56[0-9]{9}$/;
+    if (!celularRegex.test(celular)) throw new BadRequestException('Celular inválido (+56XXXXXXXXX)');
+
+    const dup = await this.bq.query<any>(`
+      SELECT ID_USUARIO FROM ${this.bq.t('USUARIOS')}
+      WHERE CELULAR = @celular AND ID_USUARIO != @id
+      LIMIT 1
+    `, { celular, id: userId });
+
+    if (dup.length) throw new BadRequestException('Este celular ya está registrado por otro usuario');
+
+    await this.bq.query(
+      `UPDATE ${this.bq.t('USUARIOS')} SET CELULAR = @celular WHERE ID_USUARIO = @id`,
+      { celular, id: userId },
+    );
+
+    return { success: true };
+  }
+
   // ─── HELPERS ──────────────────────────────────────────────────────────────
   private buildResponse(u: any) {
     const token = jwt.sign(
