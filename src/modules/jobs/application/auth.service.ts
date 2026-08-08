@@ -129,7 +129,7 @@ export class AuthService {
 
     if (existing.length) return this.buildResponse(existing[0]);
 
-    const id = crypto.randomUUID();
+    const id = await this.nextJobsId();
     await this.bq.query(`
       INSERT INTO ${this.bq.t('USUARIOS')}
         (ID_USUARIO, NOMBRE, EMAIL, CELULAR, PASSWORD, TERMINOS, ASIGNADO_LKD, FECHA_REGISTRO)
@@ -144,6 +144,8 @@ export class AuthService {
       '¡Bienvenido/a a AplicAI! 🎉',
       this.email.welcomeHtml(nombre),
     ).catch((e) => console.error('[loginGoogle] Welcome email error:', e.message));
+
+    this.notifyNuevoUsuario(id, nombre, emailNorm, 'Google OAuth');
 
     const newUser = { ID_USUARIO: id, NOMBRE: nombre, EMAIL: emailNorm, PLAN: 'PRO', PLAN_ESTADO: 'TRIAL', AUTO_ACTIVO: false };
     return this.buildResponse(newUser);
@@ -176,7 +178,7 @@ export class AuthService {
     if (dup.length) throw new BadRequestException('Email o celular ya registrado');
 
     const hash = await bcrypt.hash(body.password, 10);
-    const id = `jobs_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const id = await this.nextJobsId();
 
     await this.bq.query(`
       INSERT INTO ${this.bq.t('USUARIOS')}
@@ -192,6 +194,8 @@ export class AuthService {
       '¡Bienvenido/a a AplicAI! 🎉',
       this.email.welcomeHtml(body.nombre),
     ).catch((e) => console.error('[register] Welcome email error:', e.message));
+
+    this.notifyNuevoUsuario(id, body.nombre, emailNorm, 'Email + Password');
 
     return { success: true };
   }
@@ -313,6 +317,30 @@ export class AuthService {
   }
 
   // ─── HELPERS ──────────────────────────────────────────────────────────────
+  private notifyNuevoUsuario(id: string, nombre: string, email: string, via: string): void {
+    if (!env.telegramBotToken || !env.telegramChatId) return;
+    const text = `🆕 Nuevo usuario registrado\nID: ${id}\nNombre: ${nombre}\nEmail: ${email}\nVía: ${via}`;
+    fetch(`https://api.telegram.org/bot${env.telegramBotToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: env.telegramChatId, text }),
+    }).catch(() => null);
+  }
+
+  private async nextJobsId(): Promise<string> {
+    const rows = await this.bq.query<any>(`
+      SELECT COALESCE(MAX(SAFE_CAST(SUBSTR(ID_USUARIO, 5) AS INT64)), 0) + 1 AS next_n
+      FROM ${this.bq.t('USUARIOS')}
+      WHERE REGEXP_CONTAINS(ID_USUARIO, r'^jobs[0-9]+$')
+    `);
+    const n = Number(rows[0]?.next_n ?? 1);
+    const candidate = `jobs${n}`;
+    const exists = await this.bq.query<any>(`
+      SELECT 1 FROM ${this.bq.t('USUARIOS')} WHERE ID_USUARIO = @id LIMIT 1
+    `, { id: candidate });
+    return exists.length ? `jobs${n + 1}` : candidate;
+  }
+
   private buildResponse(u: any) {
     const token = jwt.sign(
       { id: u.ID_USUARIO, email: u.EMAIL, nombre: u.NOMBRE },
