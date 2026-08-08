@@ -33,6 +33,7 @@ export class AdminService {
         COALESCE(pa.activo, 0)                                           AS autopilot_activo,
         pf.CARGOS                                                        AS cargos_raw,
         pf.UBICACIONES                                                   AS ubicaciones_raw,
+        (pf.ID_USUARIO IS NOT NULL)                                      AS tiene_postulafacil,
         (pf.CARGOS IS NOT NULL AND pf.CARGOS NOT IN ('', '[]', 'null')) AS tiene_cargos,
         (pf.UBICACIONES IS NOT NULL AND pf.UBICACIONES NOT IN ('', '[]', 'null')) AS tiene_ubicaciones,
         COUNTIF(cp.PORTAL = 'trabajando')    > 0                         AS tiene_trabajando,
@@ -63,7 +64,7 @@ export class AdminService {
       LEFT JOIN ${this.bq.t('CUENTAS_PORTALES')}   cp ON LOWER(u.ID_USUARIO) = LOWER(cp.ID_USUARIO)
       LEFT JOIN ${this.bq.t('EMPLEOS')}             e  ON u.ID_USUARIO = e.ID_USUARIO
       GROUP BY u.ID_USUARIO, u.NOMBRE, u.EMAIL, pc.PLAN, pc.ESTADO, pc.FECHA_FIN,
-               pa.activo, pf.CARGOS, pf.UBICACIONES
+               pa.activo, pf.ID_USUARIO, pf.CARGOS, pf.UBICACIONES
       ORDER BY u.ID_USUARIO
     `);
 
@@ -78,6 +79,7 @@ export class AdminService {
         fecha_fin:              r.fecha_fin || null,
         autopilot_activo:       Boolean(r.autopilot_activo),
         cargos:                 this.parseJson(r.cargos_raw),
+        tiene_postulafacil:     Boolean(r.tiene_postulafacil),
         tiene_cargos:           Boolean(r.tiene_cargos),
         tiene_ubicaciones:      Boolean(r.tiene_ubicaciones),
         tiene_trabajando:       Boolean(r.tiene_trabajando),
