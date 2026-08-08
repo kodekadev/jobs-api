@@ -1,6 +1,6 @@
 """
-Crea cuentas en Trabajando.cl y ChileTrabajos para todos los usuarios
-que llenaron el formulario Postula Fácil, aunque no tengan auto-postulaciones activo.
+Crea cuentas en Trabajando.cl, ChileTrabajos, Computrabajo y Laborum para todos
+los usuarios que llenaron el formulario Postula Fácil.
 
 Solo crea las cuentas y guarda las credenciales en BQ.
 Para llenar el CV después, ejecutar completar_cvs_portales.py.
@@ -26,7 +26,7 @@ os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS", r"C:\Users\bastian\.secr
 from dotenv import load_dotenv
 load_dotenv(os.path.join(_dir, ".env"))
 
-SOLO_USUARIO = None  # ej: "jobs8"
+SOLO_USUARIO = None#"jobs40"  # ej: "jobs8"
 
 
 def _crear_cuentas_usuario(uid: str, user: dict, bq) -> None:
@@ -75,6 +75,45 @@ def _crear_cuentas_usuario(uid: str, user: dict, bq) -> None:
             print(f"  [{uid}] ChileTrabajos crear_cuenta ERROR: {e}")
             traceback.print_exc()
 
+    # ── Computrabajo ───────────────────────────────────────────────────────────
+    cuenta_cpt = bq.get_portal_account(uid, "computrabajo")
+    if cuenta_cpt:
+        print(f"  [{uid}] Computrabajo: ya tiene cuenta ({cuenta_cpt.get('email', '?')}) — saltar")
+    else:
+        print(f"  [{uid}] Computrabajo: sin cuenta — creando...")
+        try:
+            from computrabajo.crear_cuenta import crear_cuenta_computrabajo
+            ok = crear_cuenta_computrabajo(uid, user)
+            if ok:
+                cuenta_cpt = bq.get_portal_account(uid, "computrabajo")
+                print(f"  [{uid}] Computrabajo: OK ({cuenta_cpt.get('email', '?') if cuenta_cpt else '?'})")
+            else:
+                print(f"  [{uid}] Computrabajo: no se pudo crear cuenta")
+        except Exception as e:
+            import traceback
+            print(f"  [{uid}] Computrabajo crear_cuenta ERROR: {e}")
+            traceback.print_exc()
+
+    # ── Laborum ────────────────────────────────────────────────────────────────
+    cuenta_lab = bq.get_portal_account(uid, "laborum")
+    if cuenta_lab:
+        print(f"  [{uid}] Laborum: ya tiene cuenta ({cuenta_lab.get('email', '?')}) — saltar")
+    else:
+        print(f"  [{uid}] Laborum: sin cuenta — creando...")
+        try:
+            from laborum.crear_cuenta import crear_cuenta_laborum
+            ok = crear_cuenta_laborum(uid, user)
+            if ok:
+                cuenta_lab = bq.get_portal_account(uid, "laborum")
+                print(f"  [{uid}] Laborum: OK ({cuenta_lab.get('email', '?') if cuenta_lab else '?'})")
+            else:
+                print(f"  [{uid}] Laborum: no se pudo crear cuenta")
+        except Exception as e:
+            import traceback
+            print(f"  [{uid}] Laborum crear_cuenta ERROR: {e}")
+            traceback.print_exc()
+
+
     print(f"  [{uid}] Listo")
 
 
@@ -97,7 +136,7 @@ def _run():
     if solo:
         all_users = [u for u in all_users if (u.get("ID_USUARIO") or "").lower() == solo.lower()]
 
-    print(f"[crear_cuentas] {len(all_users)} usuario(s) encontrado(s)")
+    print(f"[crear_cuentas] {len(all_users)} usuario(s) encontrado(s) — ejecución secuencial")
     if not all_users:
         print("[crear_cuentas] Sin usuarios — verificar que existan registros en POSTULA_FACIL")
         return
@@ -118,6 +157,17 @@ def _run():
 
 
 if __name__ == "__main__":
+    # os._exit bypasea el cleanup de Playwright (que devuelve exit 255 en Windows).
+    # En Spyder/IPython mataría el kernel — solo lo usamos en Jenkins/CLI.
+    _in_jenkins = bool(os.environ.get("BUILD_NUMBER") or os.environ.get("JENKINS_URL"))
+    _in_interactive = (
+        "spyder" in sys.modules or
+        "IPython" in sys.modules or
+        bool(os.environ.get("SPYDER_ARGS")) or
+        bool(os.environ.get("JPY_SESSION_NAME"))
+    )
+    _use_hard_exit = _in_jenkins and not _in_interactive
+
     exc = [None]
 
     def _thread():
@@ -132,5 +182,7 @@ if __name__ == "__main__":
     if exc[0]:
         print(f"[FATAL] {exc[0]}")
         import traceback; traceback.print_exception(type(exc[0]), exc[0], exc[0].__traceback__)
-        os._exit(1)
-    os._exit(0)  # Bypass Playwright async cleanup que devuelve exit 255
+        if _use_hard_exit:
+            os._exit(1)
+    elif _use_hard_exit:
+        os._exit(0)  # Bypass Playwright async cleanup que devuelve exit 255

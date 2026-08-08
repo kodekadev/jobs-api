@@ -12,11 +12,19 @@ Portales soportados:
 """
 import os
 import re
+import sys
 import json
 import time
 import secrets
 import string
 import tempfile
+
+# Cargar .env desde el directorio del módulo (funciona aunque el caller no lo haga)
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+except Exception:
+    pass
 
 import requests
 from selenium import webdriver
@@ -38,14 +46,29 @@ class EmailTomadoError(Exception):
 
 _CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 
+# Singleton global de sync_playwright: una sola instancia por proceso evita el error
+# "Playwright Sync API inside the asyncio loop" cuando se procesan múltiples usuarios
+# (cada sync_playwright().start() detecta el event loop asyncio del anterior).
+_global_pw = None
+_global_pw_lock = threading.Lock()
+
+
+def _get_global_pw():
+    global _global_pw
+    with _global_pw_lock:
+        if _global_pw is None:
+            from playwright.sync_api import sync_playwright as _spw
+            _global_pw = _spw().start()
+    return _global_pw
+
 
 def _make_pw_context(pw=None):
     """Lanza browser (Chrome real si existe) con configuración anti-detección."""
     import random as _rnd
-    from playwright.sync_api import sync_playwright as _spw
     owns_pw = pw is None
     if owns_pw:
-        pw = _spw().start()
+        pw = _get_global_pw()
+        owns_pw = False  # nunca detenemos el singleton global
 
     use_chrome = os.path.exists(_CHROME_PATH) and not _in_cloud_run
     browser = pw.chromium.launch(
@@ -211,7 +234,7 @@ def _save_answers_to_cache(questions: list, answers: dict) -> None:
 
 _in_cloud_run = bool(os.environ.get("K_SERVICE") or os.environ.get("CLOUD_RUN_JOB"))
 HEADLESS = os.environ.get("SELENIUM_HEADLESS", "1" if _in_cloud_run else "0") == "1"
-TWOCAPTCHA_KEY = os.environ.get("TWOCAPTCHA_KEY", "")
+TWOCAPTCHA_KEY = os.environ.get("TWOCAPTCHA_KEY") or os.environ.get("TWOCAPTCHA_API_KEY", "")
 
 _xvfb_started = False
 _xvfb_lock    = threading.Lock()
@@ -291,16 +314,62 @@ def _clean_phone(phone: str) -> str:
     return digits[-9:] if len(digits) >= 9 else digits
 
 
-def _solve_recaptcha(sitekey: str, page_url: str, action: str = "login") -> str | None:
-    """
-    Resuelve reCAPTCHA v3 (con fallback a v2 invisible) usando 2captcha.com.
-    Retorna el token o None si TWOCAPTCHA_KEY no está configurado / hay error.
-    """
-    if not TWOCAPTCHA_KEY:
-        print("  [captcha] TWOCAPTCHA_KEY no configurado — omitiendo reCAPTCHA")
+def _solve_recaptcha_capsolver(sitekey: str, page_url: str, action: str = "login") -> str | None:
+    """Resuelve reCAPTCHA v3 con Capsolver (scores altos, ~0.7-0.9)."""
+    key = os.environ.get("CAPSOLVER_API_KEY", "")
+    if not key:
         return None
     try:
-        # Intentar v3 primero (Trabajando.cl llama grecaptcha.execute(key, {action}) = v3)
+        r = requests.post("https://api.capsolver.com/createTask", json={
+            "clientKey": key,
+            "task": {
+                "type": "ReCaptchaV3TaskProxyLess",
+                "websiteURL": page_url,
+                "websiteKey": sitekey,
+                "pageAction": action,
+                "minScore": 0.7,
+            },
+        }, timeout=30).json()
+        if r.get("errorId", 1) != 0:
+            print(f"  [capsolver] error: {r.get('errorDescription')}")
+            return None
+        task_id = r["taskId"]
+        print(f"  [capsolver] task {task_id}, esperando token...")
+        for _ in range(30):
+            time.sleep(3)
+            r2 = requests.post("https://api.capsolver.com/getTaskResult", json={
+                "clientKey": key,
+                "taskId": task_id,
+            }, timeout=30).json()
+            if r2.get("status") == "ready":
+                token = r2["solution"]["gRecaptchaResponse"]
+                score = r2["solution"].get("riskScore", "?")
+                print(f"  [capsolver] token OK (score: {score})")
+                return token
+            if r2.get("status") == "failed":
+                print(f"  [capsolver] failed: {r2.get('errorDescription')}")
+                return None
+        print("  [capsolver] timeout (90s)")
+        return None
+    except Exception as e:
+        print(f"  [capsolver] exception: {e}")
+        return None
+
+
+def _solve_recaptcha(sitekey: str, page_url: str, action: str = "login") -> str | None:
+    """
+    Resuelve reCAPTCHA v3. Intenta Capsolver primero (scores altos),
+    luego 2captcha como fallback.
+    """
+    # Capsolver primero — scores consistentemente altos (0.7-0.9)
+    token = _solve_recaptcha_capsolver(sitekey, page_url, action)
+    if token:
+        return token
+
+    if not TWOCAPTCHA_KEY:
+        print("  [captcha] sin captcha solver configurado")
+        return None
+    try:
         r = requests.post("https://2captcha.com/in.php", data={
             "key": TWOCAPTCHA_KEY,
             "method": "userrecaptcha",
@@ -312,7 +381,6 @@ def _solve_recaptcha(sitekey: str, page_url: str, action: str = "login") -> str 
             "json": 1,
         }, timeout=30).json()
         if r.get("status") != 1:
-            # Fallback a v2 invisible si v3 falla
             print(f"  [captcha] v3 submit error: {r} — intentando v2 invisible")
             r = requests.post("https://2captcha.com/in.php", data={
                 "key": TWOCAPTCHA_KEY,
@@ -343,6 +411,34 @@ def _solve_recaptcha(sitekey: str, page_url: str, action: str = "login") -> str 
         return None
     except Exception as e:
         print(f"  [captcha] exception: {e}")
+        return None
+
+
+_UC_PROFILE_DIR = os.path.join(os.path.expanduser("~"), ".aplicai_chrome_profile")
+
+
+def _make_uc_driver():
+    """Chrome con undetected-chromedriver — usa perfil persistente para score reCAPTCHA v3 alto."""
+    try:
+        import undetected_chromedriver as uc
+        options = uc.ChromeOptions()
+        options.add_argument("--window-size=1366,768")
+        options.add_argument("--disable-dev-shm-usage")
+        # Performance logs: captura requests de red en Chrome (sobrevive a navegaciones de página)
+        options.set_capability("goog:loggingPrefs", {"performance": "ALL", "browser": "ALL"})
+        # Perfil persistente: reCAPTCHA v3 da score 0.7-0.9 a perfiles con historial
+        # vs 0.1-0.3 para perfiles frescos. El perfil se crea en el primer uso.
+        if os.path.exists(_UC_PROFILE_DIR) or not _in_cloud_run:
+            options.add_argument(f"--user-data-dir={_UC_PROFILE_DIR}")
+            print(f"  [driver] perfil persistente: {_UC_PROFILE_DIR}")
+        driver = uc.Chrome(options=options, use_subprocess=True, version_main=150)
+        print("  [driver] undetected-chromedriver listo")
+        return driver
+    except ImportError:
+        print("  [driver] undetected_chromedriver no instalado")
+        return None
+    except Exception as e:
+        print(f"  [driver] undetected-chromedriver error: {e}")
         return None
 
 
@@ -425,11 +521,49 @@ def _selenium_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
     driver = None
 
     try:
-        driver = _make_driver()
+        # En Windows usar undetected-chromedriver para mejor score reCAPTCHA v3
+        if sys.platform == "win32":
+            driver = _make_uc_driver()
+        if driver is None:
+            driver = _make_driver()
         wait = WebDriverWait(driver, 20)
 
+        # Pre-calentar sesión: visitar Google y Trabajando home antes del registro
+        # para que reCAPTCHA v3 acumule señales de comportamiento real en la sesión
+        print(f"  [debug] Pre-calentando sesión para reCAPTCHA...")
+        try:
+            driver.get("https://www.google.com")
+            time.sleep(3)
+            driver.execute_script("window.scrollBy(0, 300)")
+            time.sleep(1)
+            driver.get("https://www.trabajando.cl")
+            time.sleep(4)
+            driver.execute_script("window.scrollBy(0, 400)")
+            time.sleep(2)
+            # Limpiar sesión de Trabajando del perfil persistente: cookies + localStorage
+            # (sin esto, si el perfil guardó un JWT de un registro anterior, el browser
+            # entra logueado a /crea-tu-curriculum y Trabajando redirige → botón nunca aparece)
+            tbj_cookies = [c for c in driver.get_cookies()
+                           if "trabajando" in c.get("domain", "")]
+            for c in tbj_cookies:
+                try:
+                    driver.delete_cookie(c["name"])
+                except Exception:
+                    pass
+            if tbj_cookies:
+                print(f"  [debug] {len(tbj_cookies)} cookies Trabajando limpiadas del perfil")
+            try:
+                driver.execute_script("localStorage.clear(); sessionStorage.clear();")
+                print(f"  [debug] localStorage/sessionStorage Trabajando limpiados")
+            except Exception:
+                pass
+        except Exception:
+            pass
+
         driver.get("https://www.trabajando.cl/crea-tu-curriculum")
-        time.sleep(4)
+        # 10s iniciales — reCAPTCHA v3 observa comportamiento del browser antes
+        # de que interactuemos con el formulario (igual que el script anterior que funcionaba)
+        time.sleep(10)
 
         print(f"  [debug] URL: {driver.current_url}")
         print(f"  [debug] Title: {driver.title}")
@@ -440,32 +574,107 @@ def _selenium_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
         ))
         print(f"  [debug] Botón 'Crear mi cuenta' encontrado")
 
-        # Selectores independientes de la estructura del formulario.
-        # Vue re-renderiza el DOM al escribir en cada campo, así que NUNCA usamos
-        # referencias al árbol del <form> tras el primer llenado.
+        # Obtener token Capsolver con score alto ANTES de llenar el formulario
+        # (el token dura 2 min — tiempo suficiente para llenar y enviar)
+        _TBJ_SITEKEY = "6LdSrNIgAAAAAL4UEF1GehSd5-OgS3nypjAmz_hB"
+        _TBJ_REG_URL = "https://www.trabajando.cl/crea-tu-curriculum"
+        capsolver_token = _solve_recaptcha(_TBJ_SITEKEY, _TBJ_REG_URL, action="register")
+        # Interceptor fetch + XHR: reemplaza el token reCAPTCHA en el POST de registro.
+        # Cubre tanto fetch (estándar) como XMLHttpRequest (axios), que Vue puede usar.
+        # Para todas las demás llamadas pasa completamente transparente.
+        driver.execute_script("""
+            window.__capToken = arguments[0] || null;
+            window.__regLog   = [];
+            if (!window.__capToken) return;
+            var _tok = window.__capToken;
+
+            function walk(o) {
+                if (!o || typeof o !== 'object') return false;
+                var replaced = false;
+                Object.keys(o).forEach(function(k) {
+                    if (typeof o[k] === 'string' && o[k].length > 200) {
+                        o[k] = _tok; replaced = true;
+                    } else if (walk(o[k])) { replaced = true; }
+                });
+                return replaced;
+            }
+
+            // ── XHR (axios y similares) ───────────────────────────────────
+            var _xOpen = XMLHttpRequest.prototype.open;
+            var _xSend = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.open = function(method, url) {
+                this.__tbj_url = String(url || '');
+                return _xOpen.apply(this, arguments);
+            };
+            XMLHttpRequest.prototype.send = function(body) {
+                if (this.__tbj_url.includes('api.trabajando.com') && body && typeof body === 'string') {
+                    try {
+                        var b = JSON.parse(body);
+                        if (walk(b)) {
+                            body = JSON.stringify(b);
+                            var self = this;
+                            var origOnLoad = this.onload;
+                            this.addEventListener('load', function() {
+                                window.__regLog.push({url: self.__tbj_url.slice(0,120),
+                                    status: self.status, body: (self.responseText||'').slice(0,300),
+                                    req: '[XHR-REEMPLAZADO]'});
+                            });
+                        }
+                    } catch(e) {}
+                }
+                return _xSend.call(this, body);
+            };
+
+            // ── fetch ─────────────────────────────────────────────────────
+            var _orig = window.fetch;
+            window.fetch = function() {
+                var url  = String(arguments[0]);
+                var opts = arguments[1];
+                if (url.includes('api.trabajando.com') && opts && opts.body &&
+                        (!opts.method || opts.method.toUpperCase() !== 'GET')) {
+                    try {
+                        var body = JSON.parse(opts.body);
+                        if (walk(body)) {
+                            var newOpts = Object.assign({}, opts, {body: JSON.stringify(body)});
+                            var p = _orig.apply(this, [url, newOpts]);
+                            p.then(function(r) {
+                                r.clone().text().then(function(b) {
+                                    window.__regLog.push({url: url.slice(0,120),
+                                        status: r.status, body: b.slice(0,300),
+                                        req: '[FETCH-REEMPLAZADO]'});
+                                });
+                            }).catch(function(){});
+                            return p;
+                        }
+                    } catch(e) {}
+                }
+                return _orig.apply(this, arguments);
+            };
+        """, capsolver_token or "")
+        if capsolver_token:
+            print(f"  [debug] Interceptor fetch+XHR Capsolver listo ({len(capsolver_token)} chars)")
+        else:
+            print(f"  [debug] Sin token Capsolver — token nativo")
+
+        # Selectores absolutos del formulario (estables en Nuxt/Vue)
         SELECTORS = [
-            (By.XPATH, "(//form[.//button[contains(text(),'Crear mi cuenta')]]//input)[1]"),
-            (By.XPATH, "(//form[.//button[contains(text(),'Crear mi cuenta')]]//input)[2]"),
-            (By.CSS_SELECTOR, 'input[placeholder="999999999"]'),
-            (By.XPATH, "(//form[.//button[contains(text(),'Crear mi cuenta')]]//input)[4]"),
-            (By.CSS_SELECTOR, 'input[type="password"]'),
+            (By.XPATH, "//*[@id='__nuxt']//form/div/input[1]"),   # nombre
+            (By.XPATH, "//*[@id='__nuxt']//form/div/input[2]"),   # apellido
+            (By.CSS_SELECTOR, 'input[placeholder="999999999"]'),   # celular
+            (By.XPATH, "//*[@id='__nuxt']//form/div/input[3]"),   # email
+            (By.CSS_SELECTOR, 'input[type="password"]'),           # password
         ]
         VALUES = [nombre, apellido, celular_limpio, mail, clave]
 
         def set_field(selector_by, selector_val, value):
+            # send_keys() genera eventos de teclado reales — mejor score reCAPTCHA v3
+            # que el setter JS que dispara eventos sintéticos
             for attempt in range(3):
                 try:
                     el = wait.until(EC.presence_of_element_located((selector_by, selector_val)))
-                    # Usamos el setter nativo + eventos Vue para no tener stale refs
-                    # al escribir caracter por caracter.
-                    driver.execute_script("""
-                        var el = arguments[0], v = arguments[1];
-                        var setter = Object.getOwnPropertyDescriptor(
-                            window.HTMLInputElement.prototype, 'value').set;
-                        setter.call(el, v);
-                        el.dispatchEvent(new Event('input',  {bubbles: true}));
-                        el.dispatchEvent(new Event('change', {bubbles: true}));
-                    """, el, value)
+                    el.click()
+                    time.sleep(0.15)
+                    el.send_keys(value)
                     return
                 except Exception:
                     if attempt == 2:
@@ -475,53 +684,103 @@ def _selenium_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
         print(f"  [debug] Llenando formulario...")
         for i, ((by, sel), val) in enumerate(zip(SELECTORS, VALUES)):
             set_field(by, sel, val)
-            time.sleep(0.4)
-            print(f"  [debug] Campo {i} llenado, URL: {driver.current_url}")
-        time.sleep(1.5)
-
-        print(f"  [debug] Formulario llenado. URL: {driver.current_url}")
-
-        # Cerrar banner de cookies si aparece
-        try:
-            acepto = driver.find_element(By.XPATH, "//button[contains(text(),'Acepto')]")
-            driver.execute_script("arguments[0].click();", acepto)
             time.sleep(0.5)
-        except Exception:
-            pass
+            print(f"  [debug] Campo {i} llenado, URL: {driver.current_url}")
 
-        # Re-encontrar el botón (DOM pudo haber cambiado al llenar el formulario)
-        btn = wait.until(EC.presence_of_element_located(
-            (By.XPATH, "//button[contains(text(),'Crear mi cuenta')]")
-        ))
-        driver.execute_script("arguments[0].scrollIntoView(true);", btn)
-        time.sleep(0.3)
-        # Interceptar respuestas de red antes de submit
-        driver.execute_script("""
-            window.__regLog = [];
-            var _orig = window.fetch;
-            window.fetch = function() {
-                var url = String(arguments[0]);
-                var prom = _orig.apply(this, arguments);
-                prom.then(function(r) {
-                    r.clone().text().then(function(b) {
-                        window.__regLog.push({url:url.slice(0,80), status:r.status, body:b.slice(0,300)});
-                    });
-                });
-                return prom;
-            };
-        """)
-        driver.execute_script("arguments[0].click();", btn)
-        time.sleep(15)
+        # Polling: esperar hasta 10s para que reCAPTCHA ejecute y el form navegue
+        print(f"  [debug] Esperando auto-submit (hasta 10s)...")
+        for _ in range(20):
+            if "crea-tu-curriculum" not in driver.current_url:
+                break
+            time.sleep(0.5)
+
+        mid_url = driver.current_url
+        print(f"  [debug] URL tras polling: {mid_url}")
+
+        form_auto_submitted = "crea-tu-curriculum" not in mid_url
+
+        if form_auto_submitted:
+            # reCAPTCHA ejecutó y el form se envió solo — esperar que localStorage se escriba
+            print(f"  [debug] Formulario auto-enviado (reCAPTCHA nativo OK) — esperando sesión...")
+            time.sleep(8)
+            try:
+                reg_log = driver.execute_script("return window.__regLog || [];")
+                for e in reg_log:
+                    print(f"  [reg-api] {e.get('status')} {e.get('url')} req={e.get('req','')[:150]} -> {e.get('body','')[:200]}")
+            except Exception:
+                pass
+        else:
+            # Cerrar banner de cookies si aparece
+            try:
+                acepto = driver.find_element(By.XPATH, "//button[contains(text(),'Acepto')]")
+                driver.execute_script("arguments[0].click();", acepto)
+                time.sleep(0.5)
+            except Exception:
+                pass
+
+            # Re-encontrar el botón (DOM pudo haber cambiado al llenar el formulario)
+            btn = wait.until(EC.presence_of_element_located(
+                (By.XPATH, "//button[contains(text(),'Crear mi cuenta')]")
+            ))
+            driver.execute_script("arguments[0].scrollIntoView(true);", btn)
+            time.sleep(0.3)
+            # ActionChains genera mousemove + mousedown + mouseup + click reales
+            # (no sintéticos via JS) — necesario para que reCAPTCHA v3 ejecute
+            from selenium.webdriver.common.action_chains import ActionChains
+            ActionChains(driver).move_to_element(btn).pause(0.5).click().perform()
+            # Esperar hasta 30s para que reCAPTCHA ejecute y la página navegue
+            print(f"  [debug] Botón clickeado — esperando navegación (hasta 30s)...")
+            for _ in range(60):
+                if "crea-tu-curriculum" not in driver.current_url:
+                    break
+                time.sleep(0.5)
+            print(f"  [debug] URL post-click: {driver.current_url}")
 
         current_url = driver.current_url
         content = driver.page_source.lower()
 
-        # Debug: API calls y storage
+        # Debug: requests via JS __regLog (fetch/XHR interceptados en esta página)
         try:
             reg_log = driver.execute_script("return window.__regLog || [];")
             for e in reg_log:
-                print(f"  [reg-api] {e.get('status')} {e.get('url')} -> {e.get('body','')[:120]}")
-        except Exception: pass
+                print(f"  [reg-api] {e.get('status')} {e.get('req','')} {e.get('url','')} -> {e.get('body','')[:120]}")
+        except Exception:
+            pass
+
+        # Debug: performance logs de Chrome — captura TODAS las requests de red,
+        # incluidas las que ocurrieron antes de la navegación a otra página.
+        try:
+            import json as _json
+            perf_logs = driver.get_log("performance")
+            for log in perf_logs:
+                try:
+                    msg = _json.loads(log["message"])
+                    method = msg.get("message", {}).get("method", "")
+                    params = msg.get("message", {}).get("params", {})
+                    if method == "Network.requestWillBeSent":
+                        req = params.get("request", {})
+                        url = req.get("url", "")
+                        if "api.trabajando.com" in url:
+                            post = (req.get("postData") or "")[:150]
+                            print(f"  [perf-req] {url[:100]} body={post}")
+                    elif method == "Network.responseReceived":
+                        resp = params.get("response", {})
+                        url = resp.get("url", "")
+                        if "api.trabajando.com" in url:
+                            print(f"  [perf-resp] status={resp.get('status')} {url[:100]}")
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"  [perf] Error capturando logs: {e}")
+
+        # Browser console errors
+        try:
+            browser_logs = driver.get_log("browser")
+            for log in browser_logs:
+                if log.get("level") in ("SEVERE", "WARNING"):
+                    print(f"  [console-{log['level']}] {log.get('message','')[:200]}"[:220])
+        except Exception:
+            pass
         ss_items = {}
         try:
             ss_items = driver.execute_script(
@@ -547,8 +806,20 @@ def _selenium_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
             for k, v in store.items()
         )
 
+        # Verificar cookies de sesión (Trabajando usa cookies HTTP, no solo localStorage)
+        try:
+            all_driver_cookies = {c["name"]: c["value"] for c in driver.get_cookies()}
+            has_session_cookie = bool(all_driver_cookies.get("tbjsession") or
+                                      all_driver_cookies.get("candidato"))
+            print(f"  [debug] cookies sesión: tbjsession={bool(all_driver_cookies.get('tbjsession'))} candidato={bool(all_driver_cookies.get('candidato'))}")
+        except Exception:
+            all_driver_cookies = {}
+            has_session_cookie = False
+
         success_urls = ["cuenta-creada", "como-quieres", "mi-curriculum", "completar"]
-        if any(s in current_url for s in success_urls) or has_auth:
+        # Auto-envío solo cuenta si además hay cookie de sesión real
+        auto_ok = form_auto_submitted and "crea-tu-curriculum" not in current_url and has_session_cookie
+        if any(s in current_url for s in success_urls) or has_auth or auto_ok:
             print(f"  -> Registrado OK (auth={has_auth}), URL: {current_url}")
             # Completar wizard CV en la misma sesion (evita segundo login + reCAPTCHA)
             wizard_ok = False
@@ -584,6 +855,39 @@ def _selenium_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
             driver.quit()
             raise EmailTomadoError(mail)
 
+        # Última verificación: si la URL salió de /crea-tu-curriculum (incluso a home),
+        # navegar a /mi-curriculum para confirmar si la sesión quedó activa.
+        # El registro puede haber creado la cuenta y la sesión sin reflejar cookies
+        # inmediatamente en el driver (timing, cross-domain Set-Cookie, etc.).
+        if "crea-tu-curriculum" not in current_url:
+            try:
+                print(f"  [debug] URL cambió pero sin sesión detectada — verificando /mi-curriculum...")
+                driver.get("https://www.trabajando.cl/mi-curriculum")
+                time.sleep(4)
+                _check_url = driver.current_url
+                print(f"  [debug] Verificación: {_check_url[:80]}")
+                if any(s in _check_url for s in ["mi-curriculum", "como-quieres", "mi-area", "completar"]):
+                    print(f"  -> Sesión activa confirmada — guardando")
+                    if uid:
+                        try:
+                            _all_cookies = driver.get_cookies()
+                            _ls_items = driver.execute_script(
+                                "var r={}; for(var i=0;i<localStorage.length;i++){"
+                                "var k=localStorage.key(i); r[k]=localStorage.getItem(k);} return r;"
+                            ) or {}
+                            for k, v in _ls_items.items():
+                                if v and any(kw in k.lower() for kw in _TBJ_AUTH_KEYS + ["user", "session"]):
+                                    _all_cookies.append({"name": f"__ls_{k}", "value": v,
+                                                        "domain": ".trabajando.cl", "path": "/"})
+                            bq.save_portal_cookies(uid, "trabajando", _all_cookies, email=mail, password=clave)
+                            print(f"  -> {len(_all_cookies)} cookies guardadas para {uid}")
+                        except Exception as _save_e:
+                            print(f"  -> Error guardando cookies: {_save_e}")
+                    driver.quit()
+                    return True
+            except Exception as _ve:
+                print(f"  [debug] Error en verificación: {_ve}")
+
         print(f"  ! Trabajando: formulario no avanzó, URL: {current_url}")
         driver.quit()
         return False
@@ -605,6 +909,7 @@ def _selenium_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
 def _pw_make_context(pw):
     """Contexto Playwright con user-agent realista, headless en Cloud Run."""
     browser = pw.chromium.launch(
+        channel="chrome" if not _in_cloud_run else None,
         headless=_in_cloud_run,
         args=(["--no-sandbox", "--disable-dev-shm-usage",
                 "--disable-blink-features=AutomationControlled"]
@@ -617,6 +922,8 @@ def _pw_make_context(pw):
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         ),
         viewport={"width": 1366, "height": 768} if _in_cloud_run else None,
+        permissions=["geolocation"],
+        geolocation={"latitude": -33.4569, "longitude": -70.6483},
     )
     ctx.add_init_script(
         "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"
@@ -879,9 +1186,15 @@ def _pw_paso2_experiencia(page, user: dict):
     anio_ini  = str(user.get("anio_inicio") or "").strip()
     actualmente = bool(user.get("actualmente_trabajando", True))
     resumen   = str(user.get("resumen") or "").strip()
-    logros    = (resumen[:400] if resumen else
-                 "Gestión y coordinación de equipos, optimización de procesos "
-                 "y cumplimiento de objetivos estratégicos.")
+    _claude_c = user.get("_claude_content") or {}
+    logros    = (
+        _claude_c.get("logros") or
+        _claude_c.get("descripcion_exp") or
+        _claude_c.get("descripcion_experiencia") or
+        (resumen[:400] if resumen else
+         "Gestión y coordinación de equipos, optimización de procesos "
+         "y cumplimiento de objetivos estratégicos.")
+    )
 
     # Si empresa está vacía, generar con Claude (campo requerido en Trabajando.cl)
     if not empresa:
@@ -1264,13 +1577,27 @@ def _pw_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
                                  mail: str, clave: str, uid: str | None = None,
                                  user: dict | None = None) -> bool:
     """Crea cuenta en trabajando.cl con Playwright y completa wizard en misma sesión."""
-    from playwright.sync_api import sync_playwright
     celular_limpio = _clean_phone(celular) or "912345678"
 
-    with sync_playwright() as pw:
-        browser, ctx = _pw_make_context(pw)
+    pw = _get_global_pw()
+    browser, ctx = _pw_make_context(pw)
+    try:
         page = ctx.new_page()
         try:
+            # Interceptar grecaptcha.execute para capturar el action real de Trabajando
+            ctx.add_init_script("""
+                window.__rcAction = null;
+                const _origDefine = Object.defineProperty;
+                function _patchGrecaptcha() {
+                    if (!window.grecaptcha || !window.grecaptcha.execute) return;
+                    const orig = window.grecaptcha.execute;
+                    window.grecaptcha.execute = function(key, params) {
+                        if (params && params.action) window.__rcAction = params.action;
+                        return orig.apply(this, arguments);
+                    };
+                }
+                setInterval(_patchGrecaptcha, 300);
+            """)
             page.goto("https://www.trabajando.cl/crea-tu-curriculum", timeout=20000)
             page.wait_for_load_state("domcontentloaded", timeout=10000)
             print(f"  [pw-tbj] URL: {page.url}")
@@ -1284,10 +1611,49 @@ def _pw_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
                 _pw_vue_set(page, form_inputs.nth(i).element_handle(), val)
                 page.wait_for_timeout(400)
                 print(f"  [pw-tbj] Campo {i} llenado")
+            # Vue puede borrar el nombre al re-renderizar — re-llenarlo si quedó vacío
+            page.wait_for_timeout(300)
+            nombre_actual = form_inputs.nth(0).input_value() or ""
+            if not nombre_actual.strip():
+                _pw_vue_set(page, form_inputs.nth(0).element_handle(), nombre)
+                page.wait_for_timeout(300)
+                print(f"  [pw-tbj] Nombre re-rellenado: {nombre!r}")
 
             page.wait_for_timeout(1500)
             try: page.click("button:has-text('Acepto')", timeout=2000)
             except Exception: pass
+
+            # Resolver reCAPTCHA v3 antes de submit
+            _TBJ_REG_SITEKEY = "6LdSrNIgAAAAAL4UEF1GehSd5-OgS3nypjAmz_hB"
+            _TBJ_REG_URL     = "https://www.trabajando.cl/crea-tu-curriculum"
+            # Capturar el action real que usa Trabajando (interceptado en init_script)
+            page.wait_for_timeout(800)
+            rc_action = page.evaluate("() => window.__rcAction") or "register"
+            print(f"  [pw-tbj] reCAPTCHA action: {rc_action!r}")
+            captcha_token = _solve_recaptcha(_TBJ_REG_SITEKEY, _TBJ_REG_URL, action=rc_action)
+            if captcha_token:
+                page.evaluate("""(token) => {
+                    const ta = document.getElementById('g-recaptcha-response');
+                    if (ta) { ta.style.display = 'block'; ta.value = token; }
+                    document.querySelectorAll('textarea[name="g-recaptcha-response"]').forEach(el => { el.value = token; });
+                    if (window.grecaptcha) {
+                        window.grecaptcha.execute = () => Promise.resolve(token);
+                        const orig = window.grecaptcha.getResponse;
+                        window.grecaptcha.getResponse = () => token;
+                    }
+                    if (typeof ___grecaptcha_cfg !== 'undefined') {
+                        const clients = ___grecaptcha_cfg.clients || {};
+                        Object.values(clients).forEach(c => {
+                            if (c && c.callback) try { c.callback(token); } catch(e) {}
+                            Object.values(c || {}).forEach(v => {
+                                if (v && v.callback) try { v.callback(token); } catch(e) {}
+                            });
+                        });
+                    }
+                }""", captcha_token)
+                print(f"  [pw-tbj] reCAPTCHA token inyectado ({len(captcha_token)} chars)")
+            else:
+                print(f"  [pw-tbj] Sin token reCAPTCHA (TWOCAPTCHA_API_KEY no configurado o error)")
 
             page.click("button:has-text('Crear mi cuenta')")
             page.wait_for_timeout(15000)
@@ -1347,29 +1713,23 @@ def _pw_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
 
             return True
 
+        except EmailTomadoError:
+            raise
         except Exception as e:
             import traceback
             print(f"  [pw-tbj] Error: {e}"); traceback.print_exc()
             return False
         finally:
             browser.close()
+    except EmailTomadoError:
+        raise
 
 
 def crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
                              mail: str, clave: str, uid: str | None = None,
                              user: dict | None = None) -> bool:
-    """Crea cuenta en trabajando.cl. Intenta Playwright primero, Selenium como fallback."""
+    """Crea cuenta en trabajando.cl con Selenium + Capsolver (token de score alto)."""
     LAST_TBJ_ONBOARDING["wizard_ok"] = None
-    try:
-        print(f"  [tbj] Intentando Playwright...")
-        if _pw_crear_cuenta_trabajando(nombre, apellido, celular, mail, clave, uid=uid, user=user):
-            return True
-        print(f"  [tbj] Playwright no tuvo éxito — fallback a Selenium...")
-    except EmailTomadoError:
-        raise  # propagar para que get_or_create_account reintente con otro email
-    except Exception as e:
-        print(f"  [tbj] Playwright error: {e} — fallback a Selenium...")
-
     return _selenium_crear_cuenta_trabajando(nombre, apellido, celular, mail, clave, uid=uid, user=user)
 
 
@@ -1848,10 +2208,14 @@ def _paso2_experiencia(driver: webdriver.Chrome, user: dict) -> None:
 
     # Logros / descripción del cargo — editor contenteditable (Tiptap/ProseMirror)
     resumen = str(user.get("resumen") or "").strip()
+    _claude = user.get("_claude_content") or {}
     logros  = (
-        resumen[:400] if resumen else
-        "Gestión y coordinación de equipos, optimización de procesos operacionales "
-        "y cumplimiento de objetivos estratégicos de la organización."
+        _claude.get("logros") or
+        _claude.get("descripcion_exp") or
+        _claude.get("descripcion_experiencia") or
+        (resumen[:400] if resumen else
+         "Gestión y coordinación de equipos, optimización de procesos operacionales "
+         "y cumplimiento de objetivos estratégicos de la organización.")
     )
     # Buscar el div contenteditable (Tiptap) que esté vacío
     editables = driver.find_elements(By.CSS_SELECTOR, "div[contenteditable='true']")
@@ -2390,16 +2754,11 @@ def upload_cv_trabajando(email: str, password: str, cv_url: str, user: dict = No
             print(f"  -> Descargando CV desde {cv_url[:60]}...")
             tmp_dir = tempfile.mkdtemp()
             tmp_path = os.path.join(tmp_dir, "CV.pdf")
-            if "storage.googleapis.com" in cv_url or cv_url.startswith("gs://"):
+            if cv_url.startswith("gs://") or ("storage.googleapis.com" in cv_url and "?" not in cv_url):
                 from google.cloud import storage as gcs
-                if cv_url.startswith("gs://"):
-                    parts = cv_url[5:].split("/", 1)
-                else:
-                    parts = cv_url.replace("https://storage.googleapis.com/", "").split("/", 1)
-                bucket_name, blob_name = parts[0], parts[1]
-                gcs_client = gcs.Client()
-                blob = gcs_client.bucket(bucket_name).blob(blob_name)
-                blob.download_to_filename(tmp_path)
+                raw = cv_url[5:] if cv_url.startswith("gs://") else cv_url.replace("https://storage.googleapis.com/", "")
+                bucket_name, blob_name = raw.split("/", 1)
+                gcs.Client().bucket(bucket_name).blob(blob_name).download_to_filename(tmp_path)
             else:
                 r = requests.get(cv_url, timeout=30)
                 r.raise_for_status()
@@ -2971,7 +3330,8 @@ def get_trabajando_pw_session(uid: str, email: str, password: str):
             except Exception:
                 try:
                     _pw_sessions[key]["browser"].close()
-                    _pw_sessions[key]["pw"].stop()
+                    # NO llamar pw.stop() — es el singleton _global_pw, detenerlo
+                    # mata el subprocess de Playwright y el proceso entero con exit 255.
                 except Exception:
                     pass
                 del _pw_sessions[key]
@@ -3054,14 +3414,14 @@ def get_trabajando_pw_session(uid: str, email: str, password: str):
                 return page
             # Sesión incorrecta → limpiar y forzar login fresco
             try:
-                browser.close(); pw.stop()
+                browser.close()
             except Exception:
                 pass
 
         else:
             print(f"  -> Cookies PW invalidas o expiradas para {uid} — intentando login")
             try:
-                browser.close(); pw.stop()
+                browser.close()
             except Exception:
                 pass
     else:
@@ -3144,14 +3504,13 @@ def get_trabajando_pw_session(uid: str, email: str, password: str):
             _page2.close()
             try:
                 _browser2.close()
-                _pw2.stop()
             except Exception:
                 pass
     except Exception as _epw:
         print(f"  [pw-stealth] Error en login para {uid}: {_epw}")
         try:
-            _browser2.close()
-            _pw2.stop()
+            if _browser2:
+                _browser2.close()
         except Exception:
             pass
 
@@ -3206,7 +3565,7 @@ def get_trabajando_pw_session(uid: str, email: str, password: str):
         if "mi-curriculum" not in page.url:
             print(f"  -> Cookies Selenium→PW inválidas para {uid} (URL: {page.url[:60]})")
             try:
-                browser.close(); pw.stop()
+                browser.close()
             except Exception:
                 pass
             return None
@@ -3220,7 +3579,7 @@ def get_trabajando_pw_session(uid: str, email: str, password: str):
     except Exception as e:
         print(f"  -> Error convirtiendo sesión Selenium→PW {uid}: {e}")
         try:
-            browser.close(); pw.stop()
+            browser.close()
         except Exception:
             pass
         return None
@@ -3238,6 +3597,17 @@ def _close_pw_session(uid: str) -> None:
             except Exception:
                 pass
             del _pw_sessions[key]
+
+
+def _close_cht_pw_session(uid: str) -> None:
+    key = f"cht_{uid}"
+    with _cht_pw_lock:
+        if key in _cht_pw_sessions:
+            try:
+                _cht_pw_sessions[key]["browser"].close()
+            except Exception:
+                pass
+            del _cht_pw_sessions[key]
 
 
 # ── ChileTrabajos Playwright session ─────────────────────────────────────────
@@ -3272,10 +3642,9 @@ def get_chiletrabajos_pw_session(uid: str, email: str = "", password: str = ""):
     Estrategia:
       1. Cookies BQ (si existen y no expiraron)
       2. Login Playwright con email/password (fallback — funciona en Cloud Run)
-    Reutiliza la instancia Playwright de Trabajando.cl para evitar conflicto
-    de sync_playwright en el mismo thread.
+    Usa el singleton global de Playwright (_get_global_pw) para evitar el error
+    "Sync API inside asyncio loop" al procesar múltiples usuarios.
     """
-    from playwright.sync_api import sync_playwright
 
     key = f"cht_{uid}"
     with _cht_pw_lock:
@@ -3293,19 +3662,11 @@ def get_chiletrabajos_pw_session(uid: str, email: str = "", password: str = ""):
                     pass
                 del _cht_pw_sessions[key]
 
-    # Reutilizar la instancia Playwright de Trabajando.cl si existe en este thread
-    tbj_key = f"tbj_{uid}"
-    owns_pw = False
-    with _pw_lock:
-        existing_pw = _pw_sessions.get(tbj_key, {}).get("pw")
+    # Usar el singleton global de Playwright (nunca crear nueva instancia por usuario)
+    pw = _get_global_pw()
+    owns_pw = False  # nunca detenemos el singleton
 
-    if existing_pw is not None:
-        pw = existing_pw
-    else:
-        pw = sync_playwright().start()
-        owns_pw = True
-
-    _, browser, context, _ = _make_pw_context(pw if not owns_pw else None)
+    _, browser, context, _ = _make_pw_context(pw)
 
     def _cleanup():
         try:
@@ -3748,6 +4109,72 @@ def apply_trabajando_playwright(page, job_url: str, user: dict = {}, resumen: st
         def _ok():
             return {"ok": True, "empresa": empresa, "descripcion": descripcion}
 
+        # ── Pre-check: documentos requeridos ──────────────────────────────────
+        _docs_requeridos = []
+        try:
+            if page.locator('#documentosRequeridos').count() > 0:
+                for _fila in page.locator('.fila-documento').all():
+                    try:
+                        _lbl = _fila.locator('.nombre-documento').first.inner_text().strip()
+                        _iid = _fila.locator('input[type="file"]').first.get_attribute('id') or ""
+                        _docs_requeridos.append({'label': _lbl, 'inp_id': _iid})
+                    except Exception:
+                        pass
+                if _docs_requeridos:
+                    print(f"    [trabajando] Documentos requeridos: {[d['label'] for d in _docs_requeridos]}")
+        except Exception:
+            pass
+
+        if _docs_requeridos:
+            import unicodedata as _ud2, urllib.request as _ur2, tempfile as _tf2
+            def _es_cv(t):
+                nfkd = _ud2.normalize("NFKD", (t or "").lower())
+                s = _ud2.normalize("NFKC", nfkd.translate({0x0301: None, 0x0308: None}))
+                return any(w in s for w in ["cv", "curriculum", "curricul", "hoja de vida", "resume"])
+
+            _no_cv = [d['label'] for d in _docs_requeridos if not _es_cv(d['label'])]
+            if _no_cv:
+                print(f"    [trabajando] Docs no-CV requeridos {_no_cv} — saltando")
+                return {"ok": False, "documentos_requeridos": _no_cv}
+
+            _cv_url_u = user.get("CV_URL") or user.get("cv_url") or ""
+            if not _cv_url_u:
+                print(f"    [trabajando] Docs requeridos pero sin CV_URL — saltando")
+                return {"ok": False, "documentos_requeridos": True}
+
+            _cv_tmp = None
+            try:
+                if "storage.googleapis.com" in _cv_url_u or _cv_url_u.startswith("gs://"):
+                    try:
+                        from google.cloud import storage as _gcs2
+                        _cl2 = _gcs2.Client()
+                        _p2 = (_cv_url_u[5:] if _cv_url_u.startswith("gs://")
+                               else _cv_url_u.replace("https://storage.googleapis.com/", ""))
+                        _bkt2, _blb2 = _p2.split("/", 1)
+                        _t2 = _tf2.NamedTemporaryFile(delete=False, suffix=".pdf")
+                        _cl2.bucket(_bkt2).blob(_blb2).download_to_filename(_t2.name)
+                        _t2.close(); _cv_tmp = _t2.name
+                    except Exception as _e2:
+                        print(f"    [trabajando] GCS fail: {_e2}")
+                if not _cv_tmp:
+                    _rq2 = _ur2.Request(_cv_url_u, headers={"User-Agent": "Mozilla/5.0"})
+                    with _ur2.urlopen(_rq2, timeout=30) as _rsp2:
+                        _dt2 = _rsp2.read()
+                    _t2 = _tf2.NamedTemporaryFile(delete=False, suffix=".pdf")
+                    _t2.write(_dt2); _t2.close(); _cv_tmp = _t2.name
+            except Exception as _e2:
+                print(f"    [trabajando] Error descargando CV para docs: {_e2} — saltando")
+                return {"ok": False, "documentos_requeridos": True}
+
+            for _d2 in _docs_requeridos:
+                try:
+                    page.locator(f'#{_d2["inp_id"]}').set_input_files(_cv_tmp)
+                    page.wait_for_timeout(400)
+                    print(f"    [trabajando] CV adjuntado: {_d2['label']}")
+                except Exception as _e2:
+                    print(f"    [trabajando] Error adjuntando {_d2['inp_id']}: {_e2} — saltando")
+                    return {"ok": False, "documentos_requeridos": True}
+
         # ── Paso 1: click botón postular ──────────────────────────────────────
         clickeado = False
         for sel in [
@@ -3949,6 +4376,13 @@ def apply_trabajando_playwright(page, job_url: str, user: dict = {}, resumen: st
                     return unicodedata.normalize("NFKC", nfkd.translate({0x0301: None, 0x0308: None}))
 
                 _rsm_prefix = (user.get("resumen") or user.get("RESUMEN") or "")[:60]
+                # Fallback genérico que genera _standard_answer cuando resumen está vacío
+                _exp_local = str(user.get("experiencia") or user.get("EXPERIENCIA") or "5")
+                try:
+                    _exp_local = str(int(_exp_local.replace(" años","").replace(" anios","").strip()))
+                except Exception:
+                    _exp_local = "5"
+                _generic_sentinel = f"Profesional con {_exp_local} años de experiencia"
 
                 for idx, item in enumerate(preguntas):
                     lbl_n = _norm_local((item.get("label") or "") + " " + (item.get("placeholder") or ""))
@@ -3959,10 +4393,13 @@ def apply_trabajando_playwright(page, job_url: str, user: dict = {}, resumen: st
                         resp = None
                     else:
                         resp = _standard_answer(item, user, _norm_local)
-                    # Si la respuesta es el resumen genérico (secciones 18/19), mandar a Claude
-                    # Se aplica a CUALQUIER pregunta, no solo es_d=True
-                    if resp is not None and _rsm_prefix and str(resp).startswith(_rsm_prefix):
-                        resp = None
+                    # Mandar a Claude si la respuesta es el resumen del candidato
+                    # (secciones 18/19) o el fallback genérico (resumen vacío)
+                    if resp is not None:
+                        resp_s = str(resp)
+                        if ((_rsm_prefix and resp_s.startswith(_rsm_prefix)) or
+                                resp_s.startswith(_generic_sentinel)):
+                            resp = None
                     if resp is not None:
                         answers[idx] = (resp, "perfil")
 
@@ -4215,12 +4652,13 @@ def _jau_match_score(titulo_empleo: str, user_cargos: list) -> int:
                 mejor = max(mejor, int(80 * comunes / len(palabras)))
     return min(mejor, 100)
 
-_JAU_SCORE_MINIMO = 40
+_JAU_SCORE_MINIMO = 25
 
 
-def job_aplica_al_usuario(titulo: str, empresa: str, user: dict) -> tuple[bool, str]:
+def job_aplica_al_usuario(titulo: str, empresa: str, user: dict, check_score: bool = True) -> tuple[bool, str]:
     """
     Filtra empleos que no corresponden al perfil del usuario.
+    check_score=False omite el match de título (para cuando se usa LLM como filtro de relevancia).
     Retorna (aplica, motivo_descarte).
     """
     import json as _json
@@ -4264,18 +4702,19 @@ def job_aplica_al_usuario(titulo: str, empresa: str, user: dict) -> tuple[bool, 
     if jornada == "FULL_TIME" and es_part:
         return False, "part-time (usuario busca full-time)"
 
-    # Match con perfil del usuario (score ≥ 40 para aplicar)
-    import json as _json2
-    cargos = user.get("CARGOS") or user.get("cargos") or []
-    if isinstance(cargos, str):
-        try:    cargos = _json2.loads(cargos)
-        except: cargos = [cargos]
-    profesion = user.get("PROFESION") or user.get("profesion") or ""
-    perfil_cargos = [c for c in list(cargos) + [profesion] if c]
-    if perfil_cargos:
-        score = _jau_match_score(titulo, perfil_cargos)
-        if score < _JAU_SCORE_MINIMO:
-            return False, f"sin match con perfil (score={score})"
+    # Match por score de título (omitir si check_score=False — el caller usa LLM en su lugar)
+    if check_score:
+        import json as _json2
+        cargos = user.get("CARGOS") or user.get("cargos") or []
+        if isinstance(cargos, str):
+            try:    cargos = _json2.loads(cargos)
+            except: cargos = [cargos]
+        profesion = user.get("PROFESION") or user.get("profesion") or ""
+        perfil_cargos = [c for c in list(cargos) + [profesion] if c]
+        if perfil_cargos:
+            score = _jau_match_score(titulo, perfil_cargos)
+            if score < _JAU_SCORE_MINIMO:
+                return False, f"sin match con perfil (score={score})"
 
     return True, ""
 
@@ -4331,17 +4770,20 @@ def _standard_answer(item: dict, user: dict, norm_fn=None) -> "str | None":
     desc_exp = resumen_val[:400] if resumen_val else f"Soy {profesion_val} con {exp} años de experiencia en el área."
 
     # ── 1. Sueldo / pretensión / renta ────────────────────────────────────────
-    if any(k in label for k in [
+    # "RENTA" usa word-level check para no disparar con "RENTABILIDAD"
+    _pad = f" {label} "
+    _es_sueldo = any(k in label for k in [
         "PRETENSION", "PRETENSIONES", "EXPECTATIVA DE SUELDO", "EXPECTATIVA SALARIAL",
         "EXPECTATIVA DE RENTA", "EXPECTATIVA ECONOMICA", "EXPECTATIVA DE SALARIO",
         "SUELDO", "SUELDO ESPERADO", "SUELDO PRETENDIDO", "SUELDO LIQUIDO", "SUELDO BRUTO",
-        "RENTA", "RENTA ESPERADA", "RENTA PRETENDIDA", "RENTA LIQUIDA", "RENTA BRUTA",
+        "RENTA ESPERADA", "RENTA PRETENDIDA", "RENTA LIQUIDA", "RENTA BRUTA",
         "SALARIO", "SALARIO ESPERADO", "SALARIO PRETENDIDO", "SALARIO BRUTO", "SALARIO LIQUIDO",
         "REMUNERACION", "REMUNERACION ESPERADA", "REMUNERACION PRETENDIDA",
         "LIQUID", "BRUTO", "COMPENSACION", "COMPENSATION",
         "SALARY", "SALARY EXPECTATION", "EXPECTED SALARY", "DESIRED SALARY",
         "WAGE", "PAY EXPECTATION", "REMUNERATION",
-    ]):
+    ]) or f" RENTA " in _pad or f" SUELDO " in _pad
+    if _es_sueldo:
         return pret_num or "2000000"
 
     # ── 2. Años de experiencia (número) ──────────────────────────────────────
@@ -4368,21 +4810,32 @@ def _standard_answer(item: dict, user: dict, norm_fn=None) -> "str | None":
         "COMPARTE",
         "EXPONGA", "EXPONE",
     ])
-    if not _es_descriptiva and "EXPERIENCIA" in label and any(k in label for k in [
-        "ANOS", "AÑOS", "TIEMPO", "CUANTO", "CUANTOS", "YEARS", "HOW MANY",
-    ]):
+    # Word-boundary check para no disparar con "HUMANOS" (contiene "ANOS")
+    if not _es_descriptiva and "EXPERIENCIA" in label and any(
+        f" {k} " in _pad for k in ["ANOS", "AÑOS", "TIEMPO", "CUANTOS", "YEARS", "HOW MANY"]
+    ):
         return exp
 
+    # "Cuál es su experiencia en el área de X?" → respuesta descriptiva (evita LLM)
+    if inp_type in ("textarea", "text") and "EXPERIENCIA" in label and any(k in label for k in [
+        "CUAL ES", "EN EL AREA", "EN EL RUBRO", "EN EL CARGO",
+        "EN SU AREA", "EN SU RUBRO", "EN EL SECTOR", "EN RR", "EN RRHH",
+        "EN RECURSOS", "EN SELEC", "EN GESTION", "SU EXP",
+    ]):
+        return desc_exp
+
     # ── 3. Teléfono (solo si NO también pide correo — ese caso va a sección 4) ──
+    # "MOVIL" usa word-level check (_pad) para no disparar con "MOVILIZACION/MOVILIDAD"
     _pide_correo = any(k in label for k in ["CORREO", "EMAIL", "MAIL", "E-MAIL"])
-    if not _pide_correo and any(k in label for k in [
-        "TELEFONO", "TELÉFONO", "CELULAR", "MOVIL", "MÓVIL", "FONO",
+    _tiene_telefono = any(k in label for k in [
+        "TELEFONO", "TELÉFONO", "CELULAR", "FONO",
         "NUMERO DE TELEFONO", "NÚMERO DE TELÉFONO", "NUMERO DE CONTACTO",
         "NUMERO CELULAR", "NÚMERO CELULAR", "NUMERO MOVIL", "NÚMERO MÓVIL",
         "CONTACTO TELEFONICO", "CONTACTO TELEFÓNICO",
         "PHONE", "PHONE NUMBER", "CELL", "CELL PHONE", "MOBILE", "MOBILE NUMBER",
         "CONTACT NUMBER", "TELEPHONE",
-    ]):
+    ]) or f" MOVIL " in _pad or f" MÓVIL " in _pad
+    if not _pide_correo and _tiene_telefono:
         return cel_9 or None  # si no hay teléfono, continuar a siguiente sección
 
     # ── 4. Email ──────────────────────────────────────────────────────────────
@@ -4467,9 +4920,9 @@ def _standard_answer(item: dict, user: dict, norm_fn=None) -> "str | None":
 
     # ── 13. Nivel educativo ───────────────────────────────────────────────────
     if any(k in label for k in [
-        "NIVEL EDUCATIVO", "NIVEL DE ESTUDIO", "NIVEL ACADEMICO", "NIVEL ACADÉMICO",
-        "GRADO DE INSTRUCCION", "GRADO DE INSTRUCCIÓN", "NIVEL DE FORMACION",
-        "NIVEL DE FORMACIÓN", "MAXIMO NIVEL", "MÁXIMO NIVEL",
+        "NIVEL EDUCATIVO", "NIVEL EDUCACIONAL", "NIVEL DE ESTUDIO", "NIVEL ACADEMICO",
+        "NIVEL ACADÉMICO", "GRADO DE INSTRUCCION", "GRADO DE INSTRUCCIÓN",
+        "NIVEL DE FORMACION", "NIVEL DE FORMACIÓN", "MAXIMO NIVEL", "MÁXIMO NIVEL",
         "EDUCATION LEVEL", "HIGHEST EDUCATION", "EDUCATIONAL LEVEL",
         "LEVEL OF EDUCATION", "ACADEMIC LEVEL",
     ]):
@@ -4494,16 +4947,9 @@ def _standard_answer(item: dict, user: dict, norm_fn=None) -> "str | None":
     ]):
         return empresa_val
 
-    # ── 16. Ciudad / ubicación ────────────────────────────────────────────────
-    if any(k in label for k in [
-        "CIUDAD", "CIUDAD DE RESIDENCIA", "CIUDAD ACTUAL", "UBICACION", "UBICACIÓN",
-        "LOCALIDAD", "REGION", "REGIÓN", "COMUNA", "DOMICILIO",
-        "CIUDAD DONDE VIVES", "LUGAR DE RESIDENCIA",
-        "CITY", "LOCATION", "CURRENT LOCATION", "RESIDENCE",
-    ]):
-        return ciudad_val
-
-    # ── 17. Disponibilidad ────────────────────────────────────────────────────
+    # ── 16. Disponibilidad ────────────────────────────────────────────────────
+    # ANTES que ciudad: "¿Tienes disponibilidad para trabajar en la Región Metropolitana?"
+    # contiene "REGION" → sin este orden devolvería la ciudad en lugar de "Inmediata"
     if any(k in label for k in [
         "DISPONIBILIDAD", "DISPONIBILIDAD PARA", "DISPONIBLE PARA", "DISPONIBLE DESDE",
         "CUANDO PUEDES", "CUANDO PODRIAS", "INCORPORACION", "INCORPORACIÓN",
@@ -4512,6 +4958,15 @@ def _standard_answer(item: dict, user: dict, norm_fn=None) -> "str | None":
         "NOTICE PERIOD", "JOINING DATE",
     ]):
         return "Inmediata"
+
+    # ── 17. Ciudad / ubicación ────────────────────────────────────────────────
+    if any(k in label for k in [
+        "CIUDAD", "CIUDAD DE RESIDENCIA", "CIUDAD ACTUAL", "UBICACION", "UBICACIÓN",
+        "LOCALIDAD", "REGION", "REGIÓN", "COMUNA", "DOMICILIO",
+        "CIUDAD DONDE VIVES", "LUGAR DE RESIDENCIA",
+        "CITY", "LOCATION", "CURRENT LOCATION", "RESIDENCE",
+    ]):
+        return ciudad_val
 
     # ── 18. Experiencia descriptiva (abierta) ─────────────────────────────────
     # Solo si NO es pregunta larga con verbo descriptivo (esas van a Claude)
@@ -4545,9 +5000,21 @@ def _standard_answer(item: dict, user: dict, norm_fn=None) -> "str | None":
             return pret_num
         return exp
 
-    # ── 21. Textarea sin label reconocida → resumen ───────────────────────────
+    # ── 21. Textarea: solo responder sin LLM para preguntas descriptivas genéricas ──
+    # Preguntas específicas (herramientas, software, situaciones concretas) → Claude
     if inp_type == "textarea":
-        return resumen_val[:400] if resumen_val else f"Profesional con {exp} años de experiencia en el área."
+        if _es_descriptiva:
+            # "Descríbase", "Cuéntenos", "Explique..." → resumen personal
+            return resumen_val[:400] if resumen_val else f"Profesional con {exp} años de experiencia en el área."
+        _label_corto = len(label) < 25
+        _es_generica = any(k in label for k in [
+            "OTRO", "COMENTARIO", "ADICIONAL", "OBSERVACION", "OBSERVACIÓN",
+            "INFORMACION", "INFORMACIÓN", "ALGO MAS", "ALGO MÁS",
+        ])
+        if _label_corto or _es_generica:
+            return resumen_val[:200] if resumen_val else f"Profesional con {exp} años de experiencia."
+        # Pregunta específica (herramienta, software, certificación, etc.) → Claude
+        return None
 
     # ── 22. Cache de respuestas aprendidas ────────────────────────────────────
     cached = _get_cached_answer(item.get("label", ""), inp_type)
@@ -4736,21 +5203,22 @@ def _llm_answer_questions(questions: list[dict], user: dict, cv_text: str = "", 
 
     preguntas_txt = "\n".join(_fmt_q(i, q) for i, q in enumerate(questions))
 
-    prompt = f"""Eres esta persona y estás completando un formulario de postulación{cargo_txt} en Chile.
+    prompt = f"""Eres esta persona completando un formulario de postulación{cargo_txt} en Chile.
 
 {contexto}{desc_empleo_txt}
 PREGUNTAS DEL FORMULARIO:
 {preguntas_txt}
 
-Reglas:
-- Responde en primera persona, como si fueras el candidato
-- type="number" o preguntas de sueldo/renta/pretensión: solo dígitos sin puntos (ej: "2000000")
-- type="tel": número de teléfono (solo 9 dígitos si así lo pide el campo)
-- type="select": DEBES responder con el value exacto de una de las opciones listadas (ej: si opciones son 'Sí' (value=1) y 'No' (value=0), responde "1" o "0"). Elige la opción que más se ajusta al perfil
-- Preguntas abiertas: respuesta concisa (1-3 oraciones) usando experiencias reales del CV/perfil
-- Si NO tienes experiencia específica con algo: menciona tecnologías o experiencias similares y destaca tu capacidad de aprendizaje. NO inventes cargos, empresas ni años
-- Preguntas Sí/No en textarea: responde "Sí" o "No" + una oración de contexto
-- Nunca uses frases genéricas vacías; sé específico con lo que sí tienes
+REGLAS (sigue cada una al pie de la letra):
+- type="radio": responde EXACTAMENTE con el texto de UNA opción (ej: "SI" o "NO"). Sin explicación.
+- type="select": responde con el value exacto de la opción elegida (ej: "1"). Sin explicación.
+- type="number": solo dígitos sin puntos ni comas (ej: "2000000").
+- type="tel": solo dígitos, 9 caracteres.
+- type="textarea" pregunta de sí/no o disponibilidad: empieza con "Sí" o "No", luego agrega UNA oración específica de tu experiencia real. Máx 2 oraciones.
+- type="textarea" abierta: 2 oraciones concretas usando tu cargo, empresa o habilidades reales. Sin frases genéricas como "soy una persona proactiva".
+- Disponibilidad → siempre Sí (disponibilidad inmediata).
+- Renta/sueldo/pretensión en textarea → escribe el número en CLP (ej: "2000000 líquidos").
+- NO inventes cargos, empresas ni años que no estén en tu perfil.
 
 Responde SOLO con JSON: {{"0": "respuesta0", "1": "respuesta1", ...}}
 Nada más, solo el JSON."""
@@ -4782,6 +5250,136 @@ Nada más, solo el JSON."""
     except Exception as e:
         print(f"    [Claude] ERROR: {e}")
         return {}
+
+
+def _titulo_gate(titulo: str, user: dict) -> str:
+    """
+    Pre-filtro rápido por título antes de llamar al LLM.
+    Retorna 'aprobar' (score muy alto), 'rechazar' (score casi cero), o 'evaluar' (llamar LLM).
+    Umbrales: >=75 aprobar automático, <15 rechazar automático, resto → LLM.
+    """
+    import json as _json2
+    cargos = user.get("CARGOS") or user.get("cargos") or []
+    if isinstance(cargos, str):
+        try:    cargos = _json2.loads(cargos)
+        except: cargos = [cargos]
+    profesion = user.get("PROFESION") or user.get("profesion") or ""
+    perfil_cargos = [c for c in list(cargos) + [profesion] if c]
+    if not perfil_cargos:
+        return "evaluar"
+    score = _jau_match_score(titulo, perfil_cargos)
+    if score >= 75:
+        return "aprobar"
+    if score < 15:
+        return "rechazar"
+    return "evaluar"
+
+
+def _llm_job_aplica(
+    descripcion: str, titulo: str, empresa: str, user: dict,
+    link: str = "", portal: str = "",
+) -> tuple[bool, str]:
+    """
+    Usa Claude Haiku para determinar si la oferta aplica al perfil del usuario.
+    Consulta caché BQ antes de llamar — guarda resultado después.
+    Retorna (aplica: bool, razon: str). Si no hay API key o falla, acepta por defecto.
+    """
+    import json as _json
+
+    uid = str(user.get("ID_USUARIO") or user.get("id_usuario") or "").strip()
+
+    # ── Caché BQ ─────────────────────────────────────────────────────────────
+    if uid and link:
+        cached = bq.get_evaluacion_empleo(uid, link)
+        if cached is not None:
+            aplica = bool(cached.get("aplica"))
+            razon  = str(cached.get("razon") or "")
+            print(f"    [LLM-filtro] caché: {'✓' if aplica else '✗'} {razon[:60]}")
+            return aplica, razon
+
+    ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not ANTHROPIC_API_KEY:
+        return True, "sin API key — aceptar"
+    if not descripcion and not titulo:
+        return True, "sin datos — aceptar"
+
+    try:
+        import anthropic as _anthropic
+        _client = _anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    except ImportError:
+        return True, "anthropic no instalado"
+
+    # ── Perfil compacto del candidato ─────────────────────────────────────────
+    cargos = user.get("CARGOS") or []
+    if isinstance(cargos, str):
+        try: cargos = _json.loads(cargos)
+        except: cargos = [cargos]
+    ubicaciones = user.get("UBICACIONES") or []
+    if isinstance(ubicaciones, str):
+        try: ubicaciones = _json.loads(ubicaciones)
+        except: ubicaciones = [ubicaciones]
+
+    perfil_parts = []
+    if user.get("PROFESION"):          perfil_parts.append(f"Profesión: {user['PROFESION']}")
+    if cargos:                          perfil_parts.append(f"Cargos buscados: {', '.join(str(c) for c in cargos)}")
+    if user.get("RESUMEN"):             perfil_parts.append(f"Resumen: {str(user['RESUMEN'])[:200]}")
+    if user.get("EXPERIENCIA"):         perfil_parts.append(f"Experiencia: {str(user['EXPERIENCIA'])[:300]}")
+    if user.get("EMPRESA"):             perfil_parts.append(f"Empresa actual/última: {user['EMPRESA']}")
+    if user.get("PRETENSION_GENERAL"):  perfil_parts.append(f"Pretensión salarial: {user['PRETENSION_GENERAL']}")
+    if ubicaciones:                     perfil_parts.append(f"Ubicaciones: {', '.join(str(u) for u in ubicaciones)}")
+    if user.get("CARRERA"):             perfil_parts.append(f"Carrera: {user['CARRERA']}")
+    if user.get("NIVEL_EDUCATIVO"):     perfil_parts.append(f"Educación: {user['NIVEL_EDUCATIVO']}")
+    if user.get("TIPO_BUSQUEDA"):       perfil_parts.append(f"Tipo búsqueda: {user['TIPO_BUSQUEDA']}")
+    if user.get("JORNADA"):             perfil_parts.append(f"Jornada: {user['JORNADA']}")
+
+    perfil_str = "\n".join(perfil_parts) or "Sin datos de perfil"
+    desc_str   = (descripcion or "Sin descripción").strip()[:1500]
+
+    prompt = f"""Eres un evaluador de postulaciones laborales en Chile. Debes decidir si vale la pena que este candidato postule a esta oferta.
+
+PERFIL DEL CANDIDATO:
+{perfil_str}
+
+OFERTA:
+Título: {titulo}
+Empresa: {empresa}
+Descripción:
+{desc_str}
+
+INSTRUCCIONES:
+1. Identifica las principales FUNCIONES del cargo. Evalúa si el candidato, según su experiencia y perfil, es capaz de realizarlas.
+2. Identifica los principales REQUISITOS (educación, años de experiencia, herramientas, certificaciones). Evalúa si el candidato los cumple o se acerca.
+3. Decide:
+   - SÍ: el candidato puede realizar las funciones Y cumple la mayoría de los requisitos (no necesita cumplirlos todos).
+   - NO: las funciones requieren una especialidad que el candidato claramente no tiene, o los requisitos técnicos son incompatibles con su perfil.
+
+No rechaces por industria diferente si las funciones son similares. Sí rechaza si las funciones o requisitos técnicos son incompatibles.
+
+Responde SOLO en este formato (nada más):
+SÍ - [razón máximo 10 palabras]
+NO - [razón máximo 10 palabras]"""
+
+    try:
+        resp = _client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=60,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = (resp.content[0].text if resp.content else "").strip()
+        upper = text.upper()
+        aplica = upper.startswith("SÍ") or upper.startswith("SI")
+        print(f"    [LLM-filtro] {'✓' if aplica else '✗'} {text[:80]}")
+
+        # ── Guardar en caché ──────────────────────────────────────────────────
+        if uid and link:
+            try:
+                bq.save_evaluacion_empleo(uid, link, portal, titulo, aplica, text)
+            except Exception:
+                pass
+
+        return aplica, text
+    except Exception as e:
+        return True, f"error LLM: {e}"
 
 
 def _responder_preguntas(driver, user: dict = {}):
