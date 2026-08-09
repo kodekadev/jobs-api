@@ -3,7 +3,7 @@ import { BigQueryService } from '../../shared/infrastructure/services/bigquery.s
 import env from '../../shared/infrastructure/environment';
 
 const PLAN_LIMITE: Record<string, number> = {
-  TRIAL: 5, PRO: 10, TURBO: 15, PREMIUM: 20, SPRINT: 25, OWNER: 50, FREE: 0,
+  FREE: 5, TRIAL: 20, PRO: 25, TURBO: 15, PREMIUM: 50, SPRINT: 40, OWNER: 75,
 };
 
 @Injectable()
