@@ -44,13 +44,15 @@ export class AdminService {
         MAX(CASE WHEN cp.PORTAL = 'chiletrabajos' THEN COALESCE(cp.CV_COMPLETO, FALSE) ELSE FALSE END) AS cv_chiletrabajos,
         MAX(CASE WHEN cp.PORTAL = 'computrabajo'  THEN COALESCE(cp.CV_COMPLETO, FALSE) ELSE FALSE END) AS cv_computrabajo,
         MAX(CASE WHEN cp.PORTAL = 'laborum'       THEN COALESCE(cp.CV_COMPLETO, FALSE) ELSE FALSE END) AS cv_laborum,
-        COUNTIF(EXTRACT(DATE FROM e.FECHA_POSTULACION AT TIME ZONE 'America/Santiago') = CURRENT_DATE('America/Santiago')) AS postulaciones_hoy,
-        COUNTIF(e.FECHA_POSTULACION >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY))             AS postulaciones_7dias,
-        COUNTIF(e.FECHA_POSTULACION >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND LOWER(COALESCE(e.PORTAL,'')) = 'trabajando')    AS postulaciones_7dias_tbj,
-        COUNTIF(e.FECHA_POSTULACION >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND LOWER(COALESCE(e.PORTAL,'')) = 'chiletrabajos') AS postulaciones_7dias_cht,
-        COUNTIF(e.FECHA_POSTULACION >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND LOWER(COALESCE(e.PORTAL,'')) = 'computrabajo')  AS postulaciones_7dias_cpt,
-        COUNTIF(e.FECHA_POSTULACION >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND LOWER(COALESCE(e.PORTAL,'')) = 'laborum')       AS postulaciones_7dias_lab,
-        COUNT(e.LINK)                                                    AS total_postulaciones
+        -- Postulation counts come from a pre-aggregated subquery to avoid
+        -- Cartesian multiplication with CUENTAS_PORTALES rows.
+        MAX(COALESCE(e.postulaciones_hoy,       0))                      AS postulaciones_hoy,
+        MAX(COALESCE(e.postulaciones_7dias,     0))                      AS postulaciones_7dias,
+        MAX(COALESCE(e.postulaciones_7dias_tbj, 0))                      AS postulaciones_7dias_tbj,
+        MAX(COALESCE(e.postulaciones_7dias_cht, 0))                      AS postulaciones_7dias_cht,
+        MAX(COALESCE(e.postulaciones_7dias_cpt, 0))                      AS postulaciones_7dias_cpt,
+        MAX(COALESCE(e.postulaciones_7dias_lab, 0))                      AS postulaciones_7dias_lab,
+        MAX(COALESCE(e.total_postulaciones,     0))                      AS total_postulaciones
       FROM ${this.bq.t('USUARIOS')} u
       LEFT JOIN (
         SELECT ID_USUARIO, PLAN, ESTADO, FECHA_FIN
@@ -62,7 +64,19 @@ export class AdminService {
       LEFT JOIN ${this.bq.t('POSTULACIONES_AUTO')} pa ON LOWER(u.ID_USUARIO) = LOWER(pa.id_usuario)
       LEFT JOIN ${this.bq.t('POSTULA_FACIL')}      pf ON u.ID_USUARIO = pf.ID_USUARIO
       LEFT JOIN ${this.bq.t('CUENTAS_PORTALES')}   cp ON LOWER(u.ID_USUARIO) = LOWER(cp.ID_USUARIO)
-      LEFT JOIN ${this.bq.t('EMPLEOS')}             e  ON u.ID_USUARIO = e.ID_USUARIO
+      LEFT JOIN (
+        SELECT
+          ID_USUARIO,
+          COUNTIF(EXTRACT(DATE FROM FECHA_POSTULACION AT TIME ZONE 'America/Santiago') = CURRENT_DATE('America/Santiago')) AS postulaciones_hoy,
+          COUNTIF(FECHA_POSTULACION >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY))                                AS postulaciones_7dias,
+          COUNTIF(FECHA_POSTULACION >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND LOWER(COALESCE(PORTAL,'')) = 'trabajando')    AS postulaciones_7dias_tbj,
+          COUNTIF(FECHA_POSTULACION >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND LOWER(COALESCE(PORTAL,'')) = 'chiletrabajos') AS postulaciones_7dias_cht,
+          COUNTIF(FECHA_POSTULACION >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND LOWER(COALESCE(PORTAL,'')) = 'computrabajo')  AS postulaciones_7dias_cpt,
+          COUNTIF(FECHA_POSTULACION >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND LOWER(COALESCE(PORTAL,'')) = 'laborum')       AS postulaciones_7dias_lab,
+          COUNT(LINK) AS total_postulaciones
+        FROM ${this.bq.t('EMPLEOS')}
+        GROUP BY ID_USUARIO
+      ) e ON u.ID_USUARIO = e.ID_USUARIO
       GROUP BY u.ID_USUARIO, u.NOMBRE, u.EMAIL, pc.PLAN, pc.ESTADO, pc.FECHA_FIN,
                pa.activo, pf.ID_USUARIO, pf.CARGOS, pf.UBICACIONES
       ORDER BY u.ID_USUARIO
