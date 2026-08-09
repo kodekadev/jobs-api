@@ -1,13 +1,19 @@
 """
-Crea cuentas en Trabajando.cl, ChileTrabajos, Computrabajo y Laborum para todos
-los usuarios que llenaron el formulario Postula Fácil.
-
-Solo crea las cuentas y guarda las credenciales en BQ.
-Para llenar el CV después, ejecutar completar_cvs_portales.py.
+Crea cuentas en los portales para todos los usuarios que llenaron Postula Fácil.
 
 Ejecutar desde terminal o Spyder (F5):
-    python crear_cuentas_portales.py              # todos los usuarios
-    python crear_cuentas_portales.py jobs8        # solo un usuario
+    python crear_cuentas_portales.py                          # todos los portales, todos los usuarios
+    python crear_cuentas_portales.py trabajando               # solo Trabajando.cl
+    python crear_cuentas_portales.py chiletrabajos            # solo ChileTrabajos
+    python crear_cuentas_portales.py computrabajo             # solo Computrabajo
+    python crear_cuentas_portales.py laborum                  # solo Laborum
+    python crear_cuentas_portales.py trabajando jobs8         # Trabajando.cl, usuario jobs8
+
+Para correr los 4 portales en paralelo (un proceso por portal):
+    start python crear_cuentas_portales.py trabajando
+    start python crear_cuentas_portales.py chiletrabajos
+    start python crear_cuentas_portales.py computrabajo
+    start python crear_cuentas_portales.py laborum
 """
 import os, sys, threading, asyncio
 
@@ -26,98 +32,49 @@ os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS", r"C:\Users\bastian\.secr
 from dotenv import load_dotenv
 load_dotenv(os.path.join(_dir, ".env"))
 
-SOLO_USUARIO = None#"jobs40"  # ej: "jobs8"
+PORTALES_VALIDOS = ["trabajando", "chiletrabajos", "computrabajo", "laborum"]
+
+# Sobrescribir desde código si se quiere fijar portal/usuario sin usar CLI
+SOLO_PORTAL  = None  # ej: "trabajando"
+SOLO_USUARIO = None  # ej: "jobs8"
 
 
-def _crear_cuentas_usuario(uid: str, user: dict, bq) -> None:
-    nombre = user.get("NOMBRE") or user.get("nombre") or uid
-    email  = user.get("EMAIL")  or user.get("email")  or ""
+def _crear_cuenta_portal(uid: str, user: dict, portal: str, bq) -> None:
+    cuenta = bq.get_portal_account(uid, portal)
+    if cuenta:
+        print(f"  [{uid}] {portal}: ya tiene cuenta ({cuenta.get('email', '?')}) — saltar")
+        return
 
-    print(f"\n{'='*60}")
-    print(f"  USUARIO: {nombre} ({uid}) | {email}")
-    print(f"{'='*60}")
-
-    # ── Trabajando.cl ──────────────────────────────────────────────────────────
-    cuenta_tbj = bq.get_portal_account(uid, "trabajando")
-    if cuenta_tbj:
-        print(f"  [{uid}] Trabajando: ya tiene cuenta ({cuenta_tbj['email']}) — saltar")
-    else:
-        print(f"  [{uid}] Trabajando: sin cuenta — creando...")
-        try:
+    print(f"  [{uid}] {portal}: sin cuenta — creando...")
+    try:
+        if portal == "trabajando":
             from trabajando.crear_cuenta import crear_cuenta_trabajando
             ok = crear_cuenta_trabajando(uid, user)
-            if ok:
-                cuenta_tbj = bq.get_portal_account(uid, "trabajando")
-                print(f"  [{uid}] Trabajando: OK ({cuenta_tbj['email'] if cuenta_tbj else '?'})")
-            else:
-                print(f"  [{uid}] Trabajando: no se pudo crear cuenta")
-        except Exception as e:
-            import traceback
-            print(f"  [{uid}] Trabajando crear_cuenta ERROR: {e}")
-            traceback.print_exc()
-
-    # ── ChileTrabajos ──────────────────────────────────────────────────────────
-    cuenta_cht = bq.get_portal_account(uid, "chiletrabajos")
-    if cuenta_cht:
-        print(f"  [{uid}] ChileTrabajos: ya tiene cuenta ({cuenta_cht.get('email', '?')}) — saltar")
-    else:
-        print(f"  [{uid}] ChileTrabajos: sin cuenta — creando...")
-        try:
+        elif portal == "chiletrabajos":
             from chiletrabajos.crear_cuenta import crear_cuenta_chiletrabajos
             ok = crear_cuenta_chiletrabajos(uid, user)
-            if ok:
-                cuenta_cht = bq.get_portal_account(uid, "chiletrabajos")
-                print(f"  [{uid}] ChileTrabajos: OK ({cuenta_cht.get('email', '?') if cuenta_cht else '?'})")
-            else:
-                print(f"  [{uid}] ChileTrabajos: no se pudo crear cuenta")
-        except Exception as e:
-            import traceback
-            print(f"  [{uid}] ChileTrabajos crear_cuenta ERROR: {e}")
-            traceback.print_exc()
-
-    # ── Computrabajo ───────────────────────────────────────────────────────────
-    cuenta_cpt = bq.get_portal_account(uid, "computrabajo")
-    if cuenta_cpt:
-        print(f"  [{uid}] Computrabajo: ya tiene cuenta ({cuenta_cpt.get('email', '?')}) — saltar")
-    else:
-        print(f"  [{uid}] Computrabajo: sin cuenta — creando...")
-        try:
+        elif portal == "computrabajo":
             from computrabajo.crear_cuenta import crear_cuenta_computrabajo
             ok = crear_cuenta_computrabajo(uid, user)
-            if ok:
-                cuenta_cpt = bq.get_portal_account(uid, "computrabajo")
-                print(f"  [{uid}] Computrabajo: OK ({cuenta_cpt.get('email', '?') if cuenta_cpt else '?'})")
-            else:
-                print(f"  [{uid}] Computrabajo: no se pudo crear cuenta")
-        except Exception as e:
-            import traceback
-            print(f"  [{uid}] Computrabajo crear_cuenta ERROR: {e}")
-            traceback.print_exc()
-
-    # ── Laborum ────────────────────────────────────────────────────────────────
-    cuenta_lab = bq.get_portal_account(uid, "laborum")
-    if cuenta_lab:
-        print(f"  [{uid}] Laborum: ya tiene cuenta ({cuenta_lab.get('email', '?')}) — saltar")
-    else:
-        print(f"  [{uid}] Laborum: sin cuenta — creando...")
-        try:
+        elif portal == "laborum":
             from laborum.crear_cuenta import crear_cuenta_laborum
             ok = crear_cuenta_laborum(uid, user)
-            if ok:
-                cuenta_lab = bq.get_portal_account(uid, "laborum")
-                print(f"  [{uid}] Laborum: OK ({cuenta_lab.get('email', '?') if cuenta_lab else '?'})")
-            else:
-                print(f"  [{uid}] Laborum: no se pudo crear cuenta")
-        except Exception as e:
-            import traceback
-            print(f"  [{uid}] Laborum crear_cuenta ERROR: {e}")
-            traceback.print_exc()
+        else:
+            print(f"  [{uid}] {portal}: portal no reconocido")
+            return
+
+        if ok:
+            cuenta = bq.get_portal_account(uid, portal)
+            print(f"  [{uid}] {portal}: OK ({cuenta.get('email', '?') if cuenta else '?'})")
+        else:
+            print(f"  [{uid}] {portal}: no se pudo crear cuenta")
+    except Exception as e:
+        import traceback
+        print(f"  [{uid}] {portal} ERROR: {e}")
+        traceback.print_exc()
 
 
-    print(f"  [{uid}] Listo")
-
-
-def _run():
+def _run(portales: list[str], solo_usuario: str | None):
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
     loop = asyncio.new_event_loop()
@@ -130,22 +87,26 @@ def _run():
 
     import bq
 
-    solo = SOLO_USUARIO or (sys.argv[1] if len(sys.argv) > 1 else None)
-
     all_users = bq.get_users_postula_facil()
-    if solo:
-        all_users = [u for u in all_users if (u.get("ID_USUARIO") or "").lower() == solo.lower()]
+    if solo_usuario:
+        all_users = [u for u in all_users if (u.get("ID_USUARIO") or "").lower() == solo_usuario.lower()]
 
-    print(f"[crear_cuentas] {len(all_users)} usuario(s) encontrado(s) — ejecución secuencial")
+    portales_str = ", ".join(portales)
+    print(f"[crear_cuentas] portales={portales_str} | {len(all_users)} usuario(s)")
     if not all_users:
-        print("[crear_cuentas] Sin usuarios — verificar que existan registros en POSTULA_FACIL")
+        print("[crear_cuentas] Sin usuarios — verificar registros en POSTULA_FACIL")
         return
 
     ok_count = 0
     for user in all_users:
         uid = user.get("ID_USUARIO") or "?"
+        nombre = user.get("NOMBRE") or uid
+        print(f"\n{'='*60}")
+        print(f"  USUARIO: {nombre} ({uid})")
+        print(f"{'='*60}")
         try:
-            _crear_cuentas_usuario(uid, user, bq)
+            for portal in portales:
+                _crear_cuenta_portal(uid, user, portal, bq)
             ok_count += 1
         except Exception as e:
             import traceback
@@ -153,12 +114,24 @@ def _run():
             traceback.print_exc()
 
     print(f"\n{'='*60}")
-    print(f"[crear_cuentas] Finalizado — {ok_count}/{len(all_users)} usuario(s) procesado(s)")
+    print(f"[crear_cuentas] Finalizado — {ok_count}/{len(all_users)} usuario(s) | portales: {portales_str}")
 
 
 if __name__ == "__main__":
-    # os._exit bypasea el cleanup de Playwright (que devuelve exit 255 en Windows).
-    # En Spyder/IPython mataría el kernel — solo lo usamos en Jenkins/CLI.
+    # Parsear argumentos: [portal] [uid]
+    args = [a for a in sys.argv[1:] if not a.startswith("-")]
+
+    portal_arg  = None
+    usuario_arg = None
+    for a in args:
+        if a.lower() in PORTALES_VALIDOS:
+            portal_arg = a.lower()
+        else:
+            usuario_arg = a  # asume que es un uid
+
+    portales_run  = [SOLO_PORTAL or portal_arg] if (SOLO_PORTAL or portal_arg) else PORTALES_VALIDOS
+    usuario_run   = SOLO_USUARIO or usuario_arg
+
     _in_jenkins = bool(os.environ.get("BUILD_NUMBER") or os.environ.get("JENKINS_URL"))
     _in_interactive = (
         "spyder" in sys.modules or
@@ -172,7 +145,7 @@ if __name__ == "__main__":
 
     def _thread():
         try:
-            _run()
+            _run(portales_run, usuario_run)
         except Exception as e:
             exc[0] = e
 
@@ -185,4 +158,4 @@ if __name__ == "__main__":
         if _use_hard_exit:
             os._exit(1)
     elif _use_hard_exit:
-        os._exit(0)  # Bypass Playwright async cleanup que devuelve exit 255
+        os._exit(0)
