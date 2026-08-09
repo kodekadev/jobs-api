@@ -33,6 +33,13 @@ export class PlanController {
     return this.planService.handleNotification(bodyToken || queryToken);
   }
 
+  @Post('trial')
+  @HttpCode(200)
+  @UseGuards(JwtAuthGuard)
+  activateTrial(@Body() body: { id: string }) {
+    return this.planService.activateTrial(body.id);
+  }
+
   @Get('retorno/:token')
   getReturnStatus(@Param('token') token: string) {
     return this.planService.getReturnStatus(token);

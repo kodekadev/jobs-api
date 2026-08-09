@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import * as crypto from 'crypto';
 import { BigQueryService } from '../../shared/infrastructure/services/bigquery.service';
 import env from '../../shared/infrastructure/environment';
@@ -13,17 +13,47 @@ export class PlanService {
   constructor(private readonly bq: BigQueryService) {}
 
   async getPlan(userId: string) {
-    const rows = await this.bq.query<any>(`
-      SELECT PLAN, ESTADO, FECHA_FIN FROM ${this.bq.t('PLAN_CONTRATADO')}
-      WHERE ID_USUARIO = @id AND ESTADO = 'ACTIVO'
-      ORDER BY FECHA_INICIO DESC LIMIT 1
-    `, { id: userId });
+    const [rows, trialRows] = await Promise.all([
+      this.bq.query<any>(`
+        SELECT PLAN, ESTADO, FECHA_FIN FROM ${this.bq.t('PLAN_CONTRATADO')}
+        WHERE ID_USUARIO = @id
+          AND UPPER(ESTADO) IN ('ACTIVO', 'TRIAL')
+          AND DATE(FECHA_FIN) >= CURRENT_DATE()
+        ORDER BY CASE UPPER(ESTADO) WHEN 'ACTIVO' THEN 1 ELSE 2 END, FECHA_FIN DESC
+        LIMIT 1
+      `, { id: userId }),
+      this.bq.query<any>(`
+        SELECT 1 FROM ${this.bq.t('PLAN_CONTRATADO')}
+        WHERE ID_USUARIO = @id AND UPPER(ESTADO) = 'TRIAL' LIMIT 1
+      `, { id: userId }),
+    ]);
 
     return {
       plan:      rows[0]?.PLAN      || 'FREE',
       estado:    rows[0]?.ESTADO    || null,
       fecha_fin: rows[0]?.FECHA_FIN || null,
+      had_trial: trialRows.length > 0,
     };
+  }
+
+  async activateTrial(userId: string) {
+    const existing = await this.bq.query<any>(`
+      SELECT 1 FROM ${this.bq.t('PLAN_CONTRATADO')}
+      WHERE ID_USUARIO = @id AND UPPER(ESTADO) = 'TRIAL' LIMIT 1
+    `, { id: userId });
+
+    if (existing.length) {
+      throw new BadRequestException('Ya usaste tu período de prueba gratuita');
+    }
+
+    await this.bq.query(`
+      INSERT INTO ${this.bq.t('PLAN_CONTRATADO')}
+        (ID_USUARIO, PLAN, FECHA_INICIO, FECHA_FIN, ESTADO, MEDIO_PAGO)
+      VALUES
+        (@id, 'PRO', CURRENT_TIMESTAMP(), TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 14 DAY), 'TRIAL', 'TRIAL')
+    `, { id: userId });
+
+    return { success: true };
   }
 
   async savePlan(userId: string, plan: string) {
