@@ -760,14 +760,14 @@ def _selenium_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
                     if method == "Network.requestWillBeSent":
                         req = params.get("request", {})
                         url = req.get("url", "")
-                        if "api.trabajando.com" in url:
-                            post = (req.get("postData") or "")[:150]
-                            print(f"  [perf-req] {url[:100]} body={post}")
+                        if any(d in url for d in ["trabajando.com", "trabajando.cl"]):
+                            post = (req.get("postData") or "")[:200]
+                            print(f"  [perf-req] {req.get('method','?')} {url[:120]} body={post}")
                     elif method == "Network.responseReceived":
                         resp = params.get("response", {})
                         url = resp.get("url", "")
-                        if "api.trabajando.com" in url:
-                            print(f"  [perf-resp] status={resp.get('status')} {url[:100]}")
+                        if any(d in url for d in ["trabajando.com", "trabajando.cl"]):
+                            print(f"  [perf-resp] status={resp.get('status')} {url[:120]}")
                 except Exception:
                     pass
         except Exception as e:
