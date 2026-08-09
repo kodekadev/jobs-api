@@ -27,7 +27,7 @@ export class AdminService {
         COALESCE(
           pc.ESTADO = 'ACTIVO' AND
           (pc.FECHA_FIN IS NULL OR pc.FECHA_FIN > CURRENT_TIMESTAMP()),
-          FALSE
+          TRUE  -- sin fila en PLAN_CONTRATADO = FREE = siempre vigente
         )                                                                AS plan_vigente,
         CAST(pc.FECHA_FIN AS STRING)                                     AS fecha_fin,
         COALESCE(pa.activo, 0)                                           AS autopilot_activo,
