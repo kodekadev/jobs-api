@@ -237,6 +237,118 @@ export class AdminService {
     return { ok: true };
   }
 
+  async getAnalytics() {
+    const [users, cargosRows, ubicRows, porVencerRows] = await Promise.all([
+      this.bq.query<any>(`
+        WITH plan_activo AS (
+          SELECT LOWER(ID_USUARIO) AS id_usuario, PLAN, FECHA_FIN
+          FROM ${this.bq.t('PLAN_CONTRATADO')}
+          WHERE ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE')
+          QUALIFY ROW_NUMBER() OVER (PARTITION BY LOWER(ID_USUARIO) ORDER BY FECHA_INICIO DESC) = 1
+        )
+        SELECT
+          COALESCE(pa.PLAN, 'FREE') AS plan,
+          pf.PROFESION,
+          pf.FECHA_NACIMIENTO,
+          pf.PRETENSION_GENERAL,
+          pf.EMPRESA
+        FROM ${this.bq.t('POSTULA_FACIL')} pf
+        LEFT JOIN plan_activo pa ON LOWER(pa.id_usuario) = LOWER(pf.ID_USUARIO)
+        WHERE pf.ID_USUARIO IS NOT NULL AND pf.ID_USUARIO != ''
+      `),
+      this.bq.query<any>(`
+        SELECT cargo, COUNT(*) AS cnt
+        FROM ${this.bq.t('POSTULA_FACIL')},
+        UNNEST(JSON_VALUE_ARRAY(CARGOS)) AS cargo
+        WHERE CARGOS IS NOT NULL AND CARGOS NOT IN ('', '[]', 'null')
+        GROUP BY cargo ORDER BY cnt DESC LIMIT 10
+      `),
+      this.bq.query<any>(`
+        SELECT ubic, COUNT(*) AS cnt
+        FROM ${this.bq.t('POSTULA_FACIL')},
+        UNNEST(JSON_VALUE_ARRAY(UBICACIONES)) AS ubic
+        WHERE UBICACIONES IS NOT NULL AND UBICACIONES NOT IN ('', '[]', 'null')
+        GROUP BY ubic ORDER BY cnt DESC LIMIT 10
+      `),
+      this.bq.query<any>(`
+        SELECT u.NOMBRE AS nombre, u.EMAIL AS email, pc.PLAN AS plan,
+          CAST(pc.FECHA_FIN AS STRING) AS fecha_fin,
+          DATE_DIFF(DATE(pc.FECHA_FIN), CURRENT_DATE(), DAY) AS dias
+        FROM ${this.bq.t('PLAN_CONTRATADO')} pc
+        JOIN ${this.bq.t('USUARIOS')} u ON LOWER(u.ID_USUARIO) = LOWER(pc.ID_USUARIO)
+        WHERE pc.ESTADO = 'ACTIVO'
+          AND pc.FECHA_FIN IS NOT NULL
+          AND DATE(pc.FECHA_FIN) BETWEEN CURRENT_DATE() AND DATE_ADD(CURRENT_DATE(), INTERVAL 7 DAY)
+        ORDER BY pc.FECHA_FIN ASC
+      `),
+    ]);
+
+    const porPlan:      Record<string, number> = {};
+    const profCount:    Record<string, number> = {};
+    const edades:       Record<string, number> = {};
+    const pretensiones: Record<string, number> = {
+      '<500k': 0, '500k-800k': 0, '800k-1.2M': 0, '1.2M-2M': 0, '>2M': 0, 'sin_dato': 0,
+    };
+    const empleo = { con: 0, sin: 0, sin_dato: 0 };
+
+    for (const u of users) {
+      const plan = (u.plan || 'FREE').toUpperCase();
+      porPlan[plan] = (porPlan[plan] || 0) + 1;
+
+      if (u.PROFESION) profCount[u.PROFESION] = (profCount[u.PROFESION] || 0) + 1;
+
+      const fnStr = u.FECHA_NACIMIENTO?.value ?? u.FECHA_NACIMIENTO;
+      if (!fnStr) {
+        edades['sin_dato'] = (edades['sin_dato'] || 0) + 1;
+      } else {
+        const age = new Date().getFullYear() - new Date(fnStr).getFullYear();
+        const b = age < 26 ? '18-25' : age < 36 ? '26-35' : age < 46 ? '36-45' : age < 56 ? '46-55' : '55+';
+        edades[b] = (edades[b] || 0) + 1;
+      }
+
+      const emp = u.EMPRESA != null ? String(u.EMPRESA).trim() : null;
+      if (emp === null) empleo.sin_dato++;
+      else if (emp)    empleo.con++;
+      else             empleo.sin++;
+
+      const rawPret = u.PRETENSION_GENERAL;
+      if (!rawPret) {
+        pretensiones['sin_dato']++;
+      } else {
+        let val = parseFloat(String(rawPret).replace(/[^0-9.]/g, '')) || 0;
+        if (String(rawPret).toLowerCase().includes('k')) val *= 1000;
+        if (val === 0)          pretensiones['sin_dato']++;
+        else if (val < 500000)  pretensiones['<500k']++;
+        else if (val < 800000)  pretensiones['500k-800k']++;
+        else if (val < 1200000) pretensiones['800k-1.2M']++;
+        else if (val < 2000000) pretensiones['1.2M-2M']++;
+        else                    pretensiones['>2M']++;
+      }
+    }
+
+    const profesiones = Object.entries(profCount)
+      .sort((a, b) => b[1] - a[1]).slice(0, 10)
+      .map(([nombre, count]) => ({ nombre, count }));
+
+    return {
+      total: users.length,
+      porPlan,
+      edades,
+      empleo,
+      profesiones,
+      cargos:      cargosRows.map((r: any) => ({ nombre: r.cargo, count: Number(r.cnt) })),
+      ubicaciones: ubicRows.map((r: any)   => ({ nombre: r.ubic,  count: Number(r.cnt) })),
+      pretensiones,
+      porVencer: porVencerRows.map((r: any) => ({
+        nombre:    r.nombre   || '',
+        email:     r.email    || '',
+        plan:      r.plan     || '',
+        fecha_fin: r.fecha_fin || '',
+        dias:      Number(r.dias),
+      })),
+    };
+  }
+
   private parseJson(val: any): any[] {
     if (!val) return [];
     if (Array.isArray(val)) return val;

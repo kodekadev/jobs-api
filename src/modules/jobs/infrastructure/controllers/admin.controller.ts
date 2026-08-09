@@ -41,4 +41,9 @@ export class AdminController {
   deletePortal(@Param('uid') uid: string, @Param('portal') portal: string) {
     return this.adminService.deletePortal(uid, portal);
   }
+
+  @Get('analytics')
+  getAnalytics() {
+    return this.adminService.getAnalytics();
+  }
 }
