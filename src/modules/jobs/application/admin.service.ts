@@ -52,6 +52,8 @@ export class AdminService {
         MAX(COALESCE(e.postulaciones_7dias_cht, 0))                      AS postulaciones_7dias_cht,
         MAX(COALESCE(e.postulaciones_7dias_cpt, 0))                      AS postulaciones_7dias_cpt,
         MAX(COALESCE(e.postulaciones_7dias_lab, 0))                      AS postulaciones_7dias_lab,
+        MAX(COALESCE(e.postulaciones_7dias_lkd, 0))                      AS postulaciones_7dias_lkd,
+        MAX(COALESCE(e.total_lkd,             0)) > 0                   AS tiene_extension,
         MAX(COALESCE(e.total_postulaciones,     0))                      AS total_postulaciones
       FROM ${this.bq.t('USUARIOS')} u
       LEFT JOIN (
@@ -73,6 +75,8 @@ export class AdminService {
           COUNTIF(FECHA_POSTULACION >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND LOWER(COALESCE(PORTAL,'')) = 'chiletrabajos') AS postulaciones_7dias_cht,
           COUNTIF(FECHA_POSTULACION >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND LOWER(COALESCE(PORTAL,'')) = 'computrabajo')  AS postulaciones_7dias_cpt,
           COUNTIF(FECHA_POSTULACION >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND LOWER(COALESCE(PORTAL,'')) = 'laborum')       AS postulaciones_7dias_lab,
+          COUNTIF(FECHA_POSTULACION >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND LOWER(COALESCE(PORTAL,'')) = 'linkedin')      AS postulaciones_7dias_lkd,
+          COUNTIF(LOWER(COALESCE(PORTAL,'')) = 'linkedin')                                                                                  AS total_lkd,
           COUNT(*) AS total_postulaciones
         FROM ${this.bq.t('EMPLEOS')}
         GROUP BY ID_USUARIO
@@ -110,6 +114,8 @@ export class AdminService {
         postulaciones_7dias_cht:Number(r.postulaciones_7dias_cht)|| 0,
         postulaciones_7dias_cpt:Number(r.postulaciones_7dias_cpt)|| 0,
         postulaciones_7dias_lab:Number(r.postulaciones_7dias_lab)|| 0,
+        postulaciones_7dias_lkd:Number(r.postulaciones_7dias_lkd)|| 0,
+        tiene_extension:        Boolean(r.tiene_extension),
         total_postulaciones:    Number(r.total_postulaciones)    || 0,
         limite_dia:             PLAN_LIMITE[plan] ?? 0,
       };
@@ -257,7 +263,7 @@ export class AdminService {
         WITH plan_activo AS (
           SELECT LOWER(ID_USUARIO) AS id_usuario, PLAN, FECHA_FIN
           FROM ${this.bq.t('PLAN_CONTRATADO')}
-          WHERE ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE')
+          WHERE ESTADO IN ('ACTIVO', 'TRIAL', 'CANCELADO_PENDIENTE')
           QUALIFY ROW_NUMBER() OVER (PARTITION BY LOWER(ID_USUARIO) ORDER BY FECHA_INICIO DESC) = 1
         )
         SELECT
