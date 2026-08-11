@@ -25,7 +25,7 @@ export class AdminService {
         u.EMAIL                                                          AS email,
         COALESCE(pc.PLAN, 'FREE')                                        AS plan,
         COALESCE(
-          pc.ESTADO = 'ACTIVO' AND
+          pc.ESTADO IN ('ACTIVO', 'TRIAL') AND
           (pc.FECHA_FIN IS NULL OR pc.FECHA_FIN > CURRENT_TIMESTAMP()),
           TRUE  -- sin fila en PLAN_CONTRATADO = FREE = siempre vigente
         )                                                                AS plan_vigente,
@@ -58,7 +58,7 @@ export class AdminService {
         SELECT ID_USUARIO, PLAN, ESTADO, FECHA_FIN
         FROM (
           SELECT *, ROW_NUMBER() OVER (PARTITION BY ID_USUARIO ORDER BY FECHA_INICIO DESC) AS rn
-          FROM ${this.bq.t('PLAN_CONTRATADO')} WHERE ESTADO = 'ACTIVO'
+          FROM ${this.bq.t('PLAN_CONTRATADO')} WHERE ESTADO IN ('ACTIVO', 'TRIAL')
         ) WHERE rn = 1
       ) pc ON u.ID_USUARIO = pc.ID_USUARIO
       LEFT JOIN ${this.bq.t('POSTULACIONES_AUTO')} pa ON LOWER(u.ID_USUARIO) = LOWER(pa.id_usuario)
@@ -73,7 +73,7 @@ export class AdminService {
           COUNTIF(FECHA_POSTULACION >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND LOWER(COALESCE(PORTAL,'')) = 'chiletrabajos') AS postulaciones_7dias_cht,
           COUNTIF(FECHA_POSTULACION >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND LOWER(COALESCE(PORTAL,'')) = 'computrabajo')  AS postulaciones_7dias_cpt,
           COUNTIF(FECHA_POSTULACION >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) AND LOWER(COALESCE(PORTAL,'')) = 'laborum')       AS postulaciones_7dias_lab,
-          COUNT(LINK) AS total_postulaciones
+          COUNT(*) AS total_postulaciones
         FROM ${this.bq.t('EMPLEOS')}
         GROUP BY ID_USUARIO
       ) e ON u.ID_USUARIO = e.ID_USUARIO
@@ -124,7 +124,7 @@ export class AdminService {
       `, { id: userId }),
       this.bq.query<any>(`
         SELECT PLAN, ESTADO, FECHA_FIN FROM ${this.bq.t('PLAN_CONTRATADO')}
-        WHERE ID_USUARIO = @id AND ESTADO = 'ACTIVO' ORDER BY FECHA_INICIO DESC LIMIT 1
+        WHERE ID_USUARIO = @id AND ESTADO IN ('ACTIVO', 'TRIAL') ORDER BY FECHA_INICIO DESC LIMIT 1
       `, { id: userId }),
       this.bq.query<any>(`
         SELECT activo FROM ${this.bq.t('POSTULACIONES_AUTO')}
@@ -161,7 +161,7 @@ export class AdminService {
     const planStr   = plan.PLAN   || 'FREE';
     const limite    = PLAN_LIMITE[planStr] ?? 0;
     const fechaFin  = plan.FECHA_FIN ? (plan.FECHA_FIN.value ?? plan.FECHA_FIN) : null;
-    const vigente   = plan.ESTADO === 'ACTIVO' && (!fechaFin || new Date(fechaFin) > new Date());
+    const vigente   = ['ACTIVO', 'TRIAL'].includes(plan.ESTADO) && (!fechaFin || new Date(fechaFin) > new Date());
     const autopilot = Boolean(pa.activo);
 
     const checks = [
