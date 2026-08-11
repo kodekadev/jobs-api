@@ -6,6 +6,10 @@ const PLAN_LIMITE: Record<string, number> = {
   FREE: 5, TRIAL: 20, PRO: 25, TURBO: 15, PREMIUM: 50, SPRINT: 40, OWNER: 75,
 };
 
+const PLAN_PRECIO: Record<string, number> = {
+  PRO: 9990, PREMIUM: 19990, TURBO: 14990, SPRINT: 9990,
+};
+
 @Injectable()
 export class AdminService {
   constructor(private readonly bq: BigQueryService) {}
@@ -23,7 +27,7 @@ export class AdminService {
         u.ID_USUARIO                                                     AS id,
         u.NOMBRE                                                         AS nombre,
         u.EMAIL                                                          AS email,
-        COALESCE(pc.PLAN, 'FREE')                                        AS plan,
+        COALESCE(CASE WHEN pc.ESTADO = 'TRIAL' THEN 'TRIAL' ELSE pc.PLAN END, 'FREE') AS plan,
         COALESCE(
           pc.ESTADO IN ('ACTIVO', 'TRIAL') AND
           (pc.FECHA_FIN IS NULL OR pc.FECHA_FIN > CURRENT_TIMESTAMP()),
@@ -62,9 +66,9 @@ export class AdminService {
           SELECT *, ROW_NUMBER() OVER (PARTITION BY ID_USUARIO ORDER BY FECHA_INICIO DESC) AS rn
           FROM ${this.bq.t('PLAN_CONTRATADO')} WHERE ESTADO IN ('ACTIVO', 'TRIAL')
         ) WHERE rn = 1
-      ) pc ON u.ID_USUARIO = pc.ID_USUARIO
+      ) pc ON LOWER(u.ID_USUARIO) = LOWER(pc.ID_USUARIO)
       LEFT JOIN ${this.bq.t('POSTULACIONES_AUTO')} pa ON LOWER(u.ID_USUARIO) = LOWER(pa.id_usuario)
-      LEFT JOIN ${this.bq.t('POSTULA_FACIL')}      pf ON u.ID_USUARIO = pf.ID_USUARIO
+      LEFT JOIN ${this.bq.t('POSTULA_FACIL')}      pf ON LOWER(u.ID_USUARIO) = LOWER(pf.ID_USUARIO)
       LEFT JOIN ${this.bq.t('CUENTAS_PORTALES')}   cp ON LOWER(u.ID_USUARIO) = LOWER(cp.ID_USUARIO)
       LEFT JOIN (
         SELECT
@@ -80,7 +84,7 @@ export class AdminService {
           COUNT(*) AS total_postulaciones
         FROM ${this.bq.t('EMPLEOS')}
         GROUP BY ID_USUARIO
-      ) e ON u.ID_USUARIO = e.ID_USUARIO
+      ) e ON LOWER(u.ID_USUARIO) = LOWER(e.ID_USUARIO)
       GROUP BY u.ID_USUARIO, u.NOMBRE, u.EMAIL, pc.PLAN, pc.ESTADO, pc.FECHA_FIN,
                pa.activo, pf.ID_USUARIO, pf.CARGOS, pf.UBICACIONES
       ORDER BY u.ID_USUARIO
@@ -366,6 +370,64 @@ export class AdminService {
         fecha_fin: r.fecha_fin || '',
         dias:      Number(r.dias),
       })),
+    };
+  }
+
+  async getBilling() {
+    const [pagadores, resumen] = await Promise.all([
+      // Usuarios que han pagado (MEDIO_PAGO = 'APP')
+      this.bq.query<any>(`
+        SELECT
+          u.NOMBRE        AS nombre,
+          u.EMAIL         AS email,
+          pc.PLAN         AS plan,
+          pc.ESTADO       AS estado,
+          pc.MEDIO_PAGO   AS medio_pago,
+          CAST(pc.FECHA_INICIO AS STRING) AS fecha_inicio,
+          CAST(pc.FECHA_FIN    AS STRING) AS fecha_fin
+        FROM ${this.bq.t('PLAN_CONTRATADO')} pc
+        JOIN ${this.bq.t('USUARIOS')} u ON LOWER(pc.ID_USUARIO) = LOWER(u.ID_USUARIO)
+        WHERE pc.MEDIO_PAGO = 'APP'
+        ORDER BY pc.FECHA_INICIO DESC
+      `),
+      // Conteo de emails enviados este mes desde PLAN_CONTRATADO (proxy: activaciones de plan)
+      this.bq.query<any>(`
+        SELECT
+          COUNTIF(MEDIO_PAGO = 'APP')   AS pagados,
+          COUNTIF(MEDIO_PAGO = 'TRIAL') AS trials,
+          COUNTIF(MEDIO_PAGO = 'ADMIN') AS admin_asignados
+        FROM ${this.bq.t('PLAN_CONTRATADO')}
+      `),
+    ]);
+
+    // Calcular MRR estimado (solo plans ACTIVO pagados)
+    const activos = pagadores.filter((r: any) => r.estado === 'ACTIVO');
+    const mrr = activos.reduce((sum: number, r: any) => {
+      return sum + (PLAN_PRECIO[r.plan] || 0);
+    }, 0);
+
+    const totalPagado = pagadores.reduce((sum: number, r: any) => {
+      return sum + (PLAN_PRECIO[r.plan] || 0);
+    }, 0);
+
+    const stats = resumen[0] || {};
+
+    return {
+      pagadores: pagadores.map((r: any) => ({
+        nombre:      r.nombre     || '',
+        email:       r.email      || '',
+        plan:        r.plan       || '',
+        estado:      r.estado     || '',
+        medio_pago:  r.medio_pago || '',
+        fecha_inicio: r.fecha_inicio || null,
+        fecha_fin:    r.fecha_fin    || null,
+        monto:       PLAN_PRECIO[r.plan] || 0,
+      })),
+      mrr,
+      total_cobrado_historico: totalPagado,
+      total_pagadores:   Number(stats.pagados)         || 0,
+      total_trials:      Number(stats.trials)          || 0,
+      total_admin:       Number(stats.admin_asignados) || 0,
     };
   }
 

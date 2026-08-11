@@ -46,4 +46,9 @@ export class AdminController {
   getAnalytics() {
     return this.adminService.getAnalytics();
   }
+
+  @Get('billing')
+  getBilling() {
+    return this.adminService.getBilling();
+  }
 }
