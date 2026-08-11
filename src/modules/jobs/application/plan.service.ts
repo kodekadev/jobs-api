@@ -217,19 +217,51 @@ export class PlanService {
 
   private async confirmPayment(token: string): Promise<string | null> {
     const rows = await this.bq.query<any>(`
-      SELECT ID_USUARIO, PLAN FROM ${this.bq.t('PAGOS_PENDIENTES')}
+      SELECT ID_USUARIO, PLAN, ORDER_ID FROM ${this.bq.t('PAGOS_PENDIENTES')}
       WHERE TOKEN = @token LIMIT 1
     `, { token }).catch(() => []);
 
     if (!rows.length) return null;
 
-    await this.savePlan(rows[0].ID_USUARIO, rows[0].PLAN);
+    const { ID_USUARIO: userId, PLAN: plan, ORDER_ID: orderId } = rows[0];
+
+    // Obtener nombre/email para el registro y la notificación
+    const userRows = await this.bq.query<any>(`
+      SELECT NOMBRE, EMAIL FROM ${this.bq.t('USUARIOS')} WHERE ID_USUARIO = @id LIMIT 1
+    `, { id: userId }).catch(() => []);
+    const nombre = userRows[0]?.NOMBRE || userId;
+    const email  = userRows[0]?.EMAIL  || '';
+    const monto  = PLAN_PRICES[plan] || 0;
+
+    await this.savePlan(userId, plan);
+
+    // Registrar pago en historial BigQuery (tabla debe existir: ver schema en README)
+    this.bq.query(`
+      INSERT INTO ${this.bq.t('HISTORIAL_PAGOS')}
+        (ORDER_ID, ID_USUARIO, PLAN, MONTO, TOKEN, FECHA_PAGO, NOMBRE, EMAIL)
+      VALUES
+        (@orderId, @userId, @plan, @monto, @token, CURRENT_TIMESTAMP(), @nombre, @email)
+    `, { orderId: orderId || '', userId, plan, monto, token, nombre, email })
+    .catch(e => console.error('[confirmPayment] historial insert failed:', e.message));
 
     await this.bq.query(`
       DELETE FROM ${this.bq.t('PAGOS_PENDIENTES')} WHERE TOKEN = @token
     `, { token }).catch(() => null);
 
-    return rows[0].PLAN;
+    // Notificación Telegram
+    this.notifyPago(nombre, email, plan, monto, orderId);
+
+    return plan;
+  }
+
+  private notifyPago(nombre: string, email: string, plan: string, monto: number, orderId: string): void {
+    if (!env.telegramBotToken || !env.telegramChatId) return;
+    const text = `💳 Nuevo pago recibido\nNombre: ${nombre}\nEmail: ${email}\nPlan: ${plan}\nMonto: $${monto.toLocaleString('es-CL')} CLP\nOrden: ${orderId || 'sin ID'}`;
+    fetch(`https://api.telegram.org/bot${env.telegramBotToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: env.telegramChatId, text }),
+    }).catch(() => null);
   }
 
   private sign(params: Record<string, string>): string {
