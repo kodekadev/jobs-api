@@ -68,6 +68,27 @@ export class EmailService {
     `);
   }
 
+  planExpiryWarningHtml(nombre: string, plan: string, dias: number): string {
+    const urgente = dias <= 1;
+    return base(`
+      <h2 style="color:${urgente ? '#DC2626' : DARK};margin:0 0 8px">
+        ${urgente ? '⚠️ Tu plan vence mañana' : `Tu plan ${plan} vence en ${dias} días`}
+      </h2>
+      <p style="color:#555;margin:0 0 16px">
+        Hola ${nombre || 'usuario'}, tu plan <strong>${plan}</strong> expira
+        ${urgente ? 'mañana' : `en ${dias} días`}. Al vencer, bajarás a Plan Gratis con
+        5 postulaciones por día y 1 cargo buscado.
+      </p>
+      <a href="${env.frontendUrl}/planes"
+         style="display:inline-block;background:${TEAL};color:white;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:700;margin-bottom:16px">
+        Renovar mi plan
+      </a>
+      <p style="color:#888;font-size:13px;margin:0">
+        Si tienes preguntas escríbenos a <a href="mailto:soporte@aplicai.cl" style="color:${TEAL}">soporte@aplicai.cl</a>.
+      </p>
+    `);
+  }
+
   postulaFacilHtml(nombre: string, cargos: string[]): string {
     return base(`
       <h2 style="color:${DARK};margin:0 0 8px">¡Todo listo!</h2>

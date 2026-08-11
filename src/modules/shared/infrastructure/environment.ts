@@ -23,6 +23,7 @@ const env = {
   gcsBucketCv: process.env.GCS_BUCKET_CV || 'jobs-profile-cv',
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
   adminSecret: process.env.ADMIN_SECRET || '',
+  cronSecret:  process.env.CRON_SECRET  || '',
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN || '',
   telegramChatId: process.env.TELEGRAM_CHAT_ID || '',
   googleClientId: process.env.GOOGLE_CLIENT_ID || '994947687832-oqbi6lnmdv96m5jcsqcajr0d7u9f22th.apps.googleusercontent.com',

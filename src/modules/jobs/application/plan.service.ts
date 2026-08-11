@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import * as crypto from 'crypto';
 import { BigQueryService } from '../../shared/infrastructure/services/bigquery.service';
+import { EmailService } from '../../shared/infrastructure/services/email.service';
 import env from '../../shared/infrastructure/environment';
 
 const PLAN_PRICES: Record<string, number> = {
@@ -10,7 +11,10 @@ const PLAN_PRICES: Record<string, number> = {
 
 @Injectable()
 export class PlanService {
-  constructor(private readonly bq: BigQueryService) {}
+  constructor(
+    private readonly bq: BigQueryService,
+    private readonly emailService: EmailService,
+  ) {}
 
   async getPlan(userId: string) {
     const [rows, trialRows] = await Promise.all([
@@ -140,6 +144,62 @@ export class PlanService {
       flowOrder: status?.flowOrder,
       amount: status?.amount,
     };
+  }
+
+  // ─── CRON ─────────────────────────────────────────────────────────────────
+  async runPlanExpiryCron(): Promise<any> {
+    const t = (name: string) => this.bq.t(name);
+
+    // Avisos de vencimiento: usuarios cuyo plan vence en 7 o 1 día
+    const [expiring7, expiring1] = await Promise.all([
+      this.bq.query<any>(`
+        SELECT u.NOMBRE AS nombre, u.EMAIL AS email, pc.PLAN AS plan
+        FROM ${t('PLAN_CONTRATADO')} pc
+        JOIN ${t('USUARIOS')} u ON LOWER(pc.ID_USUARIO) = LOWER(u.ID_USUARIO)
+        WHERE pc.ESTADO IN ('ACTIVO', 'TRIAL')
+          AND pc.FECHA_FIN IS NOT NULL
+          AND DATE(pc.FECHA_FIN AT TIME ZONE 'America/Santiago') = DATE_ADD(CURRENT_DATE('America/Santiago'), INTERVAL 7 DAY)
+      `),
+      this.bq.query<any>(`
+        SELECT u.NOMBRE AS nombre, u.EMAIL AS email, pc.PLAN AS plan
+        FROM ${t('PLAN_CONTRATADO')} pc
+        JOIN ${t('USUARIOS')} u ON LOWER(pc.ID_USUARIO) = LOWER(u.ID_USUARIO)
+        WHERE pc.ESTADO IN ('ACTIVO', 'TRIAL')
+          AND pc.FECHA_FIN IS NOT NULL
+          AND DATE(pc.FECHA_FIN AT TIME ZONE 'America/Santiago') = DATE_ADD(CURRENT_DATE('America/Santiago'), INTERVAL 1 DAY)
+      `),
+    ]);
+
+    // Marcar como VENCIDO todos los planes cuya FECHA_FIN ya pasó
+    await this.bq.query(`
+      UPDATE ${t('PLAN_CONTRATADO')}
+      SET ESTADO = 'VENCIDO'
+      WHERE ESTADO IN ('ACTIVO', 'TRIAL')
+        AND FECHA_FIN IS NOT NULL
+        AND FECHA_FIN < CURRENT_TIMESTAMP()
+    `);
+
+    // Enviar emails de aviso (en paralelo, sin bloquear si alguno falla)
+    const sendAll = async (users: any[], dias: number) => {
+      let ok = 0;
+      for (const r of users) {
+        try {
+          const subject = dias <= 1
+            ? `⚠️ Tu plan ${r.plan} vence mañana — renueva ahora`
+            : `Tu plan ${r.plan} vence en ${dias} días`;
+          await this.emailService.send(r.email, subject, this.emailService.planExpiryWarningHtml(r.nombre, r.plan, dias));
+          ok++;
+        } catch (e) {
+          console.error(`[cron] email fallo ${r.email}:`, e);
+        }
+      }
+      return ok;
+    };
+
+    const [ok7, ok1] = await Promise.all([sendAll(expiring7, 7), sendAll(expiring1, 1)]);
+
+    console.log(`[cron/plan-expiry] avisos_7d=${ok7} avisos_1d=${ok1}`);
+    return { enviados_7_dias: ok7, enviados_1_dia: ok1 };
   }
 
   // ─── INTERNAL ─────────────────────────────────────────────────────────────
