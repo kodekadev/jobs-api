@@ -6,6 +6,7 @@ import env from '../../shared/infrastructure/environment';
 
 const PLAN_PRICES: Record<string, number> = {
   PRO: 9990,
+  TURBO: 14990,
   PREMIUM: 19990,
 };
 
