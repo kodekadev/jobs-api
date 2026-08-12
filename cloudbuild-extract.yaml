@@ -1,0 +1,29 @@
+steps:
+- name: 'gcr.io/jobs-425301/jobs-api@sha256:d61d79fc943ad01119266ee27e9f719c88b415041ded146fd60f07896abb1a63'
+  entrypoint: 'sh'
+  args:
+    - '-c'
+    - |
+      cp /app/dist/modules/jobs/application/admin.service.js /workspace/
+      cp /app/dist/modules/jobs/application/admin.service.d.ts /workspace/
+      cp /app/dist/modules/jobs/application/admin.service.js.map /workspace/
+      cp /app/dist/modules/jobs/application/ai.service.js /workspace/ 2>/dev/null || true
+      cp /app/dist/modules/jobs/application/ai.service.d.ts /workspace/ 2>/dev/null || true
+      cp /app/dist/modules/jobs/application/ai.service.js.map /workspace/ 2>/dev/null || true
+      cp /app/dist/modules/jobs/infrastructure/controllers/admin.controller.js /workspace/
+      cp /app/dist/modules/jobs/infrastructure/controllers/admin.controller.d.ts /workspace/
+      cp /app/dist/modules/jobs/infrastructure/controllers/admin.controller.js.map /workspace/
+      cp /app/dist/modules/jobs/infrastructure/controllers/ai.controller.js /workspace/ 2>/dev/null || true
+      cp /app/dist/modules/jobs/infrastructure/controllers/ai.controller.d.ts /workspace/ 2>/dev/null || true
+      cp /app/dist/modules/jobs/infrastructure/controllers/ai.controller.js.map /workspace/ 2>/dev/null || true
+      cp /app/dist/modules/jobs/infrastructure/controllers/cron.controller.js /workspace/ 2>/dev/null || true
+      cp /app/dist/modules/jobs/infrastructure/controllers/cron.controller.d.ts /workspace/ 2>/dev/null || true
+      cp /app/dist/modules/jobs/infrastructure/controllers/cron.controller.js.map /workspace/ 2>/dev/null || true
+      ls /workspace/
+
+- name: 'gcr.io/cloud-builders/gsutil'
+  args: ['cp', '/workspace/*.js', 'gs://jobs-425301_cloudbuild/extracted-dist/']
+- name: 'gcr.io/cloud-builders/gsutil'
+  args: ['cp', '/workspace/*.d.ts', 'gs://jobs-425301_cloudbuild/extracted-dist/']
+- name: 'gcr.io/cloud-builders/gsutil'
+  args: ['cp', '/workspace/*.js.map', 'gs://jobs-425301_cloudbuild/extracted-dist/']

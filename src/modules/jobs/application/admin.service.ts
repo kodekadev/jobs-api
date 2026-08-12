@@ -341,35 +341,92 @@ export class AdminService {
     return { success: true };
   }
 
+  async trackEvent(tipo: string, uid?: string, emailTipo?: string, ip?: string): Promise<void> {
+    const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const doInsert = () => this.bq.dml(`
+      INSERT INTO ${this.bq.t('EVENTOS_ANALYTICS')} (id, tipo, uid, email_tipo, ip, created_at)
+      VALUES (@id, @tipo, @uid, @emailTipo, @ip, CURRENT_TIMESTAMP())
+    `, { id, tipo, uid: uid || null, emailTipo: emailTipo || null, ip: ip || null });
+
+    try {
+      await doInsert();
+    } catch {
+      await this.bq.dml(`
+        CREATE TABLE IF NOT EXISTS ${this.bq.t('EVENTOS_ANALYTICS')} (
+          id STRING NOT NULL,
+          tipo STRING NOT NULL,
+          uid STRING,
+          email_tipo STRING,
+          ip STRING,
+          created_at TIMESTAMP NOT NULL
+        )
+        PARTITION BY DATE(created_at)
+      `);
+      await doInsert();
+    }
+  }
+
   async getAnalytics() {
-    const rows = await this.bq.query<any>(`
-      SELECT
-        pf.PROFESION,
-        pf.CARGOS,
-        pf.UBICACIONES,
-        pf.ACTUALMENTE_TRABAJANDO,
-        pf.PRETENSION_GENERAL,
-        EXTRACT(YEAR FROM CURRENT_DATE())
-          - EXTRACT(YEAR FROM SAFE_CAST(pf.FECHA_NACIMIENTO AS DATE)) AS edad_aprox,
-        u.NOMBRE,
-        u.EMAIL,
-        COALESCE(pc.PLAN, 'FREE') AS plan,
-        pc.FECHA_FIN,
-        DATE_DIFF(DATE(pc.FECHA_FIN), CURRENT_DATE(), DAY) AS dias_para_vencer
-      FROM ${this.bq.t('POSTULA_FACIL')} pf
-      LEFT JOIN ${this.bq.t('USUARIOS')} u
-        ON LOWER(u.ID_USUARIO) = LOWER(pf.ID_USUARIO)
-      LEFT JOIN (
-        SELECT ID_USUARIO, PLAN, ESTADO, FECHA_FIN, FECHA_INICIO
+    const [rows, dauRows, convRows, emailRows] = await Promise.all([
+      this.bq.query<any>(`
+        SELECT
+          pf.PROFESION, pf.CARGOS, pf.UBICACIONES, pf.ACTUALMENTE_TRABAJANDO, pf.PRETENSION_GENERAL,
+          EXTRACT(YEAR FROM CURRENT_DATE())
+            - EXTRACT(YEAR FROM SAFE_CAST(pf.FECHA_NACIMIENTO AS DATE)) AS edad_aprox,
+          u.NOMBRE, u.EMAIL, COALESCE(pc.PLAN, 'FREE') AS plan,
+          pc.FECHA_FIN,
+          DATE_DIFF(DATE(pc.FECHA_FIN), CURRENT_DATE(), DAY) AS dias_para_vencer
+        FROM ${this.bq.t('POSTULA_FACIL')} pf
+        LEFT JOIN ${this.bq.t('USUARIOS')} u
+          ON LOWER(u.ID_USUARIO) = LOWER(pf.ID_USUARIO)
+        LEFT JOIN (
+          SELECT ID_USUARIO, PLAN, ESTADO, FECHA_FIN, FECHA_INICIO
+          FROM ${this.bq.t('PLAN_CONTRATADO')}
+          WHERE ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE')
+          QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY LOWER(ID_USUARIO) ORDER BY FECHA_INICIO DESC
+          ) = 1
+        ) pc ON LOWER(pc.ID_USUARIO) = LOWER(pf.ID_USUARIO)
+        WHERE COALESCE(u.NOMBRE, '') != 'CUENTA_ELIMINADA'
+          AND NOT STARTS_WITH(COALESCE(u.EMAIL, ''), 'deleted_')
+      `),
+
+      // DAU últimos 7 días (desde EMPLEOS)
+      this.bq.query<any>(`
+        SELECT
+          FORMAT_DATE('%Y-%m-%d', DATE(Fecha_Postulacion, 'America/Santiago')) AS fecha,
+          COUNT(DISTINCT id_usuario) AS activos,
+          COUNT(*) AS postulaciones
+        FROM ${this.bq.t('EMPLEOS')}
+        WHERE DATE(Fecha_Postulacion, 'America/Santiago')
+          >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL 7 DAY)
+          AND portal NOT IN ('email_directo', '')
+        GROUP BY 1 ORDER BY 1
+      `),
+
+      // Conversiones (planes pagados activados) últimos 7 días
+      this.bq.query<any>(`
+        SELECT
+          FORMAT_DATE('%Y-%m-%d', DATE(FECHA_INICIO, 'America/Santiago')) AS fecha,
+          PLAN AS plan,
+          COUNT(*) AS conversiones
         FROM ${this.bq.t('PLAN_CONTRATADO')}
-        WHERE ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE')
-        QUALIFY ROW_NUMBER() OVER (
-          PARTITION BY LOWER(ID_USUARIO) ORDER BY FECHA_INICIO DESC
-        ) = 1
-      ) pc ON LOWER(pc.ID_USUARIO) = LOWER(pf.ID_USUARIO)
-      WHERE COALESCE(u.NOMBRE, '') != 'CUENTA_ELIMINADA'
-        AND NOT STARTS_WITH(COALESCE(u.EMAIL, ''), 'deleted_')
-    `);
+        WHERE ESTADO IN ('ACTIVO', 'TRIAL')
+          AND PLAN NOT IN ('FREE')
+          AND DATE(FECHA_INICIO, 'America/Santiago')
+            >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL 7 DAY)
+        GROUP BY 1, 2 ORDER BY 1
+      `),
+
+      // Email events (tracking pixel / click) — tabla puede no existir aún
+      this.bq.query<any>(`
+        SELECT tipo, email_tipo, COUNT(*) AS total, COUNT(DISTINCT uid) AS unicos
+        FROM ${this.bq.t('EVENTOS_ANALYTICS')}
+        WHERE DATE(created_at, 'America/Santiago')
+          >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL 7 DAY)
+        GROUP BY 1, 2
+      `).catch(() => [] as any[]),
+    ]);
 
     const total = rows.length;
     const porPlan: Record<string, number> = {};
@@ -444,6 +501,40 @@ export class AdminService {
         .slice(0, n)
         .map(([nombre, count]) => ({ nombre, count }));
 
+    // DAU 7d
+    const dau_7d = dauRows.map((r: any) => ({
+      fecha:         String(r.fecha),
+      activos:       Number(r.activos),
+      postulaciones: Number(r.postulaciones),
+    }));
+
+    // Conversiones 7d — agrupar por fecha sumando planes
+    const convByFecha: Record<string, { fecha: string; total: number; breakdown: Record<string, number> }> = {};
+    for (const r of convRows) {
+      const f = String(r.fecha);
+      if (!convByFecha[f]) convByFecha[f] = { fecha: f, total: 0, breakdown: {} };
+      convByFecha[f].total += Number(r.conversiones);
+      convByFecha[f].breakdown[r.plan] = (convByFecha[f].breakdown[r.plan] || 0) + Number(r.conversiones);
+    }
+    const conv_7d = Object.values(convByFecha).sort((a, b) => a.fecha.localeCompare(b.fecha));
+
+    // Email metrics
+    let email_opens = 0, email_clicks = 0;
+    const email_by_tipo: Record<string, { opens: number; clicks: number }> = {};
+    for (const r of emailRows) {
+      const tipo = String(r.tipo || '');
+      const et   = String(r.email_tipo || 'desconocido');
+      const cnt  = Number(r.total);
+      if (!email_by_tipo[et]) email_by_tipo[et] = { opens: 0, clicks: 0 };
+      if (tipo === 'email_open') {
+        email_opens += cnt;
+        email_by_tipo[et].opens += cnt;
+      } else if (tipo.startsWith('email_click')) {
+        email_clicks += cnt;
+        email_by_tipo[et].clicks += cnt;
+      }
+    }
+
     return {
       total,
       porPlan,
@@ -458,6 +549,13 @@ export class AdminService {
         sin_dato: total - conEmpleo - sinEmpleo,
       },
       porVencer: porVencer.sort((a, b) => a.dias - b.dias),
+      dau_7d,
+      conv_7d,
+      email_stats: {
+        opens:    email_opens,
+        clicks:   email_clicks,
+        by_tipo:  email_by_tipo,
+      },
     };
   }
 

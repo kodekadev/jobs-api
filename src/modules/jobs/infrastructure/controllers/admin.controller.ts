@@ -2,6 +2,7 @@ import { Controller, Get, Post, Put, Delete, Param, Body, HttpCode, Request, For
 import { AdminService } from '../../application/admin.service';
 import { PostulacionesService } from '../../application/postulaciones.service';
 import env from '../../../shared/infrastructure/environment';
+import { Public } from '../../../shared/infrastructure/guards/jwt-auth.guard';
 
 // Nota: usa :userId (no :id) para no disparar el check anti-IDOR del JWT guard,
 // que bloquearía al admin operar sobre otros usuarios.
@@ -66,6 +67,15 @@ export class AdminController {
   getAnalytics(@Request() req: any) {
     this.service.checkAdmin(req.user.email);
     return this.service.getAnalytics();
+  }
+
+  @Public()
+  @Post('track')
+  @HttpCode(200)
+  async track(@Body() body: { tipo: string; uid?: string; email_tipo?: string }, @Request() req: any) {
+    const ip = (req.headers['x-forwarded-for'] ?? '').toString().split(',')[0].trim() || req.ip || '';
+    await this.service.trackEvent(body.tipo, body.uid, body.email_tipo, ip);
+    return { ok: true };
   }
 
   @Get('billing')

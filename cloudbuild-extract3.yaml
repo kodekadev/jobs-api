@@ -1,0 +1,13 @@
+steps:
+- name: 'gcr.io/jobs-425301/jobs-api@sha256:d61d79fc943ad01119266ee27e9f719c88b415041ded146fd60f07896abb1a63'
+  entrypoint: 'sh'
+  args:
+    - '-c'
+    - |
+      echo "=== SHARED STRUCTURE ==="
+      find /app/dist/modules/shared -type f | sort
+      echo "=== COPYING ==="
+      cp -r /app/dist/modules/shared /workspace/shared
+
+- name: 'gcr.io/cloud-builders/gsutil'
+  args: ['-m', 'cp', '-r', '/workspace/shared', 'gs://jobs-425301_cloudbuild/extracted-shared/']

@@ -1,0 +1,7 @@
+steps:
+- name: 'gcr.io/jobs-425301/jobs-api@sha256:d61d79fc943ad01119266ee27e9f719c88b415041ded146fd60f07896abb1a63'
+  entrypoint: 'sh'
+  args:
+    - '-c'
+    - |
+      cat /app/dist/modules/jobs/jobs.module.js
