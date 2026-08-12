@@ -6,7 +6,7 @@ import env from '../../shared/infrastructure/environment';
 
 const PLAN_PRICES: Record<string, number> = {
   PRO: 9990,
-  SPRINT: 14990,   // pago único — 30 días, sin renovación
+  TURBO: 14990,
   PREMIUM: 19990,
 };
 
@@ -14,7 +14,7 @@ const PLAN_PRICES: Record<string, number> = {
 // si no, se calcula desde FECHA_INICIO (30 días pagados, 14 días TRIAL).
 export const PLAN_VIGENTE_SQL = `(
   pc.PLAN = 'FREE'
-  OR (pc.PLAN = 'TRIAL' AND DATE(pc.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY))
+  OR (pc.PLAN = 'TRIAL' AND DATE(pc.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
   OR (pc.PLAN NOT IN ('FREE', 'TRIAL') AND (
     (pc.FECHA_FIN IS NOT NULL AND DATE(pc.FECHA_FIN) >= CURRENT_DATE())
     OR (pc.FECHA_FIN IS NULL AND DATE(pc.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))
@@ -22,7 +22,7 @@ export const PLAN_VIGENTE_SQL = `(
 )`;
 
 const CV_OPT_LIMITS: Record<string, number> = {
-  FREE: 0, PRO: 2, SPRINT: 3, PREMIUM: 5, TRIAL: 1,
+  FREE: 0, PRO: 2, TURBO: 3, PREMIUM: 5, TRIAL: 1,
 };
 
 @Injectable()
@@ -83,7 +83,7 @@ export class PlanService {
       } else if (row.FECHA_INICIO) {
         // Fallback: calcular desde FECHA_INICIO
         const fi = row.FECHA_INICIO?.value ? new Date(row.FECHA_INICIO.value) : new Date(row.FECHA_INICIO);
-        const dias = row.PLAN === 'TRIAL' ? 14 : 30;
+        const dias = row.PLAN === 'TRIAL' ? 7 : 30;
         fi.setDate(fi.getDate() + dias);
         fecha_fin = fi.toISOString().split('T')[0];
       }
@@ -128,7 +128,7 @@ export class PlanService {
   private async activatePlan(userId: string, plan: string) {
     const now = new Date().toISOString();
     const fin = new Date();
-    fin.setDate(fin.getDate() + (plan === 'TRIAL' ? 14 : 30));
+    fin.setDate(fin.getDate() + (plan === 'TRIAL' ? 7 : 30));
     const fechaFin = fin.toISOString();
 
     await this.bq.query(`
@@ -150,12 +150,14 @@ export class PlanService {
     const rows = await this.bq.query<any>(`
       SELECT
         u.NOMBRE, u.EMAIL, pc.PLAN,
-        COALESCE(DATE(pc.FECHA_FIN), DATE_ADD(DATE(pc.FECHA_INICIO), INTERVAL 30 DAY)) AS FECHA_FIN
+        COALESCE(DATE(pc.FECHA_FIN), DATE_ADD(DATE(pc.FECHA_INICIO),
+          INTERVAL IF(pc.PLAN = 'TRIAL', 7, 30) DAY)) AS FECHA_FIN
       FROM ${this.bq.t('USUARIOS')} u
       JOIN ${this.bq.t('PLAN_CONTRATADO')} pc ON u.ID_USUARIO = pc.ID_USUARIO
       WHERE pc.ESTADO = 'ACTIVO'
-        AND pc.PLAN NOT IN ('FREE', 'TRIAL')
-        AND COALESCE(DATE(pc.FECHA_FIN), DATE_ADD(DATE(pc.FECHA_INICIO), INTERVAL 30 DAY))
+        AND pc.PLAN NOT IN ('FREE')
+        AND COALESCE(DATE(pc.FECHA_FIN), DATE_ADD(DATE(pc.FECHA_INICIO),
+            INTERVAL IF(pc.PLAN = 'TRIAL', 7, 30) DAY))
             = DATE_ADD(CURRENT_DATE(), INTERVAL @dias DAY)
     `, { dias: diasAntes });
 

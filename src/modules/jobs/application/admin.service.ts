@@ -2,8 +2,14 @@ import { Injectable, ForbiddenException } from '@nestjs/common';
 import { BigQueryService } from '../../shared/infrastructure/services/bigquery.service';
 
 const PLAN_LIMITS: Record<string, number> = {
-  FREE: 5, PRO: 25, PREMIUM: 50, TRIAL: 25, TURBO: 40,
+  FREE: 5, PRO: 25, PREMIUM: 50, TRIAL: 10, TURBO: 40,
 };
+
+// Cuentas internas excluidas de métricas comerciales
+const INTERNAL_IDS = new Set([
+  'jobs5', 'jobs9', 'jobs15', 'jobs27',
+]);
+const INTERNAL_EMAIL_PATTERN = /^(bastian\.alfaro@gmail\.com|.*@kodekadev\.com)$/i;
 
 const ADMIN_EMAILS = ['bastian.alfaro@gmail.com'];
 
@@ -99,7 +105,7 @@ export class AdminService {
         CASE
           WHEN COALESCE(pl.PLAN, 'FREE') = 'FREE' THEN TRUE
           WHEN pl.PLAN = 'TRIAL'
-            AND DATE(pl.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY) THEN TRUE
+            AND DATE(pl.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY) THEN TRUE
           WHEN pl.PLAN NOT IN ('FREE', 'TRIAL') AND (
             (pl.FECHA_FIN IS NOT NULL AND DATE(pl.FECHA_FIN) >= CURRENT_DATE())
             OR (pl.FECHA_FIN IS NULL
@@ -162,7 +168,7 @@ export class AdminService {
           CASE
             WHEN PLAN = 'FREE' THEN TRUE
             WHEN PLAN = 'TRIAL'
-              AND DATE(FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY) THEN TRUE
+              AND DATE(FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY) THEN TRUE
             WHEN PLAN NOT IN ('FREE', 'TRIAL') AND (
               (FECHA_FIN IS NOT NULL AND DATE(FECHA_FIN) >= CURRENT_DATE())
               OR (FECHA_FIN IS NULL
@@ -290,7 +296,7 @@ export class AdminService {
       ? new Date(fechaFin).toISOString()
       : (() => {
           const d = new Date();
-          d.setDate(d.getDate() + (plan === 'TRIAL' ? 14 : 30));
+          d.setDate(d.getDate() + (plan === 'TRIAL' ? 7 : 30));
           return d.toISOString();
         })();
 
@@ -450,6 +456,110 @@ export class AdminService {
         sin_dato: total - conEmpleo - sinEmpleo,
       },
       porVencer: porVencer.sort((a, b) => a.dias - b.dias),
+    };
+  }
+
+  async getBilling() {
+    const rows = await this.bq.query<any>(`
+      WITH plan_latest AS (
+        SELECT ID_USUARIO, PLAN, ESTADO, FECHA_INICIO, FECHA_FIN,
+          ROW_NUMBER() OVER (PARTITION BY ID_USUARIO ORDER BY FECHA_INICIO DESC) AS rn
+        FROM ${this.bq.t('PLAN_CONTRATADO')}
+        WHERE ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE')
+      )
+      SELECT
+        u.ID_USUARIO,
+        u.NOMBRE,
+        u.EMAIL,
+        u.FECHA_REGISTRO,
+        COALESCE(pl.PLAN, 'FREE') AS plan,
+        pl.ESTADO AS plan_estado,
+        pl.FECHA_INICIO,
+        pl.FECHA_FIN,
+        CASE
+          WHEN COALESCE(pl.PLAN, 'FREE') = 'FREE' THEN TRUE
+          WHEN pl.PLAN = 'TRIAL'
+            AND DATE(pl.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY) THEN TRUE
+          WHEN pl.PLAN NOT IN ('FREE', 'TRIAL') AND (
+            (pl.FECHA_FIN IS NOT NULL AND DATE(pl.FECHA_FIN) >= CURRENT_DATE())
+            OR (pl.FECHA_FIN IS NULL
+              AND DATE(pl.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))
+          ) THEN TRUE
+          ELSE FALSE
+        END AS plan_vigente
+      FROM ${this.bq.t('USUARIOS')} u
+      LEFT JOIN plan_latest pl ON u.ID_USUARIO = pl.ID_USUARIO AND pl.rn = 1
+      WHERE u.NOMBRE != 'CUENTA_ELIMINADA'
+        AND NOT STARTS_WITH(u.EMAIL, 'deleted_')
+        AND u.ACTIVO IS NOT FALSE
+      ORDER BY pl.FECHA_INICIO DESC
+    `);
+
+    const PLAN_PRICES: Record<string, number> = { PRO: 9990, TURBO: 14990, PREMIUM: 19990 };
+
+    let totalUsuarios = 0, pagadores = 0, trial = 0, free = 0, vencidos = 0, cancelados = 0;
+    let mrr = 0;
+    const pagadoresList: any[] = [];
+    const trialList: any[] = [];
+
+    for (const r of rows) {
+      const uid = String(r.ID_USUARIO || '');
+      const email = String(r.EMAIL || '');
+      if (INTERNAL_IDS.has(uid.toLowerCase()) || INTERNAL_EMAIL_PATTERN.test(email)) continue;
+
+      totalUsuarios++;
+      const plan = r.plan || 'FREE';
+      const vigente = Boolean(r.plan_vigente);
+      const estado = r.plan_estado || null;
+
+      if (plan === 'TRIAL' && vigente) {
+        trial++;
+        trialList.push({
+          id: uid, nombre: r.NOMBRE || '', email,
+          fecha_inicio: r.FECHA_INICIO?.value ?? r.FECHA_INICIO ?? null,
+          fecha_fin: r.FECHA_FIN?.value ?? r.FECHA_FIN ?? null,
+        });
+      } else if (plan !== 'FREE' && plan !== 'TRIAL' && vigente) {
+        pagadores++;
+        const precio = PLAN_PRICES[plan] ?? 0;
+        if (estado !== 'CANCELADO_PENDIENTE') mrr += precio;
+        if (estado === 'CANCELADO_PENDIENTE') cancelados++;
+        pagadoresList.push({
+          id: uid, nombre: r.NOMBRE || '', email, plan, estado,
+          fecha_fin: r.FECHA_FIN?.value ?? r.FECHA_FIN ?? null,
+          precio,
+        });
+      } else if (!vigente && plan !== 'FREE') {
+        vencidos++;
+      } else {
+        free++;
+      }
+    }
+
+    // Total histórico: suma de precios de todos los planes pagados activados
+    const totalCobradoHistorico = pagadoresList.reduce((s: number, p: any) => s + (p.precio ?? 0), 0)
+      + vencidos * 9990; // estimación conservadora planes vencidos (todos como PRO)
+
+    return {
+      total_pagadores: pagadores,
+      total_trials: trial,
+      free,
+      vencidos,
+      cancelados,
+      mrr,
+      total_cobrado_historico: totalCobradoHistorico,
+      pagadores: pagadoresList
+        .sort((a: any, b: any) => b.precio - a.precio)
+        .map((p: any) => ({
+          nombre: p.nombre,
+          email:  p.email,
+          plan:   p.plan,
+          estado: p.estado,
+          monto:  p.precio,
+          fecha_inicio: null,
+          fecha_fin: p.fecha_fin,
+        })),
+      trials: trialList,
     };
   }
 

@@ -68,6 +68,12 @@ export class AdminController {
     return this.service.getAnalytics();
   }
 
+  @Get('billing')
+  getBilling(@Request() req: any) {
+    this.service.checkAdmin(req.user.email);
+    return this.service.getBilling();
+  }
+
   @Delete('users/:userId/portal/:portal')
   deletePortal(
     @Request() req: any,
