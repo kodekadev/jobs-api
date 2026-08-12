@@ -14,8 +14,8 @@ const PLAN_PRICES: Record<string, number> = {
 // si no, se calcula desde FECHA_INICIO (30 días pagados, 14 días TRIAL).
 export const PLAN_VIGENTE_SQL = `(
   pc.PLAN = 'FREE'
-  OR (pc.PLAN = 'TRIAL' AND DATE(pc.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
-  OR (pc.PLAN NOT IN ('FREE', 'TRIAL') AND (
+  OR ((pc.PLAN = 'TRIAL' OR pc.ESTADO = 'TRIAL') AND DATE(pc.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
+  OR (pc.PLAN NOT IN ('FREE', 'TRIAL') AND pc.ESTADO != 'TRIAL' AND (
     (pc.FECHA_FIN IS NOT NULL AND DATE(pc.FECHA_FIN) >= CURRENT_DATE())
     OR (pc.FECHA_FIN IS NULL AND DATE(pc.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))
   ))
@@ -67,29 +67,29 @@ export class PlanService {
   async getPlan(userId: string) {
     const rows = await this.bq.query<any>(`
       SELECT PLAN, ESTADO, FECHA_INICIO, FECHA_FIN FROM ${this.bq.t('PLAN_CONTRATADO')} pc
-      WHERE pc.ID_USUARIO = @id AND pc.ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE')
+      WHERE pc.ID_USUARIO = @id AND pc.ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE', 'TRIAL')
         AND ${PLAN_VIGENTE_SQL}
       ORDER BY FECHA_INICIO DESC LIMIT 1
     `, { id: userId });
 
     const row = rows[0];
+    // Legacy schema: PLAN='PRO' + ESTADO='TRIAL' → show as TRIAL
+    const planDisplay = row?.ESTADO === 'TRIAL' ? 'TRIAL' : (row?.PLAN || 'FREE');
     let fecha_fin: string | null = null;
 
-    if (row && row.PLAN !== 'FREE') {
+    if (row && planDisplay !== 'FREE') {
       if (row.FECHA_FIN) {
-        // Leer FECHA_FIN directamente desde BQ (permite override manual)
         const ff = row.FECHA_FIN?.value ? new Date(row.FECHA_FIN.value) : new Date(row.FECHA_FIN);
         fecha_fin = ff.toISOString().split('T')[0];
       } else if (row.FECHA_INICIO) {
-        // Fallback: calcular desde FECHA_INICIO
         const fi = row.FECHA_INICIO?.value ? new Date(row.FECHA_INICIO.value) : new Date(row.FECHA_INICIO);
-        const dias = row.PLAN === 'TRIAL' ? 7 : 30;
+        const dias = planDisplay === 'TRIAL' ? 7 : 30;
         fi.setDate(fi.getDate() + dias);
         fecha_fin = fi.toISOString().split('T')[0];
       }
     }
 
-    return { plan: row?.PLAN || 'FREE', estado: row?.ESTADO || null, fecha_fin };
+    return { plan: planDisplay, estado: row?.ESTADO || null, fecha_fin };
   }
 
   async cancelPlan(userId: string) {
