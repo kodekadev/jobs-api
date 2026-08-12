@@ -29,7 +29,7 @@ export class AdminService {
         SELECT ID_USUARIO, PLAN, ESTADO, FECHA_INICIO, FECHA_FIN,
           ROW_NUMBER() OVER (PARTITION BY ID_USUARIO ORDER BY FECHA_INICIO DESC) AS rn
         FROM ${this.bq.t('PLAN_CONTRATADO')}
-        WHERE ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE')
+        WHERE ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE', 'TRIAL')
       ),
       post_stats AS (
         SELECT
@@ -81,7 +81,7 @@ export class AdminService {
         u.NOMBRE,
         u.EMAIL,
         u.FECHA_REGISTRO,
-        COALESCE(pl.PLAN, 'FREE') AS plan,
+        CASE WHEN pl.ESTADO = 'TRIAL' THEN 'TRIAL' ELSE COALESCE(pl.PLAN, 'FREE') END AS plan,
         pl.ESTADO AS plan_estado,
         pl.FECHA_FIN,
         COALESCE(pa.ACTIVO, 0) AS autopilot_activo,
@@ -104,9 +104,9 @@ export class AdminService {
         COALESCE(por.cv_lab, 0)    AS cv_laborum,
         CASE
           WHEN COALESCE(pl.PLAN, 'FREE') = 'FREE' THEN TRUE
-          WHEN pl.PLAN = 'TRIAL'
+          WHEN (pl.PLAN = 'TRIAL' OR pl.ESTADO = 'TRIAL')
             AND DATE(pl.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY) THEN TRUE
-          WHEN pl.PLAN NOT IN ('FREE', 'TRIAL') AND (
+          WHEN pl.PLAN NOT IN ('FREE', 'TRIAL') AND pl.ESTADO != 'TRIAL' AND (
             (pl.FECHA_FIN IS NOT NULL AND DATE(pl.FECHA_FIN) >= CURRENT_DATE())
             OR (pl.FECHA_FIN IS NULL
               AND DATE(pl.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))
@@ -465,22 +465,22 @@ export class AdminService {
         SELECT ID_USUARIO, PLAN, ESTADO, FECHA_INICIO, FECHA_FIN,
           ROW_NUMBER() OVER (PARTITION BY ID_USUARIO ORDER BY FECHA_INICIO DESC) AS rn
         FROM ${this.bq.t('PLAN_CONTRATADO')}
-        WHERE ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE')
+        WHERE ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE', 'TRIAL')
       )
       SELECT
         u.ID_USUARIO,
         u.NOMBRE,
         u.EMAIL,
         u.FECHA_REGISTRO,
-        COALESCE(pl.PLAN, 'FREE') AS plan,
+        CASE WHEN pl.ESTADO = 'TRIAL' THEN 'TRIAL' ELSE COALESCE(pl.PLAN, 'FREE') END AS plan,
         pl.ESTADO AS plan_estado,
         pl.FECHA_INICIO,
         pl.FECHA_FIN,
         CASE
           WHEN COALESCE(pl.PLAN, 'FREE') = 'FREE' THEN TRUE
-          WHEN pl.PLAN = 'TRIAL'
+          WHEN (pl.PLAN = 'TRIAL' OR pl.ESTADO = 'TRIAL')
             AND DATE(pl.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY) THEN TRUE
-          WHEN pl.PLAN NOT IN ('FREE', 'TRIAL') AND (
+          WHEN pl.PLAN NOT IN ('FREE', 'TRIAL') AND pl.ESTADO != 'TRIAL' AND (
             (pl.FECHA_FIN IS NOT NULL AND DATE(pl.FECHA_FIN) >= CURRENT_DATE())
             OR (pl.FECHA_FIN IS NULL
               AND DATE(pl.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))
