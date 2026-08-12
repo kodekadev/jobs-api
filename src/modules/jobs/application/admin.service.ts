@@ -367,7 +367,7 @@ export class AdminService {
   }
 
   async getAnalytics() {
-    const [rows, dauRows, convRows, emailRows] = await Promise.all([
+    const [rows, dauRows, convRows, emailRows, funnelRows, retentionRows] = await Promise.all([
       this.bq.query<any>(`
         SELECT
           pf.PROFESION, pf.CARGOS, pf.UBICACIONES, pf.ACTUALMENTE_TRABAJANDO, pf.PRETENSION_GENERAL,
@@ -404,17 +404,19 @@ export class AdminService {
         GROUP BY 1 ORDER BY 1
       `),
 
-      // Conversiones (planes pagados activados) últimos 7 días
+      // Conversiones reales (pagos) últimos 30 días
+      // Excluye legacy TRIAL (PLAN='PRO' + ESTADO='TRIAL') y ADMIN
       this.bq.query<any>(`
         SELECT
           FORMAT_DATE('%Y-%m-%d', DATE(FECHA_INICIO, 'America/Santiago')) AS fecha,
           PLAN AS plan,
           COUNT(*) AS conversiones
         FROM ${this.bq.t('PLAN_CONTRATADO')}
-        WHERE ESTADO IN ('ACTIVO', 'TRIAL')
-          AND PLAN NOT IN ('FREE')
+        WHERE ESTADO = 'ACTIVO'
+          AND PLAN NOT IN ('FREE', 'TRIAL')
+          AND COALESCE(METODO_PAGO, '') NOT IN ('', 'ADMIN')
           AND DATE(FECHA_INICIO, 'America/Santiago')
-            >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL 7 DAY)
+            >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL 30 DAY)
         GROUP BY 1, 2 ORDER BY 1
       `),
 
@@ -426,6 +428,55 @@ export class AdminService {
           >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL 7 DAY)
         GROUP BY 1, 2
       `).catch(() => [] as any[]),
+
+      // Embudo de conversión: trials activos → pagos totales
+      this.bq.query<any>(`
+        SELECT
+          COUNTIF(ESTADO = 'TRIAL' OR (PLAN = 'TRIAL' AND ESTADO = 'ACTIVO')) AS trials_activos,
+          COUNTIF(
+            ESTADO = 'ACTIVO'
+            AND PLAN NOT IN ('FREE', 'TRIAL')
+            AND COALESCE(METODO_PAGO, '') NOT IN ('', 'ADMIN')
+            AND DATE(FECHA_FIN) >= CURRENT_DATE()
+          ) AS pagadores_activos,
+          COUNTIF(
+            ESTADO = 'ACTIVO'
+            AND PLAN NOT IN ('FREE', 'TRIAL')
+            AND COALESCE(METODO_PAGO, '') NOT IN ('', 'ADMIN')
+          ) AS pagadores_historico,
+          COUNTIF(ESTADO = 'CANCELADO_PENDIENTE') AS cancelados_pendientes
+        FROM (
+          SELECT ID_USUARIO, PLAN, ESTADO, FECHA_FIN, METODO_PAGO,
+            ROW_NUMBER() OVER (PARTITION BY ID_USUARIO ORDER BY FECHA_INICIO DESC) AS rn
+          FROM ${this.bq.t('PLAN_CONTRATADO')}
+        )
+        WHERE rn = 1
+      `),
+
+      // Retención: usuarios que siguen activos de los primeros 30 registrados
+      this.bq.query<any>(`
+        WITH primeros AS (
+          SELECT ID_USUARIO, DATE(FECHA_REGISTRO) AS fecha_registro
+          FROM ${this.bq.t('USUARIOS')}
+          WHERE NOMBRE != 'CUENTA_ELIMINADA'
+            AND NOT STARTS_WITH(COALESCE(EMAIL, ''), 'deleted_')
+          ORDER BY FECHA_REGISTRO ASC
+          LIMIT 50
+        ),
+        actividad AS (
+          SELECT id_usuario,
+            MAX(DATE(Fecha_Postulacion, 'America/Santiago')) AS ultima_postulacion
+          FROM ${this.bq.t('EMPLEOS')}
+          GROUP BY id_usuario
+        )
+        SELECT
+          COUNT(*) AS total,
+          COUNTIF(DATE_DIFF(CURRENT_DATE(), a.ultima_postulacion, DAY) <= 7)  AS activos_7d,
+          COUNTIF(DATE_DIFF(CURRENT_DATE(), a.ultima_postulacion, DAY) <= 30) AS activos_30d,
+          COUNTIF(a.ultima_postulacion IS NULL) AS nunca_postularon
+        FROM primeros p
+        LEFT JOIN actividad a ON LOWER(a.id_usuario) = LOWER(p.ID_USUARIO)
+      `),
     ]);
 
     const total = rows.length;
@@ -556,6 +607,18 @@ export class AdminService {
         clicks:   email_clicks,
         by_tipo:  email_by_tipo,
       },
+      funnel: funnelRows[0] ? {
+        trials_activos:       Number(funnelRows[0].trials_activos   ?? 0),
+        pagadores_activos:    Number(funnelRows[0].pagadores_activos ?? 0),
+        pagadores_historico:  Number(funnelRows[0].pagadores_historico ?? 0),
+        cancelados_pendientes: Number(funnelRows[0].cancelados_pendientes ?? 0),
+      } : null,
+      retencion_primeros_50: retentionRows[0] ? {
+        total:            Number(retentionRows[0].total         ?? 0),
+        activos_7d:       Number(retentionRows[0].activos_7d    ?? 0),
+        activos_30d:      Number(retentionRows[0].activos_30d   ?? 0),
+        nunca_postularon: Number(retentionRows[0].nunca_postularon ?? 0),
+      } : null,
     };
   }
 
