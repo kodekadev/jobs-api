@@ -68,18 +68,7 @@ export class EmailService {
           </div>`).join('')}
       </div>
 
-      <div style="background:#F0FDF4;border-radius:12px;padding:16px;margin-bottom:24px;border:1px solid #BBF7D0">
-        <p style="color:#166534;font-weight:700;font-size:13px;margin:0 0 4px">💡 ¿Usas LinkedIn?</p>
-        <p style="color:#15803D;font-size:13px;margin:0 0 10px">
-          Instala la extensión Chrome de AplicAI y postulamos también en LinkedIn automáticamente mientras navegas.
-        </p>
-        <a href="${env.frontendUrl}/extension"
-          style="color:#166534;font-size:13px;font-weight:600;text-decoration:underline">
-          Ver cómo instalar la extensión →
-        </a>
-      </div>
-
-      <a href="${env.frontendUrl}/postula-facil"
+<a href="${env.frontendUrl}/postula-facil"
         style="display:inline-block;background:linear-gradient(135deg,#1E6E82,#2A8FA5);color:white;padding:14px 28px;border-radius:10px;text-decoration:none;font-weight:700;font-size:15px">
         Completar mi perfil →
       </a>
