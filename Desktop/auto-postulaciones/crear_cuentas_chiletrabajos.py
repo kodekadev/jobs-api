@@ -22,7 +22,8 @@ os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS", r"C:\Users\bastian\.secr
 from dotenv import load_dotenv
 load_dotenv(os.path.join(_dir, ".env"))
 
-SOLO_USUARIO = None  # ej: "jobs8"
+SOLO_USUARIO = "jobs251"
+FORZAR       = True  # True = crear cuenta aunque ya exista en BQ
 
 
 def _run():
@@ -39,6 +40,7 @@ def _run():
     import bq
     from chiletrabajos.crear_cuenta import crear_cuenta_chiletrabajos
 
+    forzar = FORZAR or "--forzar" in sys.argv
     solo = SOLO_USUARIO or (sys.argv[1] if len(sys.argv) > 1 else None)
     all_users = bq.get_users_postula_facil()
     if solo:
@@ -51,11 +53,11 @@ def _run():
         nombre = user.get("NOMBRE") or uid
         print(f"\n{'='*55}\n  {nombre} ({uid})\n{'='*55}")
         try:
-            if bq.get_portal_account(uid, "chiletrabajos"):
+            if not forzar and bq.get_portal_account(uid, "chiletrabajos"):
                 print(f"  [{uid}] ya tiene cuenta — saltar")
                 skip += 1
                 continue
-            if crear_cuenta_chiletrabajos(uid, user):
+            if crear_cuenta_chiletrabajos(uid, user, forzar=forzar):
                 ok += 1
             else:
                 fail += 1

@@ -86,6 +86,7 @@ def get_users_postula_facil() -> list[dict]:
         WHERE pf.ID_USUARIO IS NOT NULL AND pf.ID_USUARIO != ''
           AND COALESCE(u.EMAIL, '') != ''
           AND pf.CV_URL IS NOT NULL AND pf.CV_URL != ''
+          AND COALESCE(u.CELULAR, '') != ''
     """
     rows = list(_query(query).result())
     return [dict(r) for r in rows]
@@ -174,10 +175,10 @@ def get_active_users() -> list[dict]:
           LEFT JOIN `{PROJECT}.{DATASET}.INFO_CLIENTE` ic
               ON LOWER(ic.ID_USUARIO) = LOWER(pf.ID_USUARIO)
           LEFT JOIN (
-            -- Un solo plan por usuario: el más reciente en estado activo/cancelado-pendiente
+            -- Un solo plan por usuario: el más reciente en estado activo/trial/cancelado-pendiente
             SELECT ID_USUARIO, PLAN, FECHA_INICIO, FECHA_FIN
             FROM `{PROJECT}.{DATASET}.PLAN_CONTRATADO`
-            WHERE ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE')
+            WHERE ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE', 'TRIAL')
             QUALIFY ROW_NUMBER() OVER (
               PARTITION BY LOWER(ID_USUARIO) ORDER BY FECHA_INICIO DESC
             ) = 1
@@ -187,6 +188,7 @@ def get_active_users() -> list[dict]:
             AND pf.UBICACIONES IS NOT NULL
             AND pf.PROFESION IS NOT NULL AND pf.PROFESION != ''
             AND pf.RUT IS NOT NULL AND pf.RUT != ''
+            AND COALESCE(TRIM(u.CELULAR), '') != ''
             AND (
               COALESCE(UPPER(pf.TIPO_BUSQUEDA), 'EMPLEO') = 'PRACTICA'
               OR (pf.PRETENSION_GENERAL IS NOT NULL AND pf.PRETENSION_GENERAL != '')
@@ -199,7 +201,7 @@ def get_active_users() -> list[dict]:
         d = dict(r)
         d.pop('pc_plan', None)
         d.pop('pc_fecha_inicio', None)
-        d.pop('pc_fecha_fin', None)
+        d['fecha_fin'] = d.pop('pc_fecha_fin', None)
         result.append(d)
     return result
 
@@ -350,7 +352,8 @@ def get_portal_account(user_id: str, portal: str) -> dict | None:
     """Retorna credenciales guardadas para un portal, o None si no existen."""
     query = f"""
         SELECT email, password,
-               COALESCE(cv_completo, FALSE) AS cv_completo
+               COALESCE(cv_completo, FALSE) AS cv_completo,
+               email_verificado
         FROM `{PROJECT}.{DATASET}.CUENTAS_PORTALES`
         WHERE id_usuario = @uid AND portal = @portal
         LIMIT 1
@@ -366,7 +369,10 @@ def get_portal_account(user_id: str, portal: str) -> dict | None:
             cv_ok = bool(r.cv_completo)
         except Exception:
             cv_ok = True
-        return {"email": r.email, "password": r.password, "cv_completo": cv_ok}
+        # None = columna existe pero sin dato (cuenta antigua) → no bloquear
+        ev = r.email_verificado  # True, False, o None
+        return {"email": r.email, "password": r.password, "cv_completo": cv_ok,
+                "email_verificado": ev}
     return None
 
 
@@ -393,24 +399,28 @@ def save_portal_account(user_id: str, portal: str, email: str, password: str) ->
 
 def save_portal_cookies(user_id: str, portal: str, cookies: list[dict],
                         email: str = "", password: str = "",
-                        cv_completo: bool | None = None) -> None:
+                        cv_completo: bool | None = None,
+                        email_verificado: bool | None = None) -> None:
     """Guarda cookies de sesión en CUENTAS_PORTALES. Crea la fila si no existe."""
     import json
     cookies_str = json.dumps(cookies)
     cv_set = "" if cv_completo is None else ", cv_completo = @cv_completo"
     cv_ins_col = "" if cv_completo is None else ", cv_completo"
     cv_ins_val = "" if cv_completo is None else ", @cv_completo"
+    ev_set = "" if email_verificado is None else ", email_verificado = @email_verificado"
+    ev_ins_col = "" if email_verificado is None else ", email_verificado"
+    ev_ins_val = "" if email_verificado is None else ", @email_verificado"
     query = f"""
         MERGE `{PROJECT}.{DATASET}.CUENTAS_PORTALES` AS t
         USING (SELECT @uid AS id_usuario, @portal AS portal) AS s
         ON t.id_usuario = s.id_usuario AND t.portal = s.portal
         WHEN MATCHED THEN
             UPDATE SET cookies_json = @cookies, cookies_at = CURRENT_TIMESTAMP(),
-                       updated_at = CURRENT_TIMESTAMP(){cv_set}
+                       updated_at = CURRENT_TIMESTAMP(){cv_set}{ev_set}
         WHEN NOT MATCHED THEN
-            INSERT (id_usuario, portal, email, password, cookies_json, cookies_at, created_at, updated_at{cv_ins_col})
+            INSERT (id_usuario, portal, email, password, cookies_json, cookies_at, created_at, updated_at{cv_ins_col}{ev_ins_col})
             VALUES (@uid, @portal, @email, @password, @cookies, CURRENT_TIMESTAMP(),
-                    CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(){cv_ins_val})
+                    CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP(){cv_ins_val}{ev_ins_val})
     """
     params = [
         bigquery.ScalarQueryParameter("uid",      "STRING", user_id),
@@ -421,24 +431,54 @@ def save_portal_cookies(user_id: str, portal: str, cookies: list[dict],
     ]
     if cv_completo is not None:
         params.append(bigquery.ScalarQueryParameter("cv_completo", "BOOL", cv_completo))
+    if email_verificado is not None:
+        params.append(bigquery.ScalarQueryParameter("email_verificado", "BOOL", email_verificado))
     _query(query, bigquery.QueryJobConfig(query_parameters=params)).result()
 
 
-def update_portal_account(user_id: str, portal: str, cv_completo: bool | None = None) -> None:
+def update_portal_account(user_id: str, portal: str, cv_completo: bool | None = None,
+                          email_verificado: bool | None = None,
+                          password_invalida: bool | None = None) -> None:
     """Actualiza campos de CUENTAS_PORTALES sin tocar cookies."""
-    if cv_completo is None:
+    sets, params = [], [
+        bigquery.ScalarQueryParameter("uid",    "STRING", user_id),
+        bigquery.ScalarQueryParameter("portal", "STRING", portal),
+    ]
+    if cv_completo is not None:
+        sets.append("cv_completo = @cv_completo")
+        params.append(bigquery.ScalarQueryParameter("cv_completo", "BOOL", cv_completo))
+    if email_verificado is not None:
+        sets.append("email_verificado = @email_verificado")
+        params.append(bigquery.ScalarQueryParameter("email_verificado", "BOOL", email_verificado))
+    if password_invalida is not None:
+        sets.append("password_invalida = @password_invalida")
+        params.append(bigquery.ScalarQueryParameter("password_invalida", "BOOL", password_invalida))
+    if not sets:
         return
     query = f"""
         UPDATE `{PROJECT}.{DATASET}.CUENTAS_PORTALES`
-        SET cv_completo = @cv_completo, updated_at = CURRENT_TIMESTAMP()
+        SET {", ".join(sets)}, updated_at = CURRENT_TIMESTAMP()
         WHERE id_usuario = @uid AND portal = @portal
     """
-    params = [
-        bigquery.ScalarQueryParameter("uid",         "STRING", user_id),
-        bigquery.ScalarQueryParameter("portal",      "STRING", portal),
-        bigquery.ScalarQueryParameter("cv_completo", "BOOL",   cv_completo),
-    ]
     _query(query, bigquery.QueryJobConfig(query_parameters=params)).result()
+
+
+def get_cuentas_sin_verificar(portal: str) -> list[dict]:
+    """Retorna cuentas de un portal con email_verificado = FALSE y sin password inválida."""
+    query = f"""
+        SELECT id_usuario, email, password
+        FROM `{PROJECT}.{DATASET}.CUENTAS_PORTALES`
+        WHERE portal = @portal
+          AND email_verificado = FALSE
+          AND (password_invalida IS NULL OR password_invalida = FALSE)
+          AND email IS NOT NULL AND email != ''
+        ORDER BY created_at
+    """
+    cfg = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("portal", "STRING", portal),
+    ])
+    return [{"id_usuario": r.id_usuario, "email": r.email, "password": r.password}
+            for r in _query(query, cfg).result()]
 
 
 def get_cookie_age_hours(user_id: str, portal: str) -> float | None:
