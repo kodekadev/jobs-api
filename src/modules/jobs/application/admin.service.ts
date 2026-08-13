@@ -367,13 +367,14 @@ export class AdminService {
   }
 
   async getAnalytics() {
-    const [rows, usersRows, dauRows, convRows, emailRows, funnelRows, retentionRows] = await Promise.all([
+    const [rows, dauRows, convRows, emailRows, funnelRows, retentionRows] = await Promise.all([
       this.bq.query<any>(`
         SELECT
           pf.PROFESION, pf.CARGOS, pf.UBICACIONES, pf.ACTUALMENTE_TRABAJANDO, pf.PRETENSION_GENERAL,
           EXTRACT(YEAR FROM CURRENT_DATE())
             - EXTRACT(YEAR FROM SAFE_CAST(pf.FECHA_NACIMIENTO AS DATE)) AS edad_aprox,
-          u.NOMBRE, u.EMAIL, COALESCE(pc.PLAN, 'FREE') AS plan,
+          u.NOMBRE, u.EMAIL,
+          CASE WHEN pc.ESTADO = 'TRIAL' THEN 'TRIAL' ELSE COALESCE(pc.PLAN, 'FREE') END AS plan,
           pc.FECHA_FIN,
           DATE_DIFF(DATE(pc.FECHA_FIN), CURRENT_DATE(), DAY) AS dias_para_vencer
         FROM ${this.bq.t('POSTULA_FACIL')} pf
@@ -382,32 +383,13 @@ export class AdminService {
         LEFT JOIN (
           SELECT ID_USUARIO, PLAN, ESTADO, FECHA_FIN, FECHA_INICIO
           FROM ${this.bq.t('PLAN_CONTRATADO')}
-          WHERE ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE')
+          WHERE ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE', 'TRIAL')
           QUALIFY ROW_NUMBER() OVER (
             PARTITION BY LOWER(ID_USUARIO) ORDER BY FECHA_INICIO DESC
           ) = 1
         ) pc ON LOWER(pc.ID_USUARIO) = LOWER(pf.ID_USUARIO)
         WHERE COALESCE(u.NOMBRE, '') != 'CUENTA_ELIMINADA'
           AND NOT STARTS_WITH(COALESCE(u.EMAIL, ''), 'deleted_')
-      `),
-
-      // Total real de usuarios registrados + distribución de planes
-      this.bq.query<any>(`
-        WITH plan_latest AS (
-          SELECT ID_USUARIO,
-            CASE WHEN ESTADO = 'TRIAL' THEN 'TRIAL' ELSE PLAN END AS plan
-          FROM ${this.bq.t('PLAN_CONTRATADO')}
-          QUALIFY ROW_NUMBER() OVER (PARTITION BY LOWER(ID_USUARIO) ORDER BY FECHA_INICIO DESC) = 1
-        )
-        SELECT
-          COALESCE(pl.plan, 'FREE') AS plan,
-          COUNT(*) AS cantidad
-        FROM ${this.bq.t('USUARIOS')} u
-        LEFT JOIN plan_latest pl ON LOWER(pl.ID_USUARIO) = LOWER(u.ID_USUARIO)
-        WHERE u.NOMBRE != 'CUENTA_ELIMINADA'
-          AND NOT STARTS_WITH(COALESCE(u.EMAIL, ''), 'deleted_')
-        GROUP BY 1
-        ORDER BY 2 DESC
       `),
 
       // DAU últimos 7 días (desde EMPLEOS)
@@ -498,13 +480,8 @@ export class AdminService {
       `),
     ]);
 
-    // Total y distribución de planes vienen de USUARIOS (todos los registrados)
+    const total = rows.length;
     const porPlan: Record<string, number> = {};
-    let total = 0;
-    for (const r of usersRows) {
-      porPlan[r.plan] = Number(r.cantidad);
-      total += Number(r.cantidad);
-    }
     const edades: Record<string, number> = { '18-25': 0, '26-35': 0, '36-45': 0, '46-55': 0, '55+': 0, 'sin_dato': 0 };
     const profesionesCnt: Record<string, number> = {};
     const ubicacionesCnt: Record<string, number> = {};
@@ -515,6 +492,7 @@ export class AdminService {
 
     for (const r of rows) {
       const plan = r.plan || 'FREE';
+      porPlan[plan] = (porPlan[plan] || 0) + 1;
 
       // Edad
       const edad = Number(r.edad_aprox);
@@ -620,7 +598,7 @@ export class AdminService {
       empleo: {
         con:      conEmpleo,
         sin:      sinEmpleo,
-        sin_dato: rows.length - conEmpleo - sinEmpleo,
+        sin_dato: total - conEmpleo - sinEmpleo,
       },
       porVencer: porVencer.sort((a, b) => a.dias - b.dias),
       dau_7d,
