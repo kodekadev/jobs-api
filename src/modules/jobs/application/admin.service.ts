@@ -514,6 +514,8 @@ export class AdminService {
     const porVencer: any[] = [];
 
     for (const r of rows) {
+      const plan = r.plan || 'FREE';
+
       // Edad
       const edad = Number(r.edad_aprox);
       if (!r.edad_aprox || isNaN(edad) || edad < 15 || edad > 90) edades['sin_dato']++;
