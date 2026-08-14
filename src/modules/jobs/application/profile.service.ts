@@ -106,12 +106,12 @@ export class ProfileService {
     return { success: true, cv_url: cvUrl };
   }
 
-  async saveAutopilotFeedback(userId: string, ratingServicio: number, ratingPostulaciones: number, comentario: string) {
+  async saveAutopilotFeedback(userId: string, ratingServicio: number, ratingPostulaciones: number, comentario: string, tipo: string) {
     await this.bq.query(`
       INSERT INTO ${this.bq.t('AUTOPILOT_FEEDBACK')}
-        (ID_USUARIO, RATING_SERVICIO, RATING_POSTULACIONES, COMENTARIO, FECHA)
-      VALUES (@id, @rs, @rp, @comentario, CURRENT_TIMESTAMP())
-    `, { id: userId, rs: ratingServicio || 0, rp: ratingPostulaciones || 0, comentario: comentario || '' });
+        (ID_USUARIO, RATING_SERVICIO, RATING_POSTULACIONES, COMENTARIO, TIPO, FECHA)
+      VALUES (@id, @rs, @rp, @comentario, @tipo, CURRENT_TIMESTAMP())
+    `, { id: userId, rs: ratingServicio || 0, rp: ratingPostulaciones || 0, comentario: comentario || '', tipo: tipo || 'desconocido' });
 
     return { success: true };
   }

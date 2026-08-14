@@ -51,9 +51,10 @@ export class ProfileController {
     rating_servicio: number;
     rating_postulaciones: number;
     comentario: string;
+    tipo: string;
   }) {
     return this.profileService.saveAutopilotFeedback(
-      body.id, body.rating_servicio, body.rating_postulaciones, body.comentario,
+      body.id, body.rating_servicio, body.rating_postulaciones, body.comentario, body.tipo,
     );
   }
 }
