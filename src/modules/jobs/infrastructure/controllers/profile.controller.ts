@@ -43,4 +43,17 @@ export class ProfileController {
   toggleAuto(@Body() body: { id: string; activo: number }) {
     return this.profileService.toggleAutoPostulaciones(body.id, body.activo ? 1 : 0);
   }
+
+  @Post('autopilot-feedback')
+  @HttpCode(200)
+  autopilotFeedback(@Body() body: {
+    id: string;
+    rating_servicio: number;
+    rating_postulaciones: number;
+    comentario: string;
+  }) {
+    return this.profileService.saveAutopilotFeedback(
+      body.id, body.rating_servicio, body.rating_postulaciones, body.comentario,
+    );
+  }
 }
