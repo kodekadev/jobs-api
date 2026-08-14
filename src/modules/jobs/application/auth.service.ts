@@ -136,8 +136,9 @@ export class AuthService {
     ).catch(() => null);
 
     this.telegram.newUser(nombre, emailNorm, 'google');
+    this.assignTrial(id).catch(() => null);
 
-    const newUser = { ID_USUARIO: id, NOMBRE: nombre, EMAIL: emailNorm, PLAN: 'FREE', AUTO_ACTIVO: false };
+    const newUser = { ID_USUARIO: id, NOMBRE: nombre, EMAIL: emailNorm, PLAN: 'TRIAL', AUTO_ACTIVO: false };
     return this.buildResponse(newUser);
   }
 
@@ -226,6 +227,8 @@ export class AuthService {
         DELETE FROM ${this.bq.t('EMAIL_VERIFICATIONS')} WHERE ID_USUARIO = @id
       `, { id: userId }),
     ]);
+
+    await this.assignTrial(userId);
 
     this.email.send(
       emailNorm,
