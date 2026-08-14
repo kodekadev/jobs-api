@@ -1,12 +1,16 @@
 import { Controller, Post, Headers, UnauthorizedException } from '@nestjs/common';
 import { PlanService } from '../../application/plan.service';
+import { AuthService } from '../../application/auth.service';
 import env from '../../../shared/infrastructure/environment';
 import { Public } from '../../../shared/infrastructure/guards/jwt-auth.guard';
 
 @Public() // valida su propio CRON_SECRET (no es un JWT de usuario)
 @Controller('cron')
 export class CronController {
-  constructor(private readonly planService: PlanService) {}
+  constructor(
+    private readonly planService: PlanService,
+    private readonly authService: AuthService,
+  ) {}
 
   // Cloud Scheduler llama este endpoint diariamente.
   // Header: Authorization: Bearer <CRON_SECRET>
@@ -26,5 +30,13 @@ export class CronController {
       enviados_7_dias: r7.enviados,
       enviados_1_dia: r1.enviados,
     };
+  }
+
+  @Post('cleanup-unverified')
+  async cleanupUnverified(@Headers('authorization') auth: string) {
+    if (!env.cronSecret || auth !== `Bearer ${env.cronSecret}`) {
+      throw new UnauthorizedException('Forbidden');
+    }
+    return this.authService.cleanupUnverifiedUsers();
   }
 }

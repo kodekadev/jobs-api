@@ -440,6 +440,36 @@ export class AuthService {
     return { success: true };
   }
 
+  // ─── CLEANUP USUARIOS NO VERIFICADOS ─────────────────────────────────────
+  async cleanupUnverifiedUsers() {
+    // Solo borra EMAIL_VERIFICADO = false (no NULL — esos son usuarios anteriores al feature).
+    // Espera 48h desde FECHA_REGISTRO antes de borrar.
+    const rows = await this.bq.query<any>(`
+      SELECT ID_USUARIO FROM ${this.bq.t('USUARIOS')}
+      WHERE EMAIL_VERIFICADO = false
+        AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), FECHA_REGISTRO, HOUR) >= 48
+    `);
+
+    if (!rows.length) return { ok: true, eliminados: 0 };
+
+    const ids = rows.map((r: any) => r.ID_USUARIO);
+
+    await Promise.all([
+      this.bq.query(`
+        DELETE FROM ${this.bq.t('EMAIL_VERIFICATIONS')}
+        WHERE ID_USUARIO IN UNNEST(@ids)
+      `, { ids }),
+      this.bq.query(`
+        DELETE FROM ${this.bq.t('USUARIOS')}
+        WHERE ID_USUARIO IN UNNEST(@ids)
+          AND EMAIL_VERIFICADO = false
+      `, { ids }),
+    ]);
+
+    console.log(`[cron] cleanup-unverified: ${ids.length} usuarios eliminados`);
+    return { ok: true, eliminados: ids.length };
+  }
+
   // ─── HELPERS ──────────────────────────────────────────────────────────────
 
   // Asigna TRIAL de 14 días al registrarse. Si ya tiene un plan activo no lo pisa.
