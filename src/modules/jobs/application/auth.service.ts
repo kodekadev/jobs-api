@@ -396,6 +396,18 @@ export class AuthService {
     return { success: true };
   }
 
+  // ─── SET CELULAR ──────────────────────────────────────────────────────────
+  async setCelular(userId: string, celular: string) {
+    const celularRegex = /^\+56[0-9]{9}$/;
+    if (!celularRegex.test(celular)) throw new BadRequestException('Celular inválido (+56XXXXXXXXX)');
+
+    await this.bq.query(`
+      UPDATE ${this.bq.t('USUARIOS')} SET CELULAR = @celular WHERE ID_USUARIO = @id
+    `, { celular, id: userId });
+
+    return { success: true, celular };
+  }
+
   // ─── DELETE ACCOUNT ───────────────────────────────────────────────────────
   async deleteAccount(userId: string, password: string) {
     const rows = await this.bq.query<any>(`

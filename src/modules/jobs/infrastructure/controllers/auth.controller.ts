@@ -80,4 +80,10 @@ export class AuthController {
   deleteAccount(@Body() body: { id: string; password: string }) {
     return this.authService.deleteAccount(body.id, body.password);
   }
+
+  @Post('set-celular')
+  @HttpCode(200)
+  setCelular(@Body() body: { id: string; celular: string }) {
+    return this.authService.setCelular(body.id, body.celular);
+  }
 }
