@@ -106,7 +106,10 @@ export class AdminService {
         CASE
           WHEN COALESCE(pl.PLAN, 'FREE') = 'FREE' THEN TRUE
           WHEN (pl.PLAN = 'TRIAL' OR pl.ESTADO = 'TRIAL')
-            AND DATE(pl.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY) THEN TRUE
+            AND (
+              (pl.FECHA_FIN IS NOT NULL AND DATE(pl.FECHA_FIN) >= CURRENT_DATE())
+              OR (pl.FECHA_FIN IS NULL AND DATE(pl.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
+            ) THEN TRUE
           WHEN pl.PLAN NOT IN ('FREE', 'TRIAL') AND pl.ESTADO != 'TRIAL' AND (
             (pl.FECHA_FIN IS NOT NULL AND DATE(pl.FECHA_FIN) >= CURRENT_DATE())
             OR (pl.FECHA_FIN IS NULL
@@ -170,7 +173,10 @@ export class AdminService {
           CASE
             WHEN PLAN = 'FREE' THEN TRUE
             WHEN PLAN = 'TRIAL'
-              AND DATE(FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY) THEN TRUE
+              AND (
+                (FECHA_FIN IS NOT NULL AND DATE(FECHA_FIN) >= CURRENT_DATE())
+                OR (FECHA_FIN IS NULL AND DATE(FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
+              ) THEN TRUE
             WHEN PLAN NOT IN ('FREE', 'TRIAL') AND (
               (FECHA_FIN IS NOT NULL AND DATE(FECHA_FIN) >= CURRENT_DATE())
               OR (FECHA_FIN IS NULL
@@ -643,7 +649,10 @@ export class AdminService {
         CASE
           WHEN COALESCE(pl.PLAN, 'FREE') = 'FREE' THEN TRUE
           WHEN (pl.PLAN = 'TRIAL' OR pl.ESTADO = 'TRIAL')
-            AND DATE(pl.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY) THEN TRUE
+            AND (
+              (pl.FECHA_FIN IS NOT NULL AND DATE(pl.FECHA_FIN) >= CURRENT_DATE())
+              OR (pl.FECHA_FIN IS NULL AND DATE(pl.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
+            ) THEN TRUE
           WHEN pl.PLAN NOT IN ('FREE', 'TRIAL') AND pl.ESTADO != 'TRIAL' AND (
             (pl.FECHA_FIN IS NOT NULL AND DATE(pl.FECHA_FIN) >= CURRENT_DATE())
             OR (pl.FECHA_FIN IS NULL
