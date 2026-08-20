@@ -741,4 +741,21 @@ export class AdminService {
     if (Array.isArray(val)) return val;
     try { return JSON.parse(val); } catch { return []; }
   }
+
+  async getUserFeedback(userId: string) {
+    const rows = await this.bq.query<any>(`
+      SELECT RATING_SERVICIO, RATING_POSTULACIONES, COMENTARIO, TIPO, FECHA
+      FROM ${this.bq.t('AUTOPILOT_FEEDBACK')}
+      WHERE ID_USUARIO = @id
+      ORDER BY FECHA DESC
+      LIMIT 20
+    `, { id: userId });
+    return rows.map((r: any) => ({
+      rating_servicio:      r.RATING_SERVICIO ?? null,
+      rating_postulaciones: r.RATING_POSTULACIONES ?? null,
+      comentario:           r.COMENTARIO || '',
+      tipo:                 r.TIPO || '',
+      fecha:                r.FECHA?.value ?? r.FECHA ?? null,
+    }));
+  }
 }

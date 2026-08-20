@@ -52,6 +52,12 @@ export class AdminController {
     return this.postulaciones.getByUser(userId);
   }
 
+  @Get('users/:userId/feedback')
+  getFeedback(@Request() req: any, @Param('userId') userId: string) {
+    this.service.checkAdmin(req.user.email);
+    return this.service.getUserFeedback(userId);
+  }
+
   @Put('users/:userId/cargos')
   @HttpCode(200)
   setCargos(
