@@ -307,12 +307,14 @@ export class AdminService {
       `),
       this.bq.query<any>(`
         SELECT
+          FORMAT_DATE('%Y-%m-%d', DATE(FECHA, 'America/Santiago')) AS dia,
           EMAIL_TIPO,
           COUNTIF(TIPO = 'email_open') AS opens,
           COUNTIF(TIPO != 'email_open') AS clicks
         FROM ${this.bq.t('EMAIL_TRACKING')}
         WHERE FECHA >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)
-        GROUP BY EMAIL_TIPO
+        GROUP BY dia, EMAIL_TIPO
+        ORDER BY dia
       `).catch(() => [] as any[]),
     ]);
 
@@ -364,15 +366,25 @@ export class AdminService {
       .map(([nombre, count]) => ({ nombre, count }));
 
     const emailByTipo: Record<string, { opens: number; clicks: number }> = {};
+    const emailByDay:  Record<string, { opens: number; clicks: number }> = {};
     let totalOpens = 0, totalClicks = 0;
     for (const row of emailRows) {
       const tipo = row.EMAIL_TIPO || 'desconocido';
+      const dia  = String(row.dia);
       const o = Number(row.opens) || 0;
       const c = Number(row.clicks) || 0;
-      emailByTipo[tipo] = { opens: o, clicks: c };
+      if (!emailByTipo[tipo]) emailByTipo[tipo] = { opens: 0, clicks: 0 };
+      emailByTipo[tipo].opens  += o;
+      emailByTipo[tipo].clicks += c;
+      if (!emailByDay[dia]) emailByDay[dia] = { opens: 0, clicks: 0 };
+      emailByDay[dia].opens  += o;
+      emailByDay[dia].clicks += c;
       totalOpens  += o;
       totalClicks += c;
     }
+    const emailDaily = Object.entries(emailByDay)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([dia, s]) => ({ dia, opens: s.opens, clicks: s.clicks }));
 
     return {
       total: users.length,
@@ -394,6 +406,7 @@ export class AdminService {
         opens:   totalOpens,
         clicks:  totalClicks,
         by_tipo: emailByTipo,
+        daily:   emailDaily,
       },
     };
   }
