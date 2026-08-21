@@ -262,7 +262,7 @@ export class AdminService {
   }
 
   async getAnalytics() {
-    const [users, cargosRows, ubicRows, porVencerRows] = await Promise.all([
+    const [users, cargosRows, ubicRows, porVencerRows, emailRows] = await Promise.all([
       this.bq.query<any>(`
         WITH plan_activo AS (
           SELECT LOWER(ID_USUARIO) AS id_usuario, PLAN, FECHA_FIN
@@ -305,6 +305,15 @@ export class AdminService {
           AND DATE(pc.FECHA_FIN) BETWEEN CURRENT_DATE() AND DATE_ADD(CURRENT_DATE(), INTERVAL 7 DAY)
         ORDER BY pc.FECHA_FIN ASC
       `),
+      this.bq.query<any>(`
+        SELECT
+          EMAIL_TIPO,
+          COUNTIF(TIPO = 'email_open') AS opens,
+          COUNTIF(TIPO != 'email_open') AS clicks
+        FROM ${this.bq.t('EMAIL_TRACKING')}
+        WHERE FECHA >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)
+        GROUP BY EMAIL_TIPO
+      `).catch(() => [] as any[]),
     ]);
 
     const porPlan:      Record<string, number> = {};
@@ -354,6 +363,17 @@ export class AdminService {
       .sort((a, b) => b[1] - a[1]).slice(0, 10)
       .map(([nombre, count]) => ({ nombre, count }));
 
+    const emailByTipo: Record<string, { opens: number; clicks: number }> = {};
+    let totalOpens = 0, totalClicks = 0;
+    for (const row of emailRows) {
+      const tipo = row.EMAIL_TIPO || 'desconocido';
+      const o = Number(row.opens) || 0;
+      const c = Number(row.clicks) || 0;
+      emailByTipo[tipo] = { opens: o, clicks: c };
+      totalOpens  += o;
+      totalClicks += c;
+    }
+
     return {
       total: users.length,
       porPlan,
@@ -370,6 +390,11 @@ export class AdminService {
         fecha_fin: r.fecha_fin || '',
         dias:      Number(r.dias),
       })),
+      email_stats: {
+        opens:   totalOpens,
+        clicks:  totalClicks,
+        by_tipo: emailByTipo,
+      },
     };
   }
 
@@ -429,6 +454,19 @@ export class AdminService {
       total_trials:      Number(stats.trials)          || 0,
       total_admin:       Number(stats.admin_asignados) || 0,
     };
+  }
+
+  async trackEmailEvent(tipo: string, uid: string, emailTipo: string) {
+    try {
+      await this.bq.query(`
+        INSERT INTO ${this.bq.t('EMAIL_TRACKING')} (FECHA, TIPO, UID, EMAIL_TIPO)
+        VALUES (CURRENT_TIMESTAMP(), @tipo, @uid, @email_tipo)
+      `, { tipo, uid, email_tipo: emailTipo });
+    } catch (e: any) {
+      // Tabla puede no existir aún — loggear sin romper
+      console.error('[track] Error insertando evento:', e?.message);
+    }
+    return { ok: true };
   }
 
   private parseJson(val: any): any[] {

@@ -51,4 +51,10 @@ export class AdminController {
   getBilling() {
     return this.adminService.getBilling();
   }
+
+  @Post('track')
+  @HttpCode(200)
+  trackEvent(@Body() body: { tipo: string; uid: string; email_tipo?: string }) {
+    return this.adminService.trackEmailEvent(body.tipo, body.uid, body.email_tipo || '');
+  }
 }

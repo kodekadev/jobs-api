@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, BadRequestException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, BadRequestException, OnModuleInit } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
 import * as crypto from 'crypto';
@@ -8,11 +8,25 @@ import { EmailService } from '../../shared/infrastructure/services/email.service
 import env from '../../shared/infrastructure/environment';
 
 @Injectable()
-export class AuthService {
+export class AuthService implements OnModuleInit {
   constructor(
     private readonly bq: BigQueryService,
     private readonly email: EmailService,
   ) {}
+
+  async onModuleInit() {
+    try {
+      await this.bq.query(`
+        CREATE TABLE IF NOT EXISTS ${this.bq.t('EMAIL_VERIF_CODES')} (
+          EMAIL STRING NOT NULL,
+          CODE STRING NOT NULL,
+          EXPIRES_AT TIMESTAMP NOT NULL
+        )
+      `);
+    } catch (e: any) {
+      console.error('[AuthService] EMAIL_VERIF_CODES table init error:', e.message);
+    }
+  }
 
   // ─── LOGIN: single BigQuery JOIN that returns ALL user data ────────────────
   async login(emailRaw: string, password: string) {
