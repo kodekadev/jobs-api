@@ -314,9 +314,9 @@ export class AdminService {
       ON T.ID_USUARIO = S.ID_USUARIO
       WHEN MATCHED THEN
         UPDATE SET PLAN = @plan, ESTADO = 'ACTIVO', FECHA_INICIO = @now,
-          FECHA_FIN = @fechaFin, METODO_PAGO = 'ADMIN'
+          FECHA_FIN = @fechaFin, MEDIO_PAGO = 'ADMIN'
       WHEN NOT MATCHED THEN
-        INSERT (ID_USUARIO, PLAN, ESTADO, FECHA_INICIO, FECHA_FIN, METODO_PAGO)
+        INSERT (ID_USUARIO, PLAN, ESTADO, FECHA_INICIO, FECHA_FIN, MEDIO_PAGO)
         VALUES (@id, @plan, 'ACTIVO', @now, @fechaFin, 'ADMIN')
     `, { id: userId, plan, now: new Date().toISOString(), fechaFin: fin });
 
@@ -421,7 +421,7 @@ export class AdminService {
         FROM ${this.bq.t('PLAN_CONTRATADO')}
         WHERE ESTADO = 'ACTIVO'
           AND PLAN NOT IN ('FREE', 'TRIAL')
-          AND COALESCE(METODO_PAGO, '') NOT IN ('', 'ADMIN')
+          AND COALESCE(MEDIO_PAGO, '') NOT IN ('', 'ADMIN')
           AND DATE(FECHA_INICIO, 'America/Santiago')
             >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL 30 DAY)
         GROUP BY 1, 2 ORDER BY 1
@@ -429,11 +429,14 @@ export class AdminService {
 
       // Email events (tracking pixel / click) — tabla puede no existir aún
       this.bq.query<any>(`
-        SELECT tipo, email_tipo, COUNT(*) AS total, COUNT(DISTINCT uid) AS unicos
+        SELECT tipo, email_tipo,
+          FORMAT_DATE('%Y-%m-%d', DATE(created_at, 'America/Santiago')) AS dia,
+          COUNT(*) AS total, COUNT(DISTINCT uid) AS unicos
         FROM ${this.bq.t('EVENTOS_ANALYTICS')}
         WHERE DATE(created_at, 'America/Santiago')
           >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL 7 DAY)
-        GROUP BY 1, 2
+        GROUP BY 1, 2, 3
+        ORDER BY 3
       `).catch(() => [] as any[]),
 
       // Embudo de conversión: trials activos → pagos totales
@@ -443,17 +446,17 @@ export class AdminService {
           COUNTIF(
             ESTADO = 'ACTIVO'
             AND PLAN NOT IN ('FREE', 'TRIAL')
-            AND COALESCE(METODO_PAGO, '') NOT IN ('', 'ADMIN')
+            AND COALESCE(MEDIO_PAGO, '') NOT IN ('', 'ADMIN')
             AND DATE(FECHA_FIN) >= CURRENT_DATE()
           ) AS pagadores_activos,
           COUNTIF(
             ESTADO = 'ACTIVO'
             AND PLAN NOT IN ('FREE', 'TRIAL')
-            AND COALESCE(METODO_PAGO, '') NOT IN ('', 'ADMIN')
+            AND COALESCE(MEDIO_PAGO, '') NOT IN ('', 'ADMIN')
           ) AS pagadores_historico,
           COUNTIF(ESTADO = 'CANCELADO_PENDIENTE') AS cancelados_pendientes
         FROM (
-          SELECT ID_USUARIO, PLAN, ESTADO, FECHA_FIN, METODO_PAGO,
+          SELECT ID_USUARIO, PLAN, ESTADO, FECHA_FIN, MEDIO_PAGO,
             ROW_NUMBER() OVER (PARTITION BY ID_USUARIO ORDER BY FECHA_INICIO DESC) AS rn
           FROM ${this.bq.t('PLAN_CONTRATADO')}
         )
@@ -579,19 +582,27 @@ export class AdminService {
     // Email metrics
     let email_opens = 0, email_clicks = 0;
     const email_by_tipo: Record<string, { opens: number; clicks: number }> = {};
+    const email_by_day:  Record<string, { opens: number; clicks: number }> = {};
     for (const r of emailRows) {
       const tipo = String(r.tipo || '');
       const et   = String(r.email_tipo || 'desconocido');
+      const dia  = String(r.dia || '');
       const cnt  = Number(r.total);
       if (!email_by_tipo[et]) email_by_tipo[et] = { opens: 0, clicks: 0 };
+      if (!email_by_day[dia]) email_by_day[dia]  = { opens: 0, clicks: 0 };
       if (tipo === 'email_open') {
         email_opens += cnt;
         email_by_tipo[et].opens += cnt;
+        email_by_day[dia].opens += cnt;
       } else if (tipo.startsWith('email_click')) {
         email_clicks += cnt;
         email_by_tipo[et].clicks += cnt;
+        email_by_day[dia].clicks += cnt;
       }
     }
+    const email_daily = Object.entries(email_by_day)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([dia, s]) => ({ dia, opens: s.opens, clicks: s.clicks }));
 
     return {
       total,
@@ -613,6 +624,7 @@ export class AdminService {
         opens:    email_opens,
         clicks:   email_clicks,
         by_tipo:  email_by_tipo,
+        daily:    email_daily,
       },
       funnel: funnelRows[0] ? {
         trials_activos:       Number(funnelRows[0].trials_activos   ?? 0),
