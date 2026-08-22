@@ -190,7 +190,7 @@ export class PlanService {
     if (!amount) throw new Error('Plan inválido');
 
     const orderId = `jobs-${userId}-${Date.now()}`;
-    const urlConfirmation = `${env.frontendUrl}/api/plan/notificacion`;
+    const urlConfirmation = `${env.backendUrl || env.frontendUrl}/api/plan/notificacion`;
     const urlReturn = `${env.frontendUrl}/pago/retorno`;
 
     const params: Record<string, string> = {
