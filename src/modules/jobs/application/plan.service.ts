@@ -2,6 +2,7 @@ import { ForbiddenException, Injectable } from '@nestjs/common';
 import * as crypto from 'crypto';
 import { BigQueryService } from '../../shared/infrastructure/services/bigquery.service';
 import { EmailService } from '../../shared/infrastructure/services/email.service';
+import { TelegramService } from '../../shared/infrastructure/services/telegram.service';
 import env from '../../shared/infrastructure/environment';
 
 const PLAN_PRICES: Record<string, number> = {
@@ -33,6 +34,7 @@ export class PlanService {
   constructor(
     private readonly bq: BigQueryService,
     private readonly email: EmailService,
+    private readonly telegram: TelegramService,
   ) {}
 
   async getCvOptimizaciones(userId: string): Promise<{ usadas: number; limite: number; restantes: number }> {
@@ -273,11 +275,26 @@ export class PlanService {
 
     if (!rows.length) return;
 
-    await this.activatePlan(rows[0].ID_USUARIO, rows[0].PLAN);
+    const { ID_USUARIO: userId, PLAN: plan } = rows[0];
+
+    await this.activatePlan(userId, plan);
 
     await this.bq.query(`
       DELETE FROM ${this.bq.t('PAGOS_PENDIENTES')} WHERE TOKEN = @token
     `, { token }).catch(() => null);
+
+    // Notificación Telegram
+    const userRows = await this.bq.query<any>(`
+      SELECT NOMBRE, EMAIL FROM ${this.bq.t('USUARIOS')} WHERE ID_USUARIO = @id LIMIT 1
+    `, { id: userId }).catch(() => []);
+    const u = userRows[0];
+    const precio = { PRO: '9.990', TURBO: '14.990', PREMIUM: '19.990' }[plan] ?? '?';
+    this.telegram.send(
+      `💰 <b>Nuevo pago recibido</b>\n` +
+      `👤 ${u?.NOMBRE || userId}\n` +
+      `✉️ ${u?.EMAIL || ''}\n` +
+      `📦 Plan: <b>${plan}</b> — $${precio} CLP`
+    ).catch(() => null);
   }
 
   private sign(params: Record<string, string>): string {
