@@ -24,7 +24,8 @@ export class AdminService {
   }
 
   async getUsers() {
-    const rows = await this.bq.query<any>(`
+    const [rows, loginRows] = await Promise.all([
+      this.bq.query<any>(`
       WITH plan_latest AS (
         SELECT ID_USUARIO, PLAN, ESTADO, FECHA_INICIO, FECHA_FIN,
           ROW_NUMBER() OVER (PARTITION BY ID_USUARIO ORDER BY FECHA_INICIO DESC) AS rn
@@ -126,7 +127,16 @@ export class AdminService {
       WHERE u.NOMBRE != 'CUENTA_ELIMINADA'
         AND NOT STARTS_WITH(u.EMAIL, 'deleted_')
       ORDER BY postulaciones_hoy DESC, total_postulaciones DESC
-    `);
+    `),
+      this.bq.query<any>(`
+        SELECT uid, MAX(created_at) AS ultima_conexion
+        FROM ${this.bq.t('EVENTOS_ANALYTICS')}
+        WHERE tipo = 'login' AND uid IS NOT NULL
+        GROUP BY uid
+      `).catch(() => [] as any[]),
+    ]);
+
+    const loginMap = new Map<string, any>(loginRows.map((r: any) => [r.uid, r.ultima_conexion]));
 
     return rows.map((r: any) => ({
       id:                      r.ID_USUARIO,
@@ -158,6 +168,7 @@ export class AdminService {
       postulaciones_7dias_cpt: Number(r.postulaciones_7dias_cpt ?? 0),
       postulaciones_7dias_lab: Number(r.postulaciones_7dias_lab ?? 0),
       limite_dia:              PLAN_LIMITS[r.plan] ?? PLAN_LIMITS['FREE'],
+      ultima_conexion:         (() => { const v = loginMap.get(r.ID_USUARIO); return v?.value ?? v ?? null; })(),
     }));
   }
 
@@ -442,7 +453,9 @@ export class AdminService {
       // Embudo de conversión: trials activos → pagos totales
       this.bq.query<any>(`
         SELECT
-          COUNTIF(ESTADO = 'TRIAL' OR (PLAN = 'TRIAL' AND ESTADO = 'ACTIVO')) AS trials_activos,
+          COUNTIF((ESTADO = 'TRIAL' OR (PLAN = 'TRIAL' AND ESTADO = 'ACTIVO'))
+            AND (FECHA_FIN IS NULL OR DATE(FECHA_FIN) >= CURRENT_DATE())
+          ) AS trials_activos,
           COUNTIF(
             ESTADO = 'ACTIVO'
             AND PLAN NOT IN ('FREE', 'TRIAL')

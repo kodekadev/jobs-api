@@ -32,6 +32,22 @@ export class CronController {
     };
   }
 
+  // Marca planes vencidos como VENCIDO y envía email post-trial.
+  // Llamar tras el plan-expiry para que el email no llegue antes de que expire.
+  @Post('expire-plans')
+  async expirePlans(@Headers('authorization') auth: string) {
+    if (!env.cronSecret || auth !== `Bearer ${env.cronSecret}`) {
+      throw new UnauthorizedException('Forbidden');
+    }
+
+    const [expired, notified] = await Promise.all([
+      this.planService.expireOutdatedPlans(),
+      this.planService.notifyPostExpiry(),
+    ]);
+
+    return { ok: true, ...expired, enviados_post_expiry: notified.enviados };
+  }
+
   @Post('cleanup-unverified')
   async cleanupUnverified(@Headers('authorization') auth: string) {
     if (!env.cronSecret || auth !== `Bearer ${env.cronSecret}`) {

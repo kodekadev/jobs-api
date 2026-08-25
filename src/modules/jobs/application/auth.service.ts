@@ -69,6 +69,7 @@ export class AuthService {
       throw new UnauthorizedException('email_no_verificado');
     }
 
+    this.trackLogin(u.ID_USUARIO);
     return this.buildResponse(u);
   }
 
@@ -119,7 +120,10 @@ export class AuthService {
       LIMIT 1
     `, { email: emailNorm });
 
-    if (existing.length) return this.buildResponse(existing[0]);
+    if (existing.length) {
+      this.trackLogin(existing[0].ID_USUARIO);
+      return this.buildResponse(existing[0]);
+    }
 
     const id = await this.nextUserId();
     await this.bq.query(`
@@ -535,6 +539,14 @@ export class AuthService {
         activo: Boolean(u.AUTO_ACTIVO),
       },
     };
+  }
+
+  private trackLogin(userId: string): void {
+    const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    this.bq.query(`
+      INSERT INTO ${this.bq.t('EVENTOS_ANALYTICS')} (id, tipo, uid, email_tipo, ip, created_at)
+      VALUES (@id, 'login', @uid, NULL, NULL, CURRENT_TIMESTAMP())
+    `, { id, uid: userId }).catch(() => null);
   }
 
   private parseJson(val: any): any[] {

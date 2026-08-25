@@ -186,6 +186,53 @@ export class PlanService {
     return { enviados: rows.length };
   }
 
+  // ─── CRON: MARCAR PLANES VENCIDOS ────────────────────────────────────────
+  async expireOutdatedPlans(): Promise<{ ok: boolean }> {
+    await this.bq.query(`
+      UPDATE ${this.bq.t('PLAN_CONTRATADO')}
+      SET ESTADO = 'VENCIDO'
+      WHERE ESTADO IN ('ACTIVO', 'TRIAL')
+        AND PLAN != 'FREE'
+        AND FECHA_FIN IS NOT NULL
+        AND DATE(FECHA_FIN) < CURRENT_DATE()
+    `).catch(() => null);
+    return { ok: true };
+  }
+
+  // ─── CRON: EMAIL POST-VENCIMIENTO (día siguiente) ─────────────────────────
+  async notifyPostExpiry(): Promise<{ enviados: number }> {
+    const rows = await this.bq.query<any>(`
+      SELECT
+        u.NOMBRE, u.EMAIL, pc.ID_USUARIO,
+        COALESCE(ps.total_posts, 0) AS total_posts
+      FROM ${this.bq.t('USUARIOS')} u
+      JOIN ${this.bq.t('PLAN_CONTRATADO')} pc ON u.ID_USUARIO = pc.ID_USUARIO
+      LEFT JOIN (
+        SELECT id_usuario, COUNTIF(portal NOT IN ('email_directo', '')) AS total_posts
+        FROM ${this.bq.t('EMPLEOS')}
+        GROUP BY id_usuario
+      ) ps ON u.ID_USUARIO = ps.id_usuario
+      WHERE pc.ESTADO IN ('ACTIVO', 'TRIAL')
+        AND pc.PLAN != 'FREE'
+        AND pc.FECHA_FIN IS NOT NULL
+        AND DATE(pc.FECHA_FIN) = DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)
+        AND u.NOMBRE != 'CUENTA_ELIMINADA'
+        AND NOT STARTS_WITH(u.EMAIL, 'deleted_')
+    `).catch(() => [] as any[]);
+
+    await Promise.all(
+      rows.map((r: any) =>
+        this.email.send(
+          r.EMAIL,
+          '¿Qué lograste con AplicAI esta semana?',
+          this.email.postExpiryHtml(r.NOMBRE, Number(r.total_posts ?? 0)),
+        ).catch(() => null),
+      ),
+    );
+
+    return { enviados: rows.length };
+  }
+
   // ─── FLOW.CL: CREATE PAYMENT ORDER ────────────────────────────────────────
   async createCheckout(userId: string, plan: string, userEmail: string) {
     const amount = PLAN_PRICES[plan];

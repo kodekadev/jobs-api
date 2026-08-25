@@ -208,4 +208,42 @@ export class EmailService {
       body,
     );
   }
+
+  postExpiryHtml(nombre: string, postulaciones: number): string {
+    const headerContent = `
+      <h1 style="color:white;margin:16px 0 4px;font-size:22px">Tu período de prueba terminó</h1>
+      <p style="color:rgba(255,255,255,0.65);margin:0;font-size:14px">Pero lo que lograste sigue siendo tuyo</p>`;
+
+    const statColor = '#4ECDC4';
+    const body = `
+      <p style="color:#334155;font-size:15px;line-height:1.6;margin:0 0 20px">
+        Hola <strong>${nombre}</strong>, tu período de prueba de AplicAI ha terminado.
+        Esto es lo que logramos juntos mientras estuvo activo:
+      </p>
+
+      <div style="background:#F0F9FF;border-radius:16px;padding:24px;margin-bottom:24px;text-align:center">
+        <div style="font-size:48px;font-weight:800;color:${statColor};line-height:1;margin-bottom:4px">${postulaciones}</div>
+        <div style="color:#334155;font-size:15px;font-weight:600">postulaciones enviadas automáticamente</div>
+        <div style="color:#64748B;font-size:13px;margin-top:4px">mientras tú hacías otras cosas</div>
+      </div>
+
+      <p style="color:#334155;font-size:15px;line-height:1.6;margin:0 0 24px">
+        Para seguir recibiendo entrevistas sin esfuerzo, activa un plan pagado y el autopilot retoma inmediatamente.
+      </p>
+
+      <a href="${env.frontendUrl}/planes"
+        style="display:inline-block;background:linear-gradient(135deg,#1E6E82,#2A8FA5);color:white;padding:14px 28px;border-radius:10px;text-decoration:none;font-weight:700;font-size:15px">
+        Ver planes y continuar →
+      </a>
+
+      <p style="color:#94A3B8;font-size:13px;margin-top:24px;line-height:1.5">
+        ¿Tienes preguntas? Escríbenos a <a href="mailto:soporte@aplicai.cl" style="color:#2A8FA5">soporte@aplicai.cl</a>
+      </p>`;
+
+    return this.base(
+      'linear-gradient(135deg, #090F1E 0%, #0D2140 100%)',
+      headerContent,
+      body,
+    );
+  }
 }
