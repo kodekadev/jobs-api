@@ -161,6 +161,7 @@ export class PostulaFacilService {
           user[0].EMAIL,
           '¡Tu perfil de Postula Fácil está listo!',
           this.email.postulaFacilHtml(user[0].NOMBRE, body.cargos),
+          'postula_facil',
         ).catch(() => null);
       }
     }

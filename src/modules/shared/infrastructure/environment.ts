@@ -17,6 +17,7 @@ const env = {
   gcsBucketCv: process.env.GCS_BUCKET_CV || 'jobs-profile-cv',
   cronSecret: process.env.CRON_SECRET || '',
   adminPin:   process.env.ADMIN_PIN   || '',
+  resendWebhookSecret: process.env.RESEND_WEBHOOK_SECRET || '',
 };
 
 export default env;

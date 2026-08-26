@@ -1,5 +1,7 @@
 import { Injectable, ForbiddenException } from '@nestjs/common';
 import { BigQueryService } from '../../shared/infrastructure/services/bigquery.service';
+import { EmailService } from '../../shared/infrastructure/services/email.service';
+import env from '../../shared/infrastructure/environment';
 
 const PLAN_LIMITS: Record<string, number> = {
   FREE: 5, PRO: 25, PREMIUM: 50, TRIAL: 10, TURBO: 40,
@@ -15,7 +17,10 @@ const ADMIN_EMAILS = ['bastian.alfaro@gmail.com'];
 
 @Injectable()
 export class AdminService {
-  constructor(private readonly bq: BigQueryService) {}
+  constructor(
+    private readonly bq: BigQueryService,
+    private readonly email: EmailService,
+  ) {}
 
   checkAdmin(email: string) {
     if (!ADMIN_EMAILS.includes((email || '').toLowerCase())) {
@@ -759,6 +764,79 @@ export class AdminService {
           fecha_fin: p.fecha_fin,
         })),
       trials: trialList,
+    };
+  }
+
+  // ─── CAMPAÑAS ─────────────────────────────────────────────────────────────
+
+  async sendCampaign(uids: string[], descuentoPct: number, vigenciaHasta: string): Promise<{ enviados: number; codigo: string }> {
+    if (!uids.length) return { enviados: 0, codigo: '' };
+
+    // Generar código único
+    const codigo = Math.random().toString(36).slice(2, 6).toUpperCase() +
+                   Math.random().toString(36).slice(2, 6).toUpperCase();
+
+    // Guardar código en BQ (auto-crea tabla si no existe)
+    const doInsert = () => this.bq.dml(`
+      INSERT INTO ${this.bq.t('CODIGOS_PROMO')} (codigo, descuento_pct, vigencia_hasta, created_at)
+      VALUES (@codigo, @pct, @vigencia, CURRENT_TIMESTAMP())
+    `, { codigo, pct: descuentoPct, vigencia: vigenciaHasta });
+
+    try {
+      await doInsert();
+    } catch {
+      await this.bq.dml(`
+        CREATE TABLE IF NOT EXISTS ${this.bq.t('CODIGOS_PROMO')} (
+          codigo STRING NOT NULL,
+          descuento_pct INT64 NOT NULL,
+          vigencia_hasta DATE NOT NULL,
+          created_at TIMESTAMP NOT NULL
+        )
+      `);
+      await doInsert();
+    }
+
+    // Obtener emails de los UIDs seleccionados
+    const rows = await this.bq.query<any>(`
+      SELECT ID_USUARIO, NOMBRE, EMAIL
+      FROM ${this.bq.t('USUARIOS')}
+      WHERE ID_USUARIO IN UNNEST(@uids)
+        AND NOMBRE != 'CUENTA_ELIMINADA'
+        AND NOT STARTS_WITH(COALESCE(EMAIL, ''), 'deleted_')
+    `, { uids });
+
+    const promoUrl = `${env.frontendUrl}/planes?promo=${codigo}`;
+
+    await Promise.all(
+      rows.map((r: any) =>
+        this.email.send(
+          r.EMAIL,
+          `${r.NOMBRE.split(' ')[0]}, tenemos algo para ti`,
+          this.email.campaignPromoHtml(r.NOMBRE, descuentoPct, vigenciaHasta, promoUrl),
+          'campaign',
+        ).catch(() => null),
+      ),
+    );
+
+    return { enviados: rows.length, codigo };
+  }
+
+  async getPromoCode(codigo: string): Promise<{ valido: boolean; descuento_pct: number; vigencia_hasta: string } | null> {
+    const rows = await this.bq.query<any>(`
+      SELECT descuento_pct, vigencia_hasta
+      FROM ${this.bq.t('CODIGOS_PROMO')}
+      WHERE codigo = @codigo
+        AND vigencia_hasta >= CURRENT_DATE()
+      LIMIT 1
+    `, { codigo }).catch(() => [] as any[]);
+
+    if (!rows.length) return { valido: false, descuento_pct: 0, vigencia_hasta: '' };
+    const r = rows[0];
+    const vh = r.vigencia_hasta?.value ?? r.vigencia_hasta;
+    return {
+      valido: true,
+      descuento_pct: Number(r.descuento_pct),
+      vigencia_hasta: typeof vh === 'string' ? vh : new Date(vh).toISOString().split('T')[0],
     };
   }
 

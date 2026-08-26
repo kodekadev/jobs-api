@@ -90,6 +90,22 @@ export class AdminController {
     return this.service.getBilling();
   }
 
+  @Post('campaigns/send')
+  @HttpCode(200)
+  sendCampaign(
+    @Request() req: any,
+    @Body() body: { uids: string[]; descuento_pct: number; vigencia_hasta: string },
+  ) {
+    this.service.checkAdmin(req.user.email);
+    return this.service.sendCampaign(body.uids, body.descuento_pct, body.vigencia_hasta);
+  }
+
+  @Get('campaigns/promo/:codigo')
+  getPromoCode(@Request() req: any, @Param('codigo') codigo: string) {
+    this.service.checkAdmin(req.user.email);
+    return this.service.getPromoCode(codigo);
+  }
+
   @Delete('users/:userId/portal/:portal')
   deletePortal(
     @Request() req: any,

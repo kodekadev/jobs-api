@@ -10,8 +10,14 @@ export class EmailService {
     this.resend = new Resend(env.resendApiKey);
   }
 
-  async send(to: string, subject: string, html: string): Promise<void> {
-    await this.resend.emails.send({ from: env.fromEmail, to, subject, html });
+  async send(to: string, subject: string, html: string, emailTipo?: string): Promise<void> {
+    const from = emailTipo === 'campaign'
+      ? 'Bastián de AplicAI <soporte@aplicai.cl>'
+      : env.fromEmail;
+    await this.resend.emails.send({
+      from, to, subject, html,
+      ...(emailTipo ? { tags: [{ name: 'tipo', value: emailTipo }] } : {}),
+    });
   }
 
   // ─── TEMPLATES ────────────────────────────────────────────────────────────
@@ -204,6 +210,57 @@ export class EmailService {
 
     return this.base(
       'linear-gradient(135deg, #052e16 0%, #064e3b 100%)',
+      headerContent,
+      body,
+    );
+  }
+
+  campaignPromoHtml(nombre: string, descuentoPct: number, vigenciaHasta: string, promoUrl: string): string {
+    const fechaFmt = new Date(vigenciaHasta + 'T12:00:00').toLocaleDateString('es-CL', {
+      day: 'numeric', month: 'long', year: 'numeric',
+    });
+    const planes = [
+      { nombre: 'PRO',     base: 9990  },
+      { nombre: 'TURBO',   base: 14990 },
+      { nombre: 'PREMIUM', base: 19990 },
+    ].map(p => ({ ...p, precio: Math.round(p.base * (1 - descuentoPct / 100)) }));
+
+    const headerContent = `
+      <h1 style="color:white;margin:16px 0 4px;font-size:22px">Tenemos algo para ti, ${nombre.split(' ')[0]}</h1>
+      <p style="color:rgba(255,255,255,0.7);margin:0;font-size:14px">Válido hasta el ${fechaFmt}</p>`;
+
+    const body = `
+      <p style="color:#334155;font-size:15px;line-height:1.6;margin:0 0 20px">
+        Hola <strong>${nombre.split(' ')[0]}</strong>, queremos que puedas seguir postulando sin interrupciones.
+        Por eso preparamos un precio especial para ti, disponible por tiempo limitado.
+      </p>
+
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:24px">
+        ${planes.map(p => `
+          <div style="background:#F8FAFC;border-radius:12px;padding:16px;text-align:center;border:1px solid #E2E8F0">
+            <div style="font-size:13px;font-weight:700;color:#475569;margin-bottom:6px">${p.nombre}</div>
+            <div style="font-size:12px;color:#94A3B8;text-decoration:line-through">${p.base.toLocaleString('es-CL')} CLP</div>
+            <div style="font-size:18px;font-weight:800;color:#1E6E82">${p.precio.toLocaleString('es-CL')} CLP</div>
+            <div style="font-size:10px;color:#22C55E;font-weight:700;margin-top:2px">-${descuentoPct}%</div>
+          </div>`).join('')}
+      </div>
+
+      <a href="${promoUrl}"
+        style="display:inline-block;background:linear-gradient(135deg,#1E6E82,#2A8FA5);color:white;padding:14px 32px;border-radius:10px;text-decoration:none;font-weight:700;font-size:15px">
+        Ver mi precio especial →
+      </a>
+
+      <p style="color:#94A3B8;font-size:12px;margin-top:20px;line-height:1.5">
+        Válido hasta el <strong>${fechaFmt}</strong>. Un solo uso por cuenta.<br>
+        ¿Preguntas? <a href="mailto:soporte@aplicai.cl" style="color:#2A8FA5">soporte@aplicai.cl</a>
+      </p>
+
+      <p style="color:#CBD5E1;font-size:11px;margin-top:16px;border-top:1px solid #F1F5F9;padding-top:12px">
+        ¿Este correo llegó a la pestaña Promociones? Muévelo a Principal para no perderte nuestros mensajes.
+      </p>`;
+
+    return this.base(
+      'linear-gradient(135deg, #0C4A6E 0%, #075985 100%)',
       headerContent,
       body,
     );

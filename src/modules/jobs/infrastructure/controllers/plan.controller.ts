@@ -21,8 +21,14 @@ export class PlanController {
 
   @Post('checkout')
   @HttpCode(200)
-  createCheckout(@Body() body: { id: string; plan: string; email: string }) {
-    return this.planService.createCheckout(body.id, body.plan, body.email);
+  createCheckout(@Body() body: { id: string; plan: string; email: string; promo_code?: string }) {
+    return this.planService.createCheckout(body.id, body.plan, body.email, body.promo_code);
+  }
+
+  @Public()
+  @Get('promo/:codigo')
+  getPromo(@Param('codigo') codigo: string) {
+    return this.planService.getPromoCode(codigo);
   }
 
   @Public() // webhook de Flow — se valida contra la API de Flow con el token

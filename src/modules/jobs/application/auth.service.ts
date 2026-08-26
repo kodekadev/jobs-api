@@ -137,6 +137,7 @@ export class AuthService {
       emailNorm,
       '¡Bienvenido a AplicAI! Tu cuenta está activa',
       this.email.welcomeHtml(nombre),
+      'welcome',
     ).catch(() => null);
 
     this.telegram.newUser(nombre, emailNorm, 'google');
@@ -195,6 +196,7 @@ export class AuthService {
       emailNorm,
       `${code} es tu código de verificación de AplicAI`,
       this.email.verifyEmailHtml(body.nombre, code),
+      'verify_email',
     ).catch(() => null);
 
     return { success: true, pendingVerification: true };
@@ -238,6 +240,7 @@ export class AuthService {
       emailNorm,
       '¡Bienvenido a AplicAI! Tu cuenta está activa',
       this.email.welcomeHtml(nombre),
+      'welcome',
     ).catch(() => null);
 
     this.telegram.newUser(nombre, emailNorm, 'email');
@@ -335,6 +338,7 @@ export class AuthService {
       emailNorm,
       'Recupera tu contraseña — Jobs',
       this.email.resetPasswordHtml(user.NOMBRE, link),
+      'reset_password',
     );
 
     return { success: true };

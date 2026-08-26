@@ -1,0 +1,19 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: [build, -t, "gcr.io/jobs-425301/jobs-api:$BUILD_ID", .]
+  - name: gcr.io/cloud-builders/docker
+    args: [push, "gcr.io/jobs-425301/jobs-api:$BUILD_ID"]
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - jobs-api
+      - --image
+      - gcr.io/jobs-425301/jobs-api:$BUILD_ID
+      - --region
+      - us-central1
+      - --platform
+      - managed
+images:
+  - gcr.io/jobs-425301/jobs-api:$BUILD_ID

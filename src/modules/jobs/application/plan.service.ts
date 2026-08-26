@@ -179,6 +179,7 @@ export class PlanService {
           r.EMAIL,
           subject,
           this.email.planExpiryHtml(r.NOMBRE, r.PLAN, diasAntes, fechaFin),
+          'plan_expiry',
         ).catch(() => null);
       }),
     );
@@ -226,6 +227,7 @@ export class PlanService {
           r.EMAIL,
           '¿Qué lograste con AplicAI esta semana?',
           this.email.postExpiryHtml(r.NOMBRE, Number(r.total_posts ?? 0)),
+          'post_expiry',
         ).catch(() => null),
       ),
     );
@@ -233,10 +235,38 @@ export class PlanService {
     return { enviados: rows.length };
   }
 
+  // ─── PROMO CODES ──────────────────────────────────────────────────────────
+  async getPromoCode(codigo: string): Promise<{ valido: boolean; descuento_pct: number; vigencia_hasta: string }> {
+    const rows = await this.bq.query<any>(`
+      SELECT descuento_pct, vigencia_hasta
+      FROM ${this.bq.t('CODIGOS_PROMO')}
+      WHERE codigo = @codigo
+        AND vigencia_hasta >= CURRENT_DATE()
+      LIMIT 1
+    `, { codigo }).catch(() => [] as any[]);
+
+    if (!rows.length) return { valido: false, descuento_pct: 0, vigencia_hasta: '' };
+    const r = rows[0];
+    const vh = r.vigencia_hasta?.value ?? r.vigencia_hasta;
+    return {
+      valido: true,
+      descuento_pct: Number(r.descuento_pct),
+      vigencia_hasta: typeof vh === 'string' ? vh : new Date(vh).toISOString().split('T')[0],
+    };
+  }
+
   // ─── FLOW.CL: CREATE PAYMENT ORDER ────────────────────────────────────────
-  async createCheckout(userId: string, plan: string, userEmail: string) {
-    const amount = PLAN_PRICES[plan];
-    if (!amount) throw new Error('Plan inválido');
+  async createCheckout(userId: string, plan: string, userEmail: string, promoCode?: string) {
+    const baseAmount = PLAN_PRICES[plan];
+    if (!baseAmount) throw new Error('Plan inválido');
+
+    let amount = baseAmount;
+    if (promoCode) {
+      const promo = await this.getPromoCode(promoCode);
+      if (promo.valido) {
+        amount = Math.round(baseAmount * (1 - promo.descuento_pct / 100));
+      }
+    }
 
     const orderId = `jobs-${userId}-${Date.now()}`;
     const urlConfirmation = `${env.backendUrl || env.frontendUrl}/api/plan/notificacion`;
