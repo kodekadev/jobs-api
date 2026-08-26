@@ -143,9 +143,10 @@ export class AdminService {
       nombre:                  r.NOMBRE || '',
       email:                   r.EMAIL || '',
       fecha_registro:          r.FECHA_REGISTRO?.value ?? r.FECHA_REGISTRO ?? null,
-      plan:                    r.plan || 'FREE',
+      plan:                    Boolean(r.plan_vigente) ? (r.plan || 'FREE') : 'FREE',
       plan_estado:             r.plan_estado || null,
       plan_vigente:            Boolean(r.plan_vigente),
+      plan_original:           r.plan || 'FREE',
       fecha_fin:               r.FECHA_FIN?.value ?? r.FECHA_FIN ?? null,
       autopilot_activo:        Boolean(r.autopilot_activo),
       tiene_postulafacil:      Boolean(r.tiene_postulafacil),
@@ -167,7 +168,7 @@ export class AdminService {
       postulaciones_7dias_cht: Number(r.postulaciones_7dias_cht ?? 0),
       postulaciones_7dias_cpt: Number(r.postulaciones_7dias_cpt ?? 0),
       postulaciones_7dias_lab: Number(r.postulaciones_7dias_lab ?? 0),
-      limite_dia:              PLAN_LIMITS[r.plan] ?? PLAN_LIMITS['FREE'],
+      limite_dia:              Boolean(r.plan_vigente) ? (PLAN_LIMITS[r.plan] ?? PLAN_LIMITS['FREE']) : PLAN_LIMITS['FREE'],
       ultima_conexion:         (() => { const v = loginMap.get(r.ID_USUARIO); return v?.value ?? v ?? null; })(),
     }));
   }
