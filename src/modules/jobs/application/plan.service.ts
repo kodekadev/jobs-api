@@ -269,7 +269,7 @@ export class PlanService {
     }
 
     const orderId = `jobs-${userId}-${Date.now()}`;
-    const urlConfirmation = `${env.backendUrl || env.frontendUrl}/api/plan/notificacion`;
+    const urlConfirmation = `${env.backendUrl || 'https://jobs-api-994947687832.us-central1.run.app'}/api/plan/notificacion`;
     const urlReturn = `${env.frontendUrl}/pago/retorno`;
 
     const params: Record<string, string> = {
