@@ -59,7 +59,11 @@ export class AdminService {
           COUNTIF(
             DATE(Fecha_Postulacion, 'America/Santiago') >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL 7 DAY)
             AND portal = 'laborum'
-          ) AS sem_lab
+          ) AS sem_lab,
+          COUNTIF(
+            DATE(Fecha_Postulacion, 'America/Santiago') >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL 7 DAY)
+            AND portal = 'empleaxchile'
+          ) AS sem_exc
         FROM ${this.bq.t('EMPLEOS')}
         GROUP BY id_usuario
       ),
@@ -73,7 +77,9 @@ export class AdminService {
           MAX(CASE WHEN portal = 'computrabajo'  THEN 1 ELSE 0 END)                        AS tiene_cpt,
           MAX(CASE WHEN portal = 'computrabajo'  AND cv_completo = TRUE THEN 1 ELSE 0 END) AS cv_cpt,
           MAX(CASE WHEN portal = 'laborum'       THEN 1 ELSE 0 END)                        AS tiene_lab,
-          MAX(CASE WHEN portal = 'laborum'       AND cv_completo = TRUE THEN 1 ELSE 0 END) AS cv_lab
+          MAX(CASE WHEN portal = 'laborum'       AND cv_completo = TRUE THEN 1 ELSE 0 END) AS cv_lab,
+          MAX(CASE WHEN portal = 'empleaxchile'  THEN 1 ELSE 0 END)                        AS tiene_exc,
+          MAX(CASE WHEN portal = 'empleaxchile'  AND cv_completo = TRUE THEN 1 ELSE 0 END) AS cv_exc
         FROM ${this.bq.t('CUENTAS_PORTALES')}
         GROUP BY id_usuario
       )
@@ -96,6 +102,7 @@ export class AdminService {
         COALESCE(ps.sem_cht, 0)  AS postulaciones_7dias_cht,
         COALESCE(ps.sem_cpt, 0)  AS postulaciones_7dias_cpt,
         COALESCE(ps.sem_lab, 0)  AS postulaciones_7dias_lab,
+        COALESCE(ps.sem_exc, 0)  AS postulaciones_7dias_exc,
         COALESCE(por.tiene_tbj, 0) AS tiene_trabajando,
         COALESCE(por.cv_tbj, 0)    AS cv_trabajando,
         COALESCE(por.tiene_cht, 0) AS tiene_chiletrabajos,
@@ -104,6 +111,8 @@ export class AdminService {
         COALESCE(por.cv_cpt, 0)    AS cv_computrabajo,
         COALESCE(por.tiene_lab, 0) AS tiene_laborum,
         COALESCE(por.cv_lab, 0)    AS cv_laborum,
+        COALESCE(por.tiene_exc, 0) AS tiene_empleaxchile,
+        COALESCE(por.cv_exc, 0)    AS cv_empleaxchile,
         CASE
           WHEN COALESCE(pl.PLAN, 'FREE') = 'FREE' THEN TRUE
           WHEN (pl.PLAN = 'TRIAL' OR pl.ESTADO = 'TRIAL')
@@ -161,6 +170,8 @@ export class AdminService {
       cv_computrabajo:         Boolean(r.cv_computrabajo),
       tiene_laborum:           Boolean(r.tiene_laborum),
       cv_laborum:              Boolean(r.cv_laborum),
+      tiene_empleaxchile:      Boolean(r.tiene_empleaxchile),
+      cv_empleaxchile:         Boolean(r.cv_empleaxchile),
       postulaciones_hoy:       Number(r.postulaciones_hoy ?? 0),
       total_postulaciones:     Number(r.total_postulaciones ?? 0),
       postulaciones_7dias:     Number(r.postulaciones_7dias ?? 0),
@@ -168,6 +179,7 @@ export class AdminService {
       postulaciones_7dias_cht: Number(r.postulaciones_7dias_cht ?? 0),
       postulaciones_7dias_cpt: Number(r.postulaciones_7dias_cpt ?? 0),
       postulaciones_7dias_lab: Number(r.postulaciones_7dias_lab ?? 0),
+      postulaciones_7dias_exc: Number(r.postulaciones_7dias_exc ?? 0),
       limite_dia:              Boolean(r.plan_vigente) ? (PLAN_LIMITS[r.plan] ?? PLAN_LIMITS['FREE']) : PLAN_LIMITS['FREE'],
       ultima_conexion:         (() => { const v = loginMap.get(r.ID_USUARIO); return v?.value ?? v ?? null; })(),
     }));
