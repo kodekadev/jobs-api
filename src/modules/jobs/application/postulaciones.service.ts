@@ -96,7 +96,7 @@ export class PostulacionesService {
       `, { id: userId }),
       this.bq.query<any>(`
         SELECT
-          cargo, Empresa, Fecha_Postulacion, titulo_empleo, Descripcion, link,
+          id_empleo, cargo, Empresa, Fecha_Postulacion, titulo_empleo, Descripcion, link,
           COALESCE(portal,
             CASE
               WHEN STARTS_WITH(Descripcion, '[linkedin]') OR STARTS_WITH(Descripcion, '[extension]') THEN 'linkedin'
@@ -126,6 +126,7 @@ export class PostulacionesService {
       if (!grouped[cargo]) grouped[cargo] = [];
 
       grouped[cargo].push({
+        id_empleo:   r.id_empleo || r.link || '',
         empresa:     r.Empresa || '',
         fecha:       r.Fecha_Postulacion,
         estado:      'Enviada',

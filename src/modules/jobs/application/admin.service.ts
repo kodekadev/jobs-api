@@ -1,5 +1,6 @@
 import { Injectable, ForbiddenException } from '@nestjs/common';
 import { BigQueryService } from '../../shared/infrastructure/services/bigquery.service';
+import { EmailService } from '../../shared/infrastructure/services/email.service';
 
 const PLAN_LIMITS: Record<string, number> = {
   FREE: 5, PRO: 25, PREMIUM: 50, TRIAL: 10, TURBO: 40,
@@ -15,7 +16,10 @@ const ADMIN_EMAILS = ['bastian.alfaro@gmail.com'];
 
 @Injectable()
 export class AdminService {
-  constructor(private readonly bq: BigQueryService) {}
+  constructor(
+    private readonly bq: BigQueryService,
+    private readonly email: EmailService,
+  ) {}
 
   checkAdmin(email: string) {
     if (!ADMIN_EMAILS.includes((email || '').toLowerCase())) {
@@ -368,6 +372,14 @@ export class AdminService {
       DELETE FROM ${this.bq.t('CUENTAS_PORTALES')}
       WHERE LOWER(id_usuario) = LOWER(@id) AND LOWER(portal) = LOWER(@portal)
     `, { id: userId, portal });
+    return { success: true };
+  }
+
+  async deletePostulacion(userId: string, idEmpleo: string) {
+    await this.bq.query(`
+      DELETE FROM ${this.bq.t('EMPLEOS')}
+      WHERE id_usuario = @uid AND (id_empleo = @emp OR link = @emp)
+    `, { uid: userId, emp: idEmpleo });
     return { success: true };
   }
 
@@ -778,6 +790,136 @@ export class AdminService {
     if (!val) return [];
     if (Array.isArray(val)) return val;
     try { return JSON.parse(val); } catch { return []; }
+  }
+
+  // ─── Cargo quality ────────────────────────────────────────────────────────
+
+  private readonly _SENIORITY = new Set([
+    'jefe', 'gerente', 'director', 'coordinador', 'analista', 'asistente',
+    'auxiliar', 'ejecutivo', 'operario', 'supervisor', 'encargado', 'lider',
+    'especialista', 'tecnico', 'practicante', 'junior', 'senior', 'trainee',
+    'subgerente', 'responsable', 'ayudante', 'agente', 'profesional',
+    'consultor', 'consultora', 'vendedor', 'vendedora', 'comercial',
+    'subdirector', 'subdirectora', 'representante', 'promotor', 'promotora',
+  ]);
+
+  private _normCargo(text: string): string {
+    return text.normalize('NFKD').replace(/[̀-ͯ]/g, '')
+      .toLowerCase().replace(/\/[ao]s?\b/gi, '').trim();
+  }
+
+  private _isBadCargo(cargo: string): boolean {
+    const words = this._normCargo(cargo).split(/\s+/).filter(w => w.length > 2);
+    return words.length > 0 && words.every(w => this._SENIORITY.has(w));
+  }
+
+  async getCargoQuality() {
+    const rows = await this.bq.query<any>(`
+      SELECT u.ID_USUARIO, u.NOMBRE, u.EMAIL, pf.CARGOS
+      FROM ${this.bq.t('USUARIOS')} u
+      JOIN ${this.bq.t('POSTULA_FACIL')} pf ON pf.ID_USUARIO = u.ID_USUARIO
+      WHERE pf.CARGOS IS NOT NULL AND pf.CARGOS != '[]' AND pf.CARGOS != ''
+    `);
+
+    const flagged: any[] = [];
+    for (const r of rows) {
+      if (INTERNAL_EMAIL_PATTERN.test(r.EMAIL || '')) continue;
+      const cargos: string[] = this.parseJson(r.CARGOS);
+      if (!cargos.length) continue;
+      const badOnes = cargos.filter(c => this._isBadCargo(c));
+      if (badOnes.length > 0 && badOnes.length === cargos.length) {
+        flagged.push({
+          uid:    r.ID_USUARIO,
+          nombre: r.NOMBRE || '',
+          email:  r.EMAIL  || '',
+          cargos,
+          bad:    badOnes,
+        });
+      }
+    }
+    return flagged;
+  }
+
+  async notifyCargoQuality(uids: string[]) {
+    const all = await this.getCargoQuality();
+    const targets = uids.length ? all.filter(u => uids.includes(u.uid)) : all;
+    const sent: string[] = []; const failed: string[] = [];
+    for (const u of targets) {
+      try {
+        const html = this.email.cargoQualityHtml(u.nombre, u.cargos);
+        await this.email.send(u.email, 'Mejora tus cargos en AplicAI — postula mejor', html);
+        sent.push(u.email);
+      } catch { failed.push(u.email); }
+    }
+    return { sent: sent.length, failed };
+  }
+
+  async sendCampaign(uids: string[], descuento_pct: number, vigencia_hasta: string) {
+    if (!uids?.length) return { sent: 0, failed: [] };
+
+    const placeholders = uids.map((_, i) => `@uid${i}`).join(', ');
+    const params = Object.fromEntries(uids.map((uid, i) => [`uid${i}`, uid]));
+    const rows = await this.bq.query<any>(`
+      SELECT u.ID_USUARIO, u.NOMBRE, u.EMAIL,
+             pc.PLAN
+      FROM ${this.bq.t('USUARIOS')} u
+      LEFT JOIN (
+        SELECT ID_USUARIO, PLAN
+        FROM ${this.bq.t('PLAN_CONTRATADO')}
+        WHERE ESTADO IN ('ACTIVO','TRIAL')
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY ID_USUARIO ORDER BY FECHA_INICIO DESC) = 1
+      ) pc ON pc.ID_USUARIO = u.ID_USUARIO
+      WHERE u.ID_USUARIO IN (${placeholders})
+    `, params);
+
+    const fmtFecha = (s: string) => {
+      const [y, m, d] = s.split('-');
+      return `${d}/${m}/${y}`;
+    };
+    const vigFmt = vigencia_hasta ? fmtFecha(vigencia_hasta) : '';
+    const sent: string[] = [];
+    const failed: string[] = [];
+
+    for (const r of rows) {
+      const to = r.EMAIL || r.email;
+      const nombre = r.NOMBRE || r.nombre || 'usuario';
+      const plan = r.PLAN || r.plan || '';
+      if (!to) continue;
+      try {
+        const html = this.email.campaignHtml(nombre, descuento_pct, vigFmt, plan);
+        await this.email.send(to, `Oferta especial: ${descuento_pct}% de descuento en AplicAI`, html);
+        sent.push(to);
+      } catch {
+        failed.push(to);
+      }
+    }
+    return { sent: sent.length, failed };
+  }
+
+  async getPortalStats(days: number = 14) {
+    const rows = await this.bq.query<any>(`
+      SELECT
+        DATE(Fecha_Postulacion, 'America/Santiago') AS fecha,
+        portal,
+        COUNT(*) AS total
+      FROM ${this.bq.t('EMPLEOS')}
+      WHERE DATE(Fecha_Postulacion, 'America/Santiago') >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL @days DAY)
+        AND portal IS NOT NULL
+      GROUP BY fecha, portal
+      ORDER BY fecha ASC
+    `, { days });
+
+    // Pivotear: [{ fecha, computrabajo, laborum, chiletrabajos, empleaxchile }]
+    const byDate: Record<string, Record<string, number>> = {};
+    for (const r of rows) {
+      const d = r.fecha?.value ?? r.fecha;
+      if (!d) continue;
+      if (!byDate[d]) byDate[d] = {};
+      byDate[d][r.portal] = Number(r.total ?? 0);
+    }
+    return Object.entries(byDate)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([fecha, portales]) => ({ fecha, ...portales }));
   }
 
   async getUserFeedback(userId: string) {

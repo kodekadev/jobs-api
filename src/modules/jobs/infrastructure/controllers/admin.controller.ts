@@ -75,6 +75,35 @@ export class AdminController {
     return this.service.getAnalytics();
   }
 
+  @Get('cargo-quality')
+  getCargoQuality(@Request() req: any) {
+    this.service.checkAdmin(req.user.email);
+    return this.service.getCargoQuality();
+  }
+
+  @Post('cargo-quality/notify')
+  @HttpCode(200)
+  notifyCargoQuality(@Request() req: any, @Body() body: { uids?: string[] }) {
+    this.service.checkAdmin(req.user.email);
+    return this.service.notifyCargoQuality(body.uids ?? []);
+  }
+
+  @Post('campaigns/send')
+  @HttpCode(200)
+  sendCampaign(
+    @Request() req: any,
+    @Body() body: { uids: string[]; descuento_pct: number; vigencia_hasta: string },
+  ) {
+    this.service.checkAdmin(req.user.email);
+    return this.service.sendCampaign(body.uids, body.descuento_pct, body.vigencia_hasta);
+  }
+
+  @Get('portal-stats')
+  getPortalStats(@Request() req: any, @Query('days') days?: string) {
+    this.service.checkAdmin(req.user.email);
+    return this.service.getPortalStats(days ? Number(days) : 14);
+  }
+
   @Public()
   @Post('track')
   @HttpCode(200)
@@ -88,6 +117,16 @@ export class AdminController {
   getBilling(@Request() req: any) {
     this.service.checkAdmin(req.user.email);
     return this.service.getBilling();
+  }
+
+  @Delete('users/:userId/postulaciones')
+  deletePostulacion(
+    @Request() req: any,
+    @Param('userId') userId: string,
+    @Query('id_empleo') idEmpleo: string,
+  ) {
+    this.service.checkAdmin(req.user.email);
+    return this.service.deletePostulacion(userId, idEmpleo);
   }
 
   @Delete('users/:userId/portal/:portal')

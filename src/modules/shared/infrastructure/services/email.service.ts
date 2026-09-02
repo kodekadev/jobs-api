@@ -209,6 +209,92 @@ export class EmailService {
     );
   }
 
+  cargoQualityHtml(nombre: string, cargos: string[]): string {
+    const headerContent = `
+      <h1 style="color:white;margin:16px 0 4px;font-size:22px">Mejora tus cargos y postula mejor</h1>
+      <p style="color:rgba(255,255,255,0.65);margin:0;font-size:14px">Un pequeño ajuste puede hacer una gran diferencia</p>`;
+
+    const cargosList = cargos.map(c => `
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+        <span style="color:#F59E0B;font-size:14px">⚠</span>
+        <span style="color:#64748B;font-size:14px">${c}</span>
+      </div>`).join('');
+
+    const body = `
+      <p style="color:#334155;font-size:15px;line-height:1.6;margin:0 0 16px">
+        Hola <strong>${nombre}</strong>, notamos que tus cargos actuales son muy genéricos:
+      </p>
+
+      <div style="background:#FFFBEB;border-radius:12px;padding:16px;margin-bottom:20px;border-left:4px solid #F59E0B">
+        ${cargosList}
+        <p style="color:#92400E;font-size:13px;margin:12px 0 0;line-height:1.5">
+          Cargos como <strong>"Consultor"</strong> o <strong>"Director"</strong> solos hacen que el sistema postule a empleos de rubros muy distintos (ingeniería, salud, tecnología) que quizás no te interesan.
+        </p>
+      </div>
+
+      <p style="color:#334155;font-size:14px;line-height:1.6;margin:0 0 8px"><strong>¿Cómo mejorarlo?</strong> Agrega el rubro o área a tu cargo:</p>
+
+      <div style="background:#F0FDF4;border-radius:12px;padding:16px;margin-bottom:24px">
+        ${[
+          ['Consultor → ', 'Consultor de Gestión, Consultor Organizacional, Consultor Financiero'],
+          ['Director → ', 'Director Comercial, Director de Operaciones, Director de Proyectos'],
+          ['Vendedor → ', 'Ejecutivo de Ventas B2B, Vendedor Industrial, Ejecutivo Comercial'],
+        ].map(([antes, despues]) => `
+          <div style="margin-bottom:8px;font-size:13px">
+            <span style="color:#EF4444">${antes}</span>
+            <span style="color:#16A34A">${despues}</span>
+          </div>`).join('')}
+      </div>
+
+      <a href="${env.frontendUrl}/postula-facil"
+        style="display:inline-block;background:linear-gradient(135deg,#1E6E82,#2A8FA5);color:white;padding:14px 28px;border-radius:10px;text-decoration:none;font-weight:700;font-size:15px">
+        Actualizar mis cargos →
+      </a>
+
+      <p style="color:#94A3B8;font-size:13px;margin-top:24px;line-height:1.5">
+        ¿Tienes dudas? Escríbenos a <a href="mailto:soporte@aplicai.cl" style="color:#2A8FA5">soporte@aplicai.cl</a>
+      </p>`;
+
+    return this.base('linear-gradient(135deg, #78350F 0%, #D97706 100%)', headerContent, body);
+  }
+
+  campaignHtml(nombre: string, descuento: number, vigencia: string, plan: string): string {
+    const PRICES: Record<string, number> = { PRO: 9990, TURBO: 14990, PREMIUM: 19990 };
+    const plansToShow = plan && PRICES[plan] ? [plan] : ['PRO', 'TURBO', 'PREMIUM'];
+    const precio = (p: string) => Math.round(PRICES[p] * (1 - descuento / 100));
+    const fmtClp = (n: number) => `$${n.toLocaleString('es-CL')}`;
+
+    const headerContent = `
+      <h1 style="color:white;margin:16px 0 4px;font-size:22px">Oferta especial para ti 🎉</h1>
+      <p style="color:rgba(255,255,255,0.65);margin:0;font-size:14px">${descuento}% de descuento — válido hasta el ${vigencia}</p>`;
+
+    const planCards = plansToShow.map(p => `
+      <div style="background:#F8FAFC;border-radius:12px;padding:16px;text-align:center;flex:1;min-width:120px">
+        <div style="font-weight:800;font-size:13px;color:#64748B;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:8px">${p}</div>
+        <div style="font-size:12px;color:#94A3B8;text-decoration:line-through;margin-bottom:2px">${fmtClp(PRICES[p])}</div>
+        <div style="font-size:24px;font-weight:800;color:#0F172A">${fmtClp(precio(p))}</div>
+        <div style="font-size:11px;color:#10B981;font-weight:700;margin-top:2px">-${descuento}%</div>
+      </div>`).join('');
+
+    const body = `
+      <p style="color:#334155;font-size:15px;line-height:1.6;margin:0 0 20px">
+        Hola <strong>${nombre}</strong>, tenemos una oferta especial para ti. Durante un tiempo limitado, puedes activar tu plan con un <strong>${descuento}% de descuento</strong>.
+      </p>
+      <div style="display:flex;gap:12px;margin-bottom:24px;flex-wrap:wrap">${planCards}</div>
+      <p style="color:#64748B;font-size:13px;margin:0 0 24px;line-height:1.5">
+        La oferta es válida hasta el <strong>${vigencia}</strong>. Una vez activado el plan, este se renueva al precio normal al siguiente período.
+      </p>
+      <a href="${env.frontendUrl}/planes"
+        style="display:inline-block;background:linear-gradient(135deg,#1E6E82,#2A8FA5);color:white;padding:14px 28px;border-radius:10px;text-decoration:none;font-weight:700;font-size:15px">
+        Ver oferta y activar plan →
+      </a>
+      <p style="color:#94A3B8;font-size:13px;margin-top:24px;line-height:1.5">
+        ¿Preguntas? Escríbenos a <a href="mailto:soporte@aplicai.cl" style="color:#2A8FA5">soporte@aplicai.cl</a>
+      </p>`;
+
+    return this.base('linear-gradient(135deg, #1E3A5F 0%, #2A8FA5 100%)', headerContent, body);
+  }
+
   postExpiryHtml(nombre: string, postulaciones: number): string {
     const headerContent = `
       <h1 style="color:white;margin:16px 0 4px;font-size:22px">Tu período de prueba terminó</h1>
