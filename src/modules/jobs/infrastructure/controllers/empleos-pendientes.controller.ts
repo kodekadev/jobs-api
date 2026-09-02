@@ -1,6 +1,8 @@
 import { Controller, Get, Post, Patch, Param, Body, HttpCode, Request } from '@nestjs/common';
 import { EmpleosPendientesService } from '../../application/empleos-pendientes.service';
 
+// Usa :jobId (no :id) para no disparar el check anti-IDOR del JWT guard,
+// que compara el param :id contra el ID del usuario autenticado.
 @Controller('empleos-pendientes')
 export class EmpleosPendientesController {
   constructor(private readonly service: EmpleosPendientesService) {}
@@ -10,16 +12,16 @@ export class EmpleosPendientesController {
     return this.service.getPendientes(req.user.id);
   }
 
-  @Post(':id/aprobar')
+  @Post(':jobId/aprobar')
   @HttpCode(200)
-  aprobar(@Request() req: any, @Param('id') id: string) {
-    return this.service.aprobar(req.user.id, id);
+  aprobar(@Request() req: any, @Param('jobId') jobId: string) {
+    return this.service.aprobar(req.user.id, jobId);
   }
 
-  @Post(':id/rechazar')
+  @Post(':jobId/rechazar')
   @HttpCode(200)
-  rechazar(@Request() req: any, @Param('id') id: string) {
-    return this.service.rechazar(req.user.id, id);
+  rechazar(@Request() req: any, @Param('jobId') jobId: string) {
+    return this.service.rechazar(req.user.id, jobId);
   }
 
   @Post('aprobar-todos')
