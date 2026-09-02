@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { BigQueryService } from '../../shared/infrastructure/services/bigquery.service';
 
 @Injectable()
@@ -31,32 +31,53 @@ export class EmpleosPendientesService {
 
   async aprobar(userId: string, jobId: string) {
     await this._assertOwns(userId, jobId);
-    await this.bq.query(`
-      UPDATE ${this.bq.t('EMPLEOS_PENDIENTES')}
-      SET estado = 'aprobado', fecha_accion = CURRENT_TIMESTAMP()
-      WHERE id = @id AND id_usuario = @uid
-    `, { id: jobId, uid: userId });
+    try {
+      await this.bq.query(`
+        UPDATE ${this.bq.t('EMPLEOS_PENDIENTES')}
+        SET estado = 'aprobado', fecha_accion = CURRENT_TIMESTAMP()
+        WHERE id = @id AND id_usuario = @uid
+      `, { id: jobId, uid: userId });
+    } catch (e: any) {
+      if (e?.message?.includes('streaming buffer')) {
+        throw new ServiceUnavailableException('Los empleos aún se están procesando, inténtalo en unos minutos');
+      }
+      throw e;
+    }
     return { ok: true };
   }
 
   async rechazar(userId: string, jobId: string) {
     await this._assertOwns(userId, jobId);
-    await this.bq.query(`
-      UPDATE ${this.bq.t('EMPLEOS_PENDIENTES')}
-      SET estado = 'rechazado', fecha_accion = CURRENT_TIMESTAMP()
-      WHERE id = @id AND id_usuario = @uid
-    `, { id: jobId, uid: userId });
+    try {
+      await this.bq.query(`
+        UPDATE ${this.bq.t('EMPLEOS_PENDIENTES')}
+        SET estado = 'rechazado', fecha_accion = CURRENT_TIMESTAMP()
+        WHERE id = @id AND id_usuario = @uid
+      `, { id: jobId, uid: userId });
+    } catch (e: any) {
+      if (e?.message?.includes('streaming buffer')) {
+        throw new ServiceUnavailableException('Los empleos aún se están procesando, inténtalo en unos minutos');
+      }
+      throw e;
+    }
     return { ok: true };
   }
 
   async aprobarTodos(userId: string): Promise<{ aprobados: number }> {
-    await this.bq.query(`
-      UPDATE ${this.bq.t('EMPLEOS_PENDIENTES')}
-      SET estado = 'aprobado', fecha_accion = CURRENT_TIMESTAMP()
-      WHERE id_usuario = @uid
-        AND estado = 'pendiente'
-        AND fecha_expira > CURRENT_TIMESTAMP()
-    `, { uid: userId });
+    try {
+      await this.bq.query(`
+        UPDATE ${this.bq.t('EMPLEOS_PENDIENTES')}
+        SET estado = 'aprobado', fecha_accion = CURRENT_TIMESTAMP()
+        WHERE id_usuario = @uid
+          AND estado = 'pendiente'
+          AND fecha_expira > CURRENT_TIMESTAMP()
+      `, { uid: userId });
+    } catch (e: any) {
+      if (e?.message?.includes('streaming buffer')) {
+        throw new ServiceUnavailableException('Los empleos aún se están procesando, inténtalo en unos minutos');
+      }
+      throw e;
+    }
     return { aprobados: -1 };
   }
 
