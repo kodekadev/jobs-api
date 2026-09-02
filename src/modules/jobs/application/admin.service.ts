@@ -818,6 +818,7 @@ export class AdminService {
       SELECT u.ID_USUARIO, u.NOMBRE, u.EMAIL, pf.CARGOS
       FROM ${this.bq.t('USUARIOS')} u
       JOIN ${this.bq.t('POSTULA_FACIL')} pf ON pf.ID_USUARIO = u.ID_USUARIO
+      JOIN ${this.bq.t('POSTULACIONES_AUTO')} pa ON pa.ID_USUARIO = u.ID_USUARIO AND pa.ACTIVO = TRUE
       WHERE pf.CARGOS IS NOT NULL AND pf.CARGOS != '[]' AND pf.CARGOS != ''
     `);
 
