@@ -827,7 +827,7 @@ export class AdminService {
       const cargos: string[] = this.parseJson(r.CARGOS);
       if (!cargos.length) continue;
       const badOnes = cargos.filter(c => this._isBadCargo(c));
-      if (badOnes.length > 0 && badOnes.length === cargos.length) {
+      if (badOnes.length > 0) {
         flagged.push({
           uid:    r.ID_USUARIO,
           nombre: r.NOMBRE || '',
