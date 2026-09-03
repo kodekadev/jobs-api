@@ -834,7 +834,7 @@ def buscar_y_postular_lab(user_id: str, user: dict, cargos: list, ubicacion: str
                 saved = bq.save_pending_jobs(user_id, PORTAL_ID, empleos_filtrados)
                 print(f"  [lab-post] {saved} empleos guardados para revisión:")
                 for pj in empleos_filtrados:
-                    print(f"    → {pj['titulo'][:70]}")
+                    print(f"    -> {pj['titulo'][:70]}")
                 bq.save_portal_cookies(user_id, PORTAL_ID, ctx.cookies())
                 return 0
 

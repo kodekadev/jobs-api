@@ -760,7 +760,7 @@ def postular_empleos_exc(user_id: str, user: dict, max_count: int = 999) -> int:
         saved = bq.save_pending_jobs(user_id, PORTAL_ID, pending_jobs)
         print(f"[exc] {saved} empleos guardados para revisión:")
         for pj in pending_jobs:
-            print(f"  → {pj['titulo'][:70]}")
+            print(f"  -> {pj['titulo'][:70]}")
 
     print(f"[exc] Finalizado {user_id} — {count} postulaciones")
     return count

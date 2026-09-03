@@ -13,6 +13,11 @@ import re
 import time
 import json
 import unicodedata
+
+def _safe(s: str) -> str:
+    """Convierte el string a algo imprimible en la consola actual (reemplaza chars inválidos)."""
+    enc = getattr(sys.stdout, 'encoding', None) or 'utf-8'
+    return s.encode(enc, errors='replace').decode(enc)
 import datetime
 
 _ROOT = os.path.dirname(os.path.dirname(__file__))
@@ -244,7 +249,8 @@ def _responder_preguntas_cht_pw(page, user: dict, job_title: str = "") -> None:
             resp, source = answers.get(idx, (_fallback(item), "fallback"))
             if _is_numeric(item):
                 resp = re.sub(r"[^\d]", "", resp) or resp
-            print(f"    [preg/{source}] [{idx}] '{(item['label'] or item['type'])[:40]}' -> '{resp[:40]}'")
+            print(f"    [preg/{source}] [{idx}] '{_safe((item['label'] or item['type'])[:40])}' -> '{_safe(resp[:40])}'")
+
             el.evaluate(_SET_VALUE_JS, resp)
         except Exception:
             pass
@@ -438,7 +444,7 @@ def _postular_empleo_pw(page, job_url: str, user: dict, titulo: str) -> "dict | 
                         except Exception:
                             pass
                         el.click()
-                        print(f"    [cht] Click postular: '{txt}'")
+                        print(f"    [cht] Click postular: '{_safe(txt)}'")
                         clicked = True
                         break
                 except Exception:
@@ -517,7 +523,8 @@ def _postular_empleo_pw(page, job_url: str, user: dict, titulo: str) -> "dict | 
                                 el.evaluate("el => el.click()")
                             except Exception:
                                 pass
-                        print(f"    [cht] Submit: '{enviado[:30]}'")
+                        print(f"    [cht] Submit: '{_safe(enviado[:30])}'")
+
                         break
                 except Exception:
                     continue
@@ -687,22 +694,22 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
                         (c for c in _OFFSITE_CITY_KEYWORDS if c in titulo_norm), None
                     )
                     if ciudad_offsita and not any(c in titulo_norm for c in _user_cities_norm):
-                        print(f"[cht] {j+1}/{len(jobs)} SALTADO (ciudad '{ciudad_offsita}'): '{titulo[:40]}'")
+                        print(f"[cht] {j+1}/{len(jobs)} SALTADO (ciudad '{ciudad_offsita}'): '{_safe(titulo[:40])}'")
                         stats["ciudad_offsite"] += 1
                         continue
 
                     aplica, motivo = job_aplica_al_usuario(titulo, "", user)
                     if not aplica:
-                        print(f"[cht] {j+1}/{len(jobs)} SALTADO ({motivo}): '{titulo[:40]}'")
+                        print(f"[cht] {j+1}/{len(jobs)} SALTADO ({motivo}): '{_safe(titulo[:40])}'")
                         stats["no_aplica"] += 1
                         continue
 
                     if modo_revision:
                         pending_jobs.append({"titulo": titulo, "link": job["link"], "empresa": ""})
-                        print(f"[cht] {j+1}/{len(jobs)} PENDIENTE revisión: '{titulo[:40]}'")
+                        print(f"[cht] {j+1}/{len(jobs)} PENDIENTE revisión: '{_safe(titulo[:40])}'")
                         continue
 
-                    print(f"[cht] {j+1}/{len(jobs)} {titulo[:50]}")
+                    print(f"[cht] {j+1}/{len(jobs)} {_safe(titulo[:50])}")
 
                     # Postular con reconexión en TargetClosedError
                     ok = False
@@ -787,7 +794,7 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
         saved = bq.save_pending_jobs(user_id, PORTAL_ID, pending_jobs)
         print(f"[cht] {saved} empleos guardados para revisión:")
         for pj in pending_jobs:
-            print(f"  → {pj['titulo'][:70]}")
+            print(f"  -> {_safe(pj['titulo'][:70])}")
 
     print(
         f"[cht] RESUMEN {user_id} | "

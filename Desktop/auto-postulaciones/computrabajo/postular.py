@@ -957,7 +957,7 @@ def postular_empleos_cpt(user_id: str, user: dict, max_n: int = 10) -> int:
                 saved = bq.save_pending_jobs(user_id, PORTAL_ID, pending_jobs)
                 print(f"  [cpt-post] {saved} empleos guardados para revisión:")
                 for pj in pending_jobs:
-                    print(f"    → {pj['titulo'][:70]}")
+                    print(f"    -> {pj['titulo'][:70]}")
 
             # Actualizar cookies
             bq.save_portal_cookies(user_id, PORTAL_ID, ctx.cookies())
