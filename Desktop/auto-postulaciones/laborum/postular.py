@@ -774,6 +774,9 @@ def buscar_y_postular_lab(user_id: str, user: dict, cargos: list, ubicacion: str
     print(f"  [lab-post] Iniciando para {_ident}")
     modo_revision = bq.get_modo_revision(user_id)
     print(f"  [lab-post] Modo: {'REVISIÓN (guardará para aprobar)' if modo_revision else 'AUTOPILOT (postula directo)'}")
+    pending_urls: set = bq.get_pending_job_urls(user_id, PORTAL_ID) if modo_revision else set()
+    if pending_urls:
+        print(f"  [lab-post] {len(pending_urls)} empleos ya en cola de revision — se saltaran")
 
     ok_count = 0
 
@@ -831,9 +834,13 @@ def buscar_y_postular_lab(user_id: str, user: dict, cargos: list, ubicacion: str
 
             # Modo revisión: guardar todos como pendientes y salir
             if modo_revision:
-                saved = bq.save_pending_jobs(user_id, PORTAL_ID, empleos_filtrados)
-                print(f"  [lab-post] {saved} empleos guardados para revisión:")
-                for pj in empleos_filtrados:
+                nuevos = [e for e in empleos_filtrados if e.get("link") not in pending_urls]
+                omitidos = len(empleos_filtrados) - len(nuevos)
+                if omitidos:
+                    print(f"  [lab-post] {omitidos} ya en cola de revision — omitidos")
+                saved = bq.save_pending_jobs(user_id, PORTAL_ID, nuevos)
+                print(f"  [lab-post] {saved} empleos guardados para revision:")
+                for pj in nuevos:
                     print(f"    -> {pj['titulo'][:70]}")
                 bq.save_portal_cookies(user_id, PORTAL_ID, ctx.cookies())
                 return 0

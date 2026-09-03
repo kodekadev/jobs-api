@@ -254,6 +254,28 @@ def get_applied_job_ids(user_id: str, days: int | None = None) -> set:
     return {r.id_empleo for r in _query(query, cfg).result()}
 
 
+def get_pending_job_urls(user_id: str, portal: str | None = None) -> set:
+    """URLs de empleos que ya están en EMPLEOS_PENDIENTES para este usuario
+    (estados pendiente, aprobado o postulado). Evita guardar duplicados en modo revisión."""
+    portal_filter = f"AND portal = @portal" if portal else ""
+    query = f"""
+        SELECT url
+        FROM `{PROJECT}.{DATASET}.EMPLEOS_PENDIENTES`
+        WHERE id_usuario = @uid
+          AND estado IN ('pendiente', 'aprobado', 'postulado')
+          {portal_filter}
+          AND fecha_expira > CURRENT_TIMESTAMP()
+    """
+    params = [bigquery.ScalarQueryParameter("uid", "STRING", user_id)]
+    if portal:
+        params.append(bigquery.ScalarQueryParameter("portal", "STRING", portal))
+    cfg = bigquery.QueryJobConfig(query_parameters=params)
+    try:
+        return {r.url for r in _query(query, cfg).result()}
+    except Exception:
+        return set()
+
+
 def get_expiring_trials(days: int = 4) -> list[dict]:
     """Usuarios cuyo trial vence exactamente en 'days' días."""
     query = f"""

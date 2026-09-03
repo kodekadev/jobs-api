@@ -855,6 +855,9 @@ def postular_empleos_cpt(user_id: str, user: dict, max_n: int = 10) -> int:
     print(f"  [cpt-post] Iniciando para {_ident}")
     modo_revision = bq.get_modo_revision(user_id)
     print(f"  [cpt-post] Modo: {'REVISIÓN (guardará para aprobar)' if modo_revision else 'AUTOPILOT (postula directo)'}")
+    pending_urls: set = bq.get_pending_job_urls(user_id, PORTAL_ID) if modo_revision else set()
+    if pending_urls:
+        print(f"  [cpt-post] {len(pending_urls)} empleos ya en cola de revision — se saltaran")
 
     ok_count = 0
 
@@ -920,6 +923,10 @@ def postular_empleos_cpt(user_id: str, user: dict, max_n: int = 10) -> int:
 
                     # Modo revisión: guardar para que el usuario apruebe
                     if modo_revision:
+                        if url in pending_urls:
+                            print(f"    [cpt] Ya en cola — skip: {emp.get('titulo','')[:50]}")
+                            ya_postulados.add(url)
+                            continue
                         pending_jobs.append(emp)
                         ya_postulados.add(url)
                         print(f"    📋 [cpt] pendiente revisión: {emp.get('titulo','')[:50]}")

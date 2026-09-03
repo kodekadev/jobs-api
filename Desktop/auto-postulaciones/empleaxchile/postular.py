@@ -611,6 +611,9 @@ def postular_empleos_exc(user_id: str, user: dict, max_count: int = 999) -> int:
         applied_ids = bq.get_applied_job_ids(user_id)
         modo_revision = bq.get_modo_revision(user_id)
         print(f"[exc] Modo: {'REVISIÓN (guardará para aprobar)' if modo_revision else 'AUTOPILOT (postula directo)'}")
+        pending_urls: set = bq.get_pending_job_urls(user_id, PORTAL_ID) if modo_revision else set()
+        if pending_urls:
+            print(f"[exc] {len(pending_urls)} empleos ya en cola de revision — se saltaran")
 
         # Ciudades del usuario normalizadas
         user_cities_norm = set()
@@ -689,8 +692,11 @@ def postular_empleos_exc(user_id: str, user: dict, max_count: int = 999) -> int:
                         continue
 
                     if modo_revision:
+                        if job["link"] in pending_urls:
+                            print(f"[exc] {j+1}/{len(jobs)} Ya en cola — skip: '{titulo[:40]}'")
+                            continue
                         pending_jobs.append({"titulo": titulo, "link": job["link"], "empresa": ""})
-                        print(f"[exc] {j+1}/{len(jobs)} PENDIENTE revisión: '{titulo[:40]}'")
+                        print(f"[exc] {j+1}/{len(jobs)} PENDIENTE revision: '{titulo[:40]}'")
                         continue
 
                     print(f"[exc] {j+1}/{len(jobs)} {titulo[:50]}")

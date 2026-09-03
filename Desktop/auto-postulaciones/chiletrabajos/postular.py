@@ -605,6 +605,9 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
         applied_ids = bq.get_applied_job_ids(user_id)
         modo_revision = bq.get_modo_revision(user_id)
         print(f"[cht] Modo: {'REVISIÓN (guardará para aprobar)' if modo_revision else 'AUTOPILOT (postula directo)'}")
+        pending_urls: set = bq.get_pending_job_urls(user_id, PORTAL_ID) if modo_revision else set()
+        if pending_urls:
+            print(f"[cht] {len(pending_urls)} empleos ya en cola de revision — se saltaran")
 
         for cargo in cargos:
             for ubicacion in ubicaciones:
@@ -710,8 +713,12 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
                         continue
 
                     if modo_revision:
+                        if job["link"] in pending_urls:
+                            print(f"[cht] {j+1}/{len(jobs)} Ya en cola — skip: '{_safe(titulo[:40])}'")
+                            stats["ya_aplicado"] += 1; lc["ya_aplicado"] += 1
+                            continue
                         pending_jobs.append({"titulo": titulo, "link": job["link"], "empresa": ""})
-                        print(f"[cht] {j+1}/{len(jobs)} PENDIENTE revisión: '{_safe(titulo[:40])}'")
+                        print(f"[cht] {j+1}/{len(jobs)} PENDIENTE revision: '{_safe(titulo[:40])}'")
                         stats["pendientes"] += 1; lc["pendientes"] += 1
                         continue
 
