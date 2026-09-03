@@ -811,9 +811,15 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
         close_chiletrabajos_pw_session(user_id)
 
     if modo_revision and pending_jobs:
-        saved = bq.save_pending_jobs(user_id, PORTAL_ID, pending_jobs)
-        print(f"[cht] {saved} empleos guardados para revisión:")
+        seen_links: set = set()
+        pending_unique = []
         for pj in pending_jobs:
+            if pj["link"] not in seen_links:
+                seen_links.add(pj["link"])
+                pending_unique.append(pj)
+        saved = bq.save_pending_jobs(user_id, PORTAL_ID, pending_unique)
+        print(f"[cht] {saved} empleos guardados para revision (de {len(pending_jobs)} encontrados, {len(pending_jobs)-len(pending_unique)} duplicados):")
+        for pj in pending_unique:
             print(f"  -> {_safe(pj['titulo'][:70])}")
 
     _ident2 = user.get("EMAIL") or user.get("NOMBRE") or user_id

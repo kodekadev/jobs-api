@@ -10,7 +10,7 @@ Para un usuario específico: SOLO_USUARIO = "jobs2"
 """
 import os
 import sys
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 _dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else r"C:\Users\bastian\Desktop\auto-postulaciones"
 
@@ -104,19 +104,14 @@ def _run() -> None:
     print(f"[cht_postulando] {len(uids)} usuario(s) a procesar | {N_WORKERS} procesos\n")
 
     total_ok = 0
-    # Cuando hay 1 usuario (modo interactivo/debug), correr directo en el proceso
-    # principal para que el output aparezca en Spyder/IPython sin delay.
-    if len(uids) == 1:
-        total_ok = _procesar_usuario(uids[0])
-    else:
-        with ProcessPoolExecutor(max_workers=N_WORKERS) as pool:
-            futures = {pool.submit(_procesar_usuario, uid): uid for uid in uids}
-            for fut in as_completed(futures):
-                uid = futures[fut]
-                try:
-                    total_ok += fut.result()
-                except Exception as e:
-                    print(f"  [ERROR {uid}] {e}")
+    with ThreadPoolExecutor(max_workers=N_WORKERS) as pool:
+        futures = {pool.submit(_procesar_usuario, uid): uid for uid in uids}
+        for fut in as_completed(futures):
+            uid = futures[fut]
+            try:
+                total_ok += fut.result()
+            except Exception as e:
+                print(f"  [ERROR {uid}] {e}")
 
     print(f"\n{'='*60}")
     print(f"TOTAL CHT: {total_ok} postulaciones / {len(uids)} usuarios procesados")
