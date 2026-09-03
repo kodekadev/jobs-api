@@ -31,10 +31,10 @@ export class PlanController {
     return this.planService.getPromoCode(codigo);
   }
 
-  @Public() // webhook de Flow — se valida contra la API de Flow con el token
+  @Public() // webhook de Flow — token llega en el body (application/x-www-form-urlencoded)
   @Post('notificacion')
   @HttpCode(200)
-  notification(@Query('token') token: string) {
+  notification(@Body('token') token: string) {
     return this.planService.handleNotification(token);
   }
 

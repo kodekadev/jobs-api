@@ -299,11 +299,14 @@ export class PlanService {
       throw new Error(data?.message || data?.code ? `Flow: ${data.code} - ${data.message}` : 'Error creando pago Flow');
     }
 
-    // Store pending payment
+    // Store pending payment — si falla aquí el usuario pagará sin que podamos activar su plan
     await this.bq.query(`
       INSERT INTO ${this.bq.t('PAGOS_PENDIENTES')} (ORDER_ID, ID_USUARIO, PLAN, TOKEN, FECHA)
       VALUES (@orderId, @userId, @plan, @token, CURRENT_TIMESTAMP())
-    `, { orderId, userId, plan, token: data.token }).catch(() => null);
+    `, { orderId, userId, plan, token: data.token }).catch((e) => {
+      console.error('[plan] CRÍTICO: no se pudo guardar pago pendiente en BQ:', e?.message ?? e);
+      throw new Error('Error registrando el pago. Por favor intenta de nuevo.');
+    });
 
     return { url: `${data.url}?token=${data.token}`, token: data.token };
   }
@@ -348,9 +351,15 @@ export class PlanService {
     const rows = await this.bq.query<any>(`
       SELECT ID_USUARIO, PLAN FROM ${this.bq.t('PAGOS_PENDIENTES')}
       WHERE TOKEN = @token LIMIT 1
-    `, { token }).catch(() => []);
+    `, { token }).catch((e) => {
+      console.error('[plan] Error leyendo PAGOS_PENDIENTES para token', token, ':', e?.message ?? e);
+      return [];
+    });
 
-    if (!rows.length) return;
+    if (!rows.length) {
+      console.warn('[plan] confirmPayment: token no encontrado en PAGOS_PENDIENTES:', token);
+      return;
+    }
 
     const { ID_USUARIO: userId, PLAN: plan } = rows[0];
 
