@@ -474,6 +474,27 @@ export class AuthService {
     return { ok: true, eliminados: ids.length };
   }
 
+  // ─── UNSUBSCRIBE ──────────────────────────────────────────────────────────
+  async unsubscribe(email: string, token: string): Promise<{ ok: boolean }> {
+    const expected = this.email.generateUnsubToken(email);
+    if (token !== expected) throw new BadRequestException('Token inválido');
+
+    await this.bq.query(`
+      CREATE TABLE IF NOT EXISTS \`jobs-425301.DWH.EMAIL_UNSUBSCRIBED\`
+      (email STRING, fecha_baja TIMESTAMP)
+    `).catch(() => null);
+
+    await this.bq.query(`
+      INSERT INTO \`jobs-425301.DWH.EMAIL_UNSUBSCRIBED\` (email, fecha_baja)
+      SELECT @email, CURRENT_TIMESTAMP()
+      WHERE NOT EXISTS (
+        SELECT 1 FROM \`jobs-425301.DWH.EMAIL_UNSUBSCRIBED\` WHERE LOWER(email) = LOWER(@email)
+      )
+    `, { email });
+
+    return { ok: true };
+  }
+
   // ─── HELPERS ──────────────────────────────────────────────────────────────
 
   // Asigna TRIAL de 14 días al registrarse. Si ya tiene un plan activo no lo pisa.

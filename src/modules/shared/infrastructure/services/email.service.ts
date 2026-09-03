@@ -1,17 +1,54 @@
 import { Injectable } from '@nestjs/common';
 import { Resend } from 'resend';
+import * as crypto from 'crypto';
 import env from '../environment';
+import { BigQueryService } from './bigquery.service';
 
 @Injectable()
 export class EmailService {
   private readonly resend: Resend;
 
-  constructor() {
+  constructor(private readonly bq: BigQueryService) {
     this.resend = new Resend(env.resendApiKey);
   }
 
+  generateUnsubToken(email: string): string {
+    return crypto.createHmac('sha256', env.jwtSecret).update(email.toLowerCase().trim()).digest('hex');
+  }
+
+  private unsubUrl(email: string): string {
+    return `${env.frontendUrl}/desuscribirse?token=${this.generateUnsubToken(email)}&email=${encodeURIComponent(email)}`;
+  }
+
+  private async isUnsubscribed(email: string): Promise<boolean> {
+    try {
+      const rows = await this.bq.query<any>(
+        `SELECT 1 FROM \`${process.env.BQ_PROJECT || 'jobs-425301'}.${process.env.BQ_DATASET || 'DWH'}.EMAIL_UNSUBSCRIBED\`
+         WHERE LOWER(email) = LOWER(@email) LIMIT 1`,
+        { email },
+      );
+      return rows.length > 0;
+    } catch {
+      return false; // si la tabla no existe aún, no bloquear
+    }
+  }
+
   async send(to: string, subject: string, html: string): Promise<void> {
-    await this.resend.emails.send({ from: env.fromEmail, to, subject, html });
+    if (await this.isUnsubscribed(to)) return;
+
+    const footer = `
+      <div style="text-align:center;padding:8px 32px 20px;background:#F8FAFC">
+        <p style="color:#CBD5E1;font-size:11px;margin:0;line-height:1.8">
+          Recibiste este correo porque tienes una cuenta en AplicAI.<br>
+          <a href="${this.unsubUrl(to)}" style="color:#CBD5E1;text-decoration:underline">Cancelar suscripción a correos</a>
+        </p>
+      </div>`;
+
+    const htmlFinal = html.includes('</body>')
+      ? html.replace('</body>', `${footer}</body>`)
+      : html + footer;
+
+    await this.resend.emails.send({ from: env.fromEmail, to, subject, html: htmlFinal });
   }
 
   // ─── TEMPLATES ────────────────────────────────────────────────────────────
