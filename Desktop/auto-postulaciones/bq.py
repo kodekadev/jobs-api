@@ -255,16 +255,21 @@ def get_applied_job_ids(user_id: str, days: int | None = None) -> set:
 
 
 def get_pending_job_urls(user_id: str, portal: str | None = None) -> set:
-    """URLs de empleos que ya están en EMPLEOS_PENDIENTES para este usuario
-    (estados pendiente, aprobado o postulado). Evita guardar duplicados en modo revisión."""
+    """URLs de empleos que ya están en EMPLEOS_PENDIENTES para este usuario.
+    - pendiente/aprobado/postulado: se saltean mientras no expiren (36h)
+    - rechazado: se saltean permanentemente (el usuario ya dijo que no)
+    - fallido: se vuelven a intentar (no están en este set)
+    """
     portal_filter = f"AND portal = @portal" if portal else ""
     query = f"""
         SELECT url
         FROM `{PROJECT}.{DATASET}.EMPLEOS_PENDIENTES`
         WHERE id_usuario = @uid
-          AND estado IN ('pendiente', 'aprobado', 'postulado')
           {portal_filter}
-          AND fecha_expira > CURRENT_TIMESTAMP()
+          AND (
+            (estado IN ('pendiente', 'aprobado', 'postulado') AND fecha_expira > CURRENT_TIMESTAMP())
+            OR estado = 'rechazado'
+          )
     """
     params = [bigquery.ScalarQueryParameter("uid", "STRING", user_id)]
     if portal:
