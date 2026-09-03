@@ -29,6 +29,12 @@ export class AdminController {
     return this.service.getUsers();
   }
 
+  @Get('portal-stats')
+  getPortalStats(@Request() req: any, @Query('days') days?: string) {
+    this.service.checkAdmin(req.user.email);
+    return this.service.getPortalStats(days ? parseInt(days, 10) : 14);
+  }
+
   @Get('users/:userId/diagnostics')
   getDiagnostics(@Request() req: any, @Param('userId') userId: string) {
     this.service.checkAdmin(req.user.email);

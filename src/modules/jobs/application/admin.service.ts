@@ -64,7 +64,19 @@ export class AdminService {
           COUNTIF(
             DATE(Fecha_Postulacion, 'America/Santiago') >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL 7 DAY)
             AND portal = 'laborum'
-          ) AS sem_lab
+          ) AS sem_lab,
+          COUNTIF(
+            DATE(Fecha_Postulacion, 'America/Santiago') >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL 7 DAY)
+            AND portal = 'empleaxchile'
+          ) AS sem_exc,
+          COUNTIF(
+            DATE(Fecha_Postulacion, 'America/Santiago') >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL 7 DAY)
+            AND portal = 'getonboard'
+          ) AS sem_gob,
+          COUNTIF(
+            DATE(Fecha_Postulacion, 'America/Santiago') >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL 7 DAY)
+            AND portal = 'linkedin'
+          ) AS sem_lkd
         FROM ${this.bq.t('EMPLEOS')}
         GROUP BY id_usuario
       ),
@@ -78,7 +90,10 @@ export class AdminService {
           MAX(CASE WHEN portal = 'computrabajo'  THEN 1 ELSE 0 END)                        AS tiene_cpt,
           MAX(CASE WHEN portal = 'computrabajo'  AND cv_completo = TRUE THEN 1 ELSE 0 END) AS cv_cpt,
           MAX(CASE WHEN portal = 'laborum'       THEN 1 ELSE 0 END)                        AS tiene_lab,
-          MAX(CASE WHEN portal = 'laborum'       AND cv_completo = TRUE THEN 1 ELSE 0 END) AS cv_lab
+          MAX(CASE WHEN portal = 'laborum'       AND cv_completo = TRUE THEN 1 ELSE 0 END) AS cv_lab,
+          MAX(CASE WHEN portal = 'empleaxchile'  THEN 1 ELSE 0 END)                        AS tiene_exc,
+          MAX(CASE WHEN portal = 'empleaxchile'  AND cv_completo = TRUE THEN 1 ELSE 0 END) AS cv_exc,
+          MAX(CASE WHEN portal = 'getonboard'    THEN 1 ELSE 0 END)                        AS tiene_gob
         FROM ${this.bq.t('CUENTAS_PORTALES')}
         GROUP BY id_usuario
       )
@@ -101,6 +116,9 @@ export class AdminService {
         COALESCE(ps.sem_cht, 0)  AS postulaciones_7dias_cht,
         COALESCE(ps.sem_cpt, 0)  AS postulaciones_7dias_cpt,
         COALESCE(ps.sem_lab, 0)  AS postulaciones_7dias_lab,
+        COALESCE(ps.sem_exc, 0)  AS postulaciones_7dias_exc,
+        COALESCE(ps.sem_gob, 0)  AS postulaciones_7dias_gob,
+        COALESCE(ps.sem_lkd, 0)  AS postulaciones_7dias_lkd,
         COALESCE(por.tiene_tbj, 0) AS tiene_trabajando,
         COALESCE(por.cv_tbj, 0)    AS cv_trabajando,
         COALESCE(por.tiene_cht, 0) AS tiene_chiletrabajos,
@@ -109,6 +127,9 @@ export class AdminService {
         COALESCE(por.cv_cpt, 0)    AS cv_computrabajo,
         COALESCE(por.tiene_lab, 0) AS tiene_laborum,
         COALESCE(por.cv_lab, 0)    AS cv_laborum,
+        COALESCE(por.tiene_exc, 0) AS tiene_empleaxchile,
+        COALESCE(por.cv_exc, 0)    AS cv_empleaxchile,
+        COALESCE(por.tiene_gob, 0) AS tiene_getonboard,
         CASE
           WHEN COALESCE(pl.PLAN, 'FREE') = 'FREE' THEN TRUE
           WHEN (pl.PLAN = 'TRIAL' OR pl.ESTADO = 'TRIAL')
@@ -166,6 +187,9 @@ export class AdminService {
       cv_computrabajo:         Boolean(r.cv_computrabajo),
       tiene_laborum:           Boolean(r.tiene_laborum),
       cv_laborum:              Boolean(r.cv_laborum),
+      tiene_empleaxchile:      Boolean(r.tiene_empleaxchile),
+      cv_empleaxchile:         Boolean(r.cv_empleaxchile),
+      tiene_getonboard:        Boolean(r.tiene_getonboard),
       postulaciones_hoy:       Number(r.postulaciones_hoy ?? 0),
       total_postulaciones:     Number(r.total_postulaciones ?? 0),
       postulaciones_7dias:     Number(r.postulaciones_7dias ?? 0),
@@ -173,8 +197,38 @@ export class AdminService {
       postulaciones_7dias_cht: Number(r.postulaciones_7dias_cht ?? 0),
       postulaciones_7dias_cpt: Number(r.postulaciones_7dias_cpt ?? 0),
       postulaciones_7dias_lab: Number(r.postulaciones_7dias_lab ?? 0),
+      postulaciones_7dias_exc: Number(r.postulaciones_7dias_exc ?? 0),
+      postulaciones_7dias_gob: Number(r.postulaciones_7dias_gob ?? 0),
+      postulaciones_7dias_lkd: Number(r.postulaciones_7dias_lkd ?? 0),
       limite_dia:              Boolean(r.plan_vigente) ? (PLAN_LIMITS[r.plan] ?? PLAN_LIMITS['FREE']) : PLAN_LIMITS['FREE'],
       ultima_conexion:         (() => { const v = loginMap.get(r.ID_USUARIO); return v?.value ?? v ?? null; })(),
+    }));
+  }
+
+  async getPortalStats(days: number = 14) {
+    const rows = await this.bq.query<any>(`
+      SELECT
+        DATE(Fecha_Postulacion, 'America/Santiago') AS fecha,
+        COUNTIF(portal = 'chiletrabajos') AS chiletrabajos,
+        COUNTIF(portal = 'computrabajo')  AS computrabajo,
+        COUNTIF(portal = 'laborum')       AS laborum,
+        COUNTIF(portal = 'empleaxchile')  AS empleaxchile,
+        COUNTIF(portal = 'getonboard')    AS getonboard
+      FROM ${this.bq.t('EMPLEOS')}
+      WHERE DATE(Fecha_Postulacion, 'America/Santiago')
+              >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL @days DAY)
+        AND portal NOT IN ('email_directo', 'linkedin', '')
+      GROUP BY fecha
+      ORDER BY fecha
+    `, { days });
+
+    return rows.map((r: any) => ({
+      fecha:         String(r.fecha?.value ?? r.fecha ?? ''),
+      chiletrabajos: Number(r.chiletrabajos ?? 0),
+      computrabajo:  Number(r.computrabajo  ?? 0),
+      laborum:       Number(r.laborum       ?? 0),
+      empleaxchile:  Number(r.empleaxchile  ?? 0),
+      getonboard:    Number(r.getonboard    ?? 0),
     }));
   }
 
