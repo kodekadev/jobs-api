@@ -592,11 +592,11 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
     stats = {"encontrados": 0, "ya_aplicado": 0, "ciudad_offsite": 0,
              "no_aplica": 0, "postulados": 0, "ya_postulado_portal": 0, "error": 0}
     try:
-        print(f"[cht] Iniciando postulaciones para {user_id}")
+        _ident = user.get("EMAIL") or user.get("NOMBRE") or user_id
+        print(f"[cht] Iniciando postulaciones para {_ident}")
         applied_ids = bq.get_applied_job_ids(user_id)
         modo_revision = bq.get_modo_revision(user_id)
-        if modo_revision:
-            print(f"[cht] Modo revisión activo para {user_id}")
+        print(f"[cht] Modo: {'REVISIÓN (guardará para aprobar)' if modo_revision else 'AUTOPILOT (postula directo)'}")
 
         for cargo in cargos:
             for ubicacion in ubicaciones:
@@ -785,7 +785,9 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
 
     if modo_revision and pending_jobs:
         saved = bq.save_pending_jobs(user_id, PORTAL_ID, pending_jobs)
-        print(f"[cht] {saved} empleos guardados para revisión")
+        print(f"[cht] {saved} empleos guardados para revisión:")
+        for pj in pending_jobs:
+            print(f"  → {pj['titulo'][:70]}")
 
     print(
         f"[cht] RESUMEN {user_id} | "

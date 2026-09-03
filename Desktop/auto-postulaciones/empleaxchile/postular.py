@@ -606,11 +606,11 @@ def postular_empleos_exc(user_id: str, user: dict, max_count: int = 999) -> int:
             print(f"[exc] Sin sesión para {user_id} — abortando")
             return 0
 
-        print(f"[exc] Iniciando postulaciones para {user_id}")
+        _ident = user.get("EMAIL") or user.get("NOMBRE") or user_id
+        print(f"[exc] Iniciando postulaciones para {_ident}")
         applied_ids = bq.get_applied_job_ids(user_id)
         modo_revision = bq.get_modo_revision(user_id)
-        if modo_revision:
-            print(f"[exc] Modo revisión activo para {user_id}")
+        print(f"[exc] Modo: {'REVISIÓN (guardará para aprobar)' if modo_revision else 'AUTOPILOT (postula directo)'}")
 
         # Ciudades del usuario normalizadas
         user_cities_norm = set()
@@ -758,7 +758,9 @@ def postular_empleos_exc(user_id: str, user: dict, max_count: int = 999) -> int:
 
     if modo_revision and pending_jobs:
         saved = bq.save_pending_jobs(user_id, PORTAL_ID, pending_jobs)
-        print(f"[exc] {saved} empleos guardados para revisión")
+        print(f"[exc] {saved} empleos guardados para revisión:")
+        for pj in pending_jobs:
+            print(f"  → {pj['titulo'][:70]}")
 
     print(f"[exc] Finalizado {user_id} — {count} postulaciones")
     return count
