@@ -22,8 +22,10 @@ os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS", r"C:\Users\bastian\.secr
 from dotenv import load_dotenv
 load_dotenv(os.path.join(_dir, ".env"))
 
-SOLO_USUARIO = "jobs251"
-FORZAR       = True  # True = crear cuenta aunque ya exista en BQ
+# SOLO_USUARIO = "jobs292"
+
+SOLO_USUARIO = None#"jobs292"
+FORZAR       = False  # True = crear cuenta aunque ya exista en BQ
 
 
 def _run():

@@ -22,7 +22,8 @@ os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS", r"C:\Users\bastian\.secr
 from dotenv import load_dotenv
 load_dotenv(os.path.join(_dir, ".env"))
 
-SOLO_USUARIO = None  # ej: "jobs8"
+SOLO_USUARIO =None #"jobs292"
+# SOLO_USUARIO ="jobs292"
 
 
 def _run():

@@ -834,33 +834,38 @@ def set_modo_revision(user_id: str, activo: bool) -> None:
 
 
 def save_pending_jobs(user_id: str, portal: str, jobs: list[dict]) -> int:
-    """Guarda empleos pendientes de revisión. Retorna cuántos se insertaron."""
+    """Guarda empleos pendientes de revisión via DML (permite UPDATE posterior). Retorna cuántos se insertaron."""
     import uuid as _uuid
     from datetime import datetime, timezone, timedelta
     if not jobs:
         return 0
     now    = datetime.now(timezone.utc)
     expira = now + timedelta(hours=36)
-    rows = []
+
+    # Usar DML INSERT en lugar de streaming para evitar el streaming buffer
+    # (el streaming buffer impide hacer UPDATE/DELETE sobre las filas recién insertadas)
+    value_rows = []
     for j in jobs:
-        rows.append({
-            "id":               str(_uuid.uuid4()),
-            "id_usuario":       user_id,
-            "portal":           portal,
-            "titulo":           (j.get("titulo") or "")[:500],
-            "empresa":          (j.get("empresa") or "")[:500],
-            "url":              (j.get("link") or j.get("url") or "")[:1024],
-            "estado":           "pendiente",
-            "fecha_encontrado": now.isoformat(),
-            "fecha_expira":     expira.isoformat(),
-            "fecha_accion":     None,
-        })
-    table = client.get_table(f"{PROJECT}.{DATASET}.EMPLEOS_PENDIENTES")
-    errors = client.insert_rows_json(table, rows)
-    if errors:
-        print(f"  [bq] EMPLEOS_PENDIENTES insert errors: {errors}")
+        row_id  = str(_uuid.uuid4())
+        titulo  = (j.get("titulo")  or "")[:500].replace("'", "\\'")
+        empresa = (j.get("empresa") or "")[:500].replace("'", "\\'")
+        url     = (j.get("link")    or j.get("url") or "")[:1024].replace("'", "\\'")
+        value_rows.append(
+            f"('{row_id}', '{user_id}', '{portal}', '{titulo}', '{empresa}', "
+            f"'{url}', 'pendiente', '{now.isoformat()}', '{expira.isoformat()}', NULL)"
+        )
+
+    query = f"""
+        INSERT INTO `{PROJECT}.{DATASET}.EMPLEOS_PENDIENTES`
+          (id, id_usuario, portal, titulo, empresa, url, estado, fecha_encontrado, fecha_expira, fecha_accion)
+        VALUES {', '.join(value_rows)}
+    """
+    try:
+        _query(query).result()
+        return len(jobs)
+    except Exception as e:
+        print(f"  [bq] EMPLEOS_PENDIENTES insert error: {e}")
         return 0
-    return len(rows)
 
 
 def get_pending_jobs(user_id: str, solo_pendientes: bool = True) -> list[dict]:
