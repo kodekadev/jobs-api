@@ -29,12 +29,6 @@ export class AdminController {
     return this.service.getUsers();
   }
 
-  @Get('portal-stats')
-  getPortalStats(@Request() req: any, @Query('days') days?: string) {
-    this.service.checkAdmin(req.user.email);
-    return this.service.getPortalStats(days ? parseInt(days, 10) : 14);
-  }
-
   @Get('users/:userId/diagnostics')
   getDiagnostics(@Request() req: any, @Param('userId') userId: string) {
     this.service.checkAdmin(req.user.email);
@@ -81,6 +75,29 @@ export class AdminController {
     return this.service.getAnalytics();
   }
 
+  @Get('cargo-quality')
+  getCargoQuality(@Request() req: any) {
+    this.service.checkAdmin(req.user.email);
+    return this.service.getCargoQuality();
+  }
+
+  @Post('cargo-quality/notify')
+  @HttpCode(200)
+  notifyCargoQuality(@Request() req: any, @Body() body: { uids?: string[] }) {
+    this.service.checkAdmin(req.user.email);
+    return this.service.notifyCargoQuality(body.uids ?? []);
+  }
+
+  @Post('campaigns/send')
+  @HttpCode(200)
+  sendCampaign(
+    @Request() req: any,
+    @Body() body: { uids: string[]; descuento_pct: number; vigencia_hasta: string },
+  ) {
+    this.service.checkAdmin(req.user.email);
+    return this.service.sendCampaign(body.uids, body.descuento_pct, body.vigencia_hasta);
+  }
+
   @Public()
   @Post('track')
   @HttpCode(200)
@@ -96,20 +113,20 @@ export class AdminController {
     return this.service.getBilling();
   }
 
-  @Post('campaigns/send')
-  @HttpCode(200)
-  sendCampaign(
-    @Request() req: any,
-    @Body() body: { uids: string[]; descuento_pct: number; vigencia_hasta: string },
-  ) {
-    this.service.checkAdmin(req.user.email);
-    return this.service.sendCampaign(body.uids, body.descuento_pct, body.vigencia_hasta);
-  }
-
   @Get('campaigns/promo/:codigo')
   getPromoCode(@Request() req: any, @Param('codigo') codigo: string) {
     this.service.checkAdmin(req.user.email);
     return this.service.getPromoCode(codigo);
+  }
+
+  @Delete('users/:userId/postulaciones')
+  deletePostulacion(
+    @Request() req: any,
+    @Param('userId') userId: string,
+    @Query('id_empleo') idEmpleo: string,
+  ) {
+    this.service.checkAdmin(req.user.email);
+    return this.service.deletePostulacion(userId, idEmpleo);
   }
 
   @Delete('users/:userId/portal/:portal')

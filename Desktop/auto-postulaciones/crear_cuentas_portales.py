@@ -32,7 +32,7 @@ os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS", r"C:\Users\bastian\.secr
 from dotenv import load_dotenv
 load_dotenv(os.path.join(_dir, ".env"))
 
-PORTALES_VALIDOS = ["trabajando", "chiletrabajos", "computrabajo", "laborum"]
+PORTALES_VALIDOS = ["trabajando", "chiletrabajos", "computrabajo", "laborum", "empleaxchile"]
 
 # Sobrescribir desde código si se quiere fijar portal/usuario sin usar CLI
 SOLO_PORTAL  = None  # ej: "trabajando"
@@ -59,6 +59,9 @@ def _crear_cuenta_portal(uid: str, user: dict, portal: str, bq) -> None:
         elif portal == "laborum":
             from laborum.crear_cuenta import crear_cuenta_laborum
             ok = crear_cuenta_laborum(uid, user)
+        elif portal == "empleaxchile":
+            from empleaxchile.crear_cuenta import crear_cuenta_empleaxchile
+            ok = crear_cuenta_empleaxchile(uid, user)
         else:
             print(f"  [{uid}] {portal}: portal no reconocido")
             return

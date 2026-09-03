@@ -1,11 +1,12 @@
 """
-Verifica emails de confirmación de portales de empleo via IMAP.
-Todos los *@tektia.cl llegan a bastian.alfaro@gmail.com via Cloudflare Email Routing.
+Verifica emails de confirmación de portales de empleo via Gmail API.
+Todos los *@tektia.cl llegan a nexonempresa7@gmail.com via Cloudflare Email Routing.
 """
 import imaplib
 import email
 import re
 import time
+import base64
 import unicodedata
 import os
 from dotenv import load_dotenv
@@ -17,6 +18,50 @@ IMAP_PORT = int(os.getenv("IMAP_PORT", 993))
 IMAP_USER = os.getenv("IMAP_USER", "")
 IMAP_PASS = os.getenv("IMAP_PASS", "")
 EMAIL_DOMAIN = os.getenv("EMAIL_DOMAIN", "tektia.cl")
+
+_GMAIL_CREDS = os.environ.get("GMAIL_CREDS_PATH") or r"C:\Users\bastian\.secrets\google\gmail_oauth_credentials.json"
+_GMAIL_TOKEN = os.environ.get("GMAIL_TOKEN_PATH") or r"C:\Users\bastian\.secrets\google\gmail_token.json"
+_GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
+
+
+def _get_gmail_service():
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from google.auth.transport.requests import Request
+    from googleapiclient.discovery import build
+
+    creds = None
+    if os.path.exists(_GMAIL_TOKEN):
+        creds = Credentials.from_authorized_user_file(_GMAIL_TOKEN, _GMAIL_SCOPES)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(_GMAIL_CREDS, _GMAIL_SCOPES)
+            creds = flow.run_local_server(port=0)
+        with open(_GMAIL_TOKEN, "w") as f:
+            f.write(creds.to_json())
+    return build("gmail", "v1", credentials=creds)
+
+
+def _gmail_body(msg: dict) -> str:
+    def _decode(data: str) -> str:
+        try:
+            return base64.urlsafe_b64decode(data + "==").decode(errors="ignore")
+        except Exception:
+            return ""
+
+    def _extract(part: dict) -> str:
+        mime = part.get("mimeType", "")
+        data = part.get("body", {}).get("data", "")
+        sub = part.get("parts", [])
+        if sub:
+            return "\n".join(_extract(p) for p in sub)
+        if mime in ("text/html", "text/plain") and data:
+            return _decode(data)
+        return ""
+
+    return _extract(msg.get("payload", {}))
 
 
 def generar_email(nombre: str, portal: str = "") -> str:
@@ -61,174 +106,164 @@ def esperar_verificacion(
 ) -> str | None:
     """
     Espera un email de verificación para email_usuario (ej. juan@tektia.cl).
-    sender_filter: si se especifica (ej. "laborum"), solo procesa emails cuyo
-                   From contenga esa cadena — evita activar emails de otros portales.
-    Retorna el link de confirmación o el código numérico encontrado.
-    Retorna None si no llega nada en timeout segundos.
+    Usa Gmail API (polling cada 2s) — más rápido y confiable que IMAP.
+    sender_filter: filtra por remitente (ej. "computrabajo").
     """
-    print(f"  [imap] Esperando verificación para {email_usuario} (timeout={timeout}s)...")
+    import datetime as _dt
+
+    print(f"  [gmail] Esperando verificación para {email_usuario} (timeout={timeout}s)...")
     try:
-        mail = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
-        mail.login(IMAP_USER, IMAP_PASS)
+        service = _get_gmail_service()
     except Exception as e:
-        print(f"  [imap] Error conectando: {e}")
+        print(f"  [gmail] Error autenticando: {e}")
         return None
+
+    # Filtrar por destinatario directamente — el header To se preserva con la dirección
+    # original @tektia.cl aunque Cloudflare reenvíe a Gmail
+    query = f"newer_than:2h {email_usuario}"
+    print(f"  [gmail] Query: {query}")
+
+    _img_exts = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico")
+    _excluidos = (
+        "facebook.com", "twitter.com", "instagram.com", "linkedin.com",
+        "google.com", "unsubscribe", "privacy", "terms", "help",
+        "apple.com", "microsoft.com",
+    )
+    _dominios_portales = (
+        "laborum.cl", "computrabajo.com", "trabajando.cl",
+        "chiletrabajos.cl", "bumeran.com", "multitrabajos.com",
+        "getonbrd.com", "empleaxchile.cl",
+    )
+
+    def _es_img(url):
+        return any(url.lower().split("?")[0].endswith(ext) for ext in _img_exts)
+
+    def _excluir_url(url):
+        return _es_img(url) or any(ex in url.lower() for ex in _excluidos)
 
     deadline = time.time() + timeout
     visto = set()
 
     while time.time() < deadline:
         try:
-            mail.select("INBOX")
-            # Buscar emails de hoy (Cloudflare reescribe el To: al reenviar)
-            from datetime import datetime
-            _MESES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-            _now = datetime.now()
-            hoy = f"{_now.day:02d}-{_MESES[_now.month-1]}-{_now.year}"
-            _, nums = mail.search(None, f'UNSEEN SINCE "{hoy}"')
-            # Siempre del más reciente al más antiguo — llega antes al email fresco
-            num_list = list(reversed(nums[0].split()))
-            for num in num_list:
-                if num in visto:
-                    continue
-                # PEEK para no marcar como leído antes de confirmar que es nuestro
-                _, hdr_data = mail.fetch(num, "(BODY.PEEK[HEADER.FIELDS (DATE FROM TO X-FORWARDED-TO)])")
-                hdr_text = hdr_data[0][1].decode(errors="ignore")
-                hdr_lower = hdr_text.lower()
-                if email_usuario.lower() not in hdr_lower:
-                    visto.add(num)  # no es nuestro, skip para siempre
-                    continue
-                if sender_filter and sender_filter.lower() not in hdr_lower:
-                    visto.add(num)  # no es del portal esperado, ignorar
+            result = service.users().messages().list(
+                userId="me", q=query, maxResults=20
+            ).execute()
+
+            for msg_ref in result.get("messages", []):
+                msg_id = msg_ref["id"]
+                if msg_id in visto:
                     continue
 
-                # Verificar frescura del email (descartar códigos y links vencidos)
+                # Headers primero — evita descargar body innecesariamente
+                meta = service.users().messages().get(
+                    userId="me", id=msg_id, format="metadata",
+                    metadataHeaders=["From", "To", "Delivered-To", "X-Forwarded-To", "Subject"]
+                ).execute()
+
+                headers = {
+                    h["name"].lower(): h["value"]
+                    for h in meta.get("payload", {}).get("headers", [])
+                }
+                recipient_blob = " ".join([
+                    headers.get("to", ""),
+                    headers.get("delivered-to", ""),
+                    headers.get("x-forwarded-to", ""),
+                ]).lower()
+
+                if email_usuario.lower() not in recipient_blob:
+                    visto.add(msg_id)
+                    continue
+
+                # Verificar frescura por internalDate (ms epoch)
                 if freshness_minutes:
-                    from email.utils import parsedate_to_datetime
-                    date_line = next(
-                        (l for l in hdr_text.splitlines() if l.lower().startswith("date:")), ""
-                    )
-                    if date_line:
-                        try:
-                            msg_dt = parsedate_to_datetime(date_line[5:].strip())
-                            import datetime as _dt
-                            age_secs = (
-                                _dt.datetime.now(_dt.timezone.utc) - msg_dt.astimezone(_dt.timezone.utc)
-                            ).total_seconds()
-                            if age_secs > freshness_minutes * 60:
-                                print(f"  [imap] Email muy antiguo ({int(age_secs/60)}m) — ignorando")
-                                visto.add(num)
-                                continue
-                        except Exception:
-                            pass  # si no se puede parsear, procesar igual
+                    age_secs = (
+                        _dt.datetime.now(_dt.timezone.utc)
+                        - _dt.datetime.fromtimestamp(
+                            int(meta.get("internalDate", 0)) / 1000,
+                            tz=_dt.timezone.utc,
+                        )
+                    ).total_seconds()
+                    if age_secs > freshness_minutes * 60:
+                        visto.add(msg_id)
+                        service.users().messages().modify(
+                            userId="me", id=msg_id,
+                            body={"removeLabelIds": ["UNREAD"]},
+                        ).execute()
+                        continue
 
-                # Es nuestro — descargar body completo y marcar como leído
-                visto.add(num)
-                _, data = mail.fetch(num, "(RFC822)")
-                mail.store(num, "+FLAGS", "\\Seen")  # marcar explícitamente como leído
-                msg = email.message_from_bytes(data[0][1])
-                body = _extraer_body(msg)
+                subject = headers.get("subject", "(sin asunto)")
+                print(f"  [gmail] Email encontrado: {subject}")
 
-                # Decodificar subject correctamente (puede ser objeto Header)
-                try:
-                    from email.header import decode_header, make_header
-                    subject = str(make_header(decode_header(msg.get('Subject', '') or '')))
-                except Exception:
-                    subject = str(msg.get('Subject', '(sin asunto)'))
-                print(f"  [imap] Email encontrado: {subject}")
+                # Body completo
+                full = service.users().messages().get(
+                    userId="me", id=msg_id, format="full"
+                ).execute()
+                body = _gmail_body(full)
 
-                # Modo code_only: buscar código de exactamente 6 dígitos (OTP)
-                # Solo en emails que parezcan ser de verificación/acceso
+                visto.add(msg_id)
+                service.users().messages().modify(
+                    userId="me", id=msg_id,
+                    body={"removeLabelIds": ["UNREAD"]},
+                ).execute()
+
                 if code_only:
                     _OTP_SUBJ = (
                         "tu código de acceso es", "código de acceso", "código temporal",
                         "your access code", "access code", "verification code",
                         "código", "code", "otp", "verificac",
                     )
-                    es_otp_email = any(s in subject.lower() for s in _OTP_SUBJ)
-                    if not es_otp_email:
-                        continue  # es newsletter u otro — saltar
-
-                    # Buscar en asunto: patrón "Tu código de acceso es: 835722"
+                    if not any(s in subject.lower() for s in _OTP_SUBJ):
+                        continue
                     m = re.search(r'(?:código de acceso es|access code is|código es)[:\s]+(\d{6})', subject, re.I)
                     codes_subj = [m.group(1)] if m else re.findall(r'\b(\d{6})\b', subject)
                     if codes_subj:
-                        print(f"  [imap] Código (asunto): {codes_subj[0]}")
-                        mail.logout()
+                        print(f"  [gmail] Código (asunto): {codes_subj[0]}")
                         return codes_subj[0]
-                    # Buscar en body (exactamente 6 dígitos)
                     codes_body = re.findall(r'\b(\d{6})\b', body)
                     if codes_body:
-                        print(f"  [imap] Código (body): {codes_body[0]}")
-                        mail.logout()
+                        print(f"  [gmail] Código (body): {codes_body[0]}")
                         return codes_body[0]
-                    continue  # email de verificación pero sin código de 6 dígitos aún
+                    continue
 
-                _img_exts = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico")
-                _excluidos = (
-                    "facebook.com", "twitter.com", "instagram.com", "linkedin.com",
-                    "google.com", "unsubscribe", "privacy", "terms", "help",
-                    "apple.com", "microsoft.com",
-                )
-
-                def _es_img(url: str) -> bool:
-                    return any(url.lower().split("?")[0].endswith(ext) for ext in _img_exts)
-
-                def _excluir_url(url: str) -> bool:
-                    return _es_img(url) or any(ex in url.lower() for ex in _excluidos)
-
-                # Buscar link de verificación/activación por keywords
                 links = re.findall(
                     r"https?://[^\s\"'<>\]\)]+(?:confirm|verify|activ|validar|activate|token|click)[^\s\"'<>\]\)]*",
-                    body, re.I
+                    body, re.I,
                 )
                 links = [l for l in links if not _excluir_url(l)]
                 if links:
-                    print(f"  [imap] Link encontrado: {links[0][:80]}...")
-                    mail.logout()
+                    print(f"  [gmail] Link encontrado: {links[0][:80]}...")
                     return links[0]
 
-                # Fallback: cualquier link a dominios conocidos de portales
-                _dominios_portales = (
-                    "laborum.cl", "computrabajo.com", "trabajando.cl",
-                    "chiletrabajos.cl", "bumeran.com", "multitrabajos.com",
-                )
                 for dominio in _dominios_portales:
-                    # Buscar solo en href (no img src — evita tracking pixels)
                     fallback = re.findall(
                         rf'href=["\']?(https?://[^\s"\'<>\]\)]*{re.escape(dominio)}[^\s"\'<>\]\)]*)',
-                        body, re.I
+                        body, re.I,
                     )
                     fallback = [l for l in fallback if not _excluir_url(l)]
                     if fallback:
                         mejor = max(fallback, key=len)
-                        print(f"  [imap] Link portal encontrado: {mejor[:80]}...")
-                        mail.logout()
+                        print(f"  [gmail] Link portal encontrado: {mejor[:80]}...")
                         return mejor
 
-                # Fallback final: el link HTTPS más largo (los tokens de activación son largos)
                 all_links = re.findall(r"https?://[^\s\"'<>\]\)]{40,}", body, re.I)
                 candidatos = [l for l in all_links if not _excluir_url(l)]
                 if candidatos:
                     mejor = max(candidatos, key=len)
-                    print(f"  [imap] Link por longitud encontrado: {mejor[:80]}...")
-                    mail.logout()
+                    print(f"  [gmail] Link por longitud: {mejor[:80]}...")
                     return mejor
 
-                # Buscar código numérico de 4-8 dígitos
                 codes = re.findall(r'\b(\d{4,8})\b', body)
                 if codes:
-                    print(f"  [imap] Código encontrado: {codes[0]}")
-                    mail.logout()
+                    print(f"  [gmail] Código encontrado: {codes[0]}")
                     return codes[0]
 
         except Exception as e:
-            print(f"  [imap] Error leyendo inbox: {e}")
+            print(f"  [gmail] Error: {e}")
 
-        time.sleep(6)
+        time.sleep(2)
 
-    mail.logout()
-    print(f"  [imap] Timeout — no llegó verificación para {email_usuario}")
+    print(f"  [gmail] Timeout — no llegó verificación para {email_usuario}")
     return None
 
 

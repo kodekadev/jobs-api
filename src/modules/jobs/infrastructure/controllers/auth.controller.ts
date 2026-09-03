@@ -1,4 +1,4 @@
-import { Controller, Post, Body, HttpCode } from '@nestjs/common';
+import { Controller, Post, Get, Query, Body, HttpCode } from '@nestjs/common';
 import { AuthService } from '../../application/auth.service';
 import { Public } from '../../../shared/infrastructure/guards/jwt-auth.guard';
 
@@ -85,5 +85,12 @@ export class AuthController {
   @HttpCode(200)
   setCelular(@Body() body: { id: string; celular: string }) {
     return this.authService.setCelular(body.id, body.celular);
+  }
+
+  @Public()
+  @Get('unsubscribe')
+  @HttpCode(200)
+  unsubscribe(@Query('email') email: string, @Query('token') token: string) {
+    return this.authService.unsubscribe(email, token);
   }
 }

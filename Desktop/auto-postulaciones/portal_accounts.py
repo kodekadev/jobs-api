@@ -73,7 +73,7 @@ def _make_pw_context(pw=None):
     use_chrome = os.path.exists(_CHROME_PATH) and not _in_cloud_run
     browser = pw.chromium.launch(
         executable_path=_CHROME_PATH if use_chrome else None,
-        headless=_in_cloud_run,
+        headless=HEADLESS_PW,
         args=[
             "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
             "--disable-blink-features=AutomationControlled",
@@ -234,6 +234,7 @@ def _save_answers_to_cache(questions: list, answers: dict) -> None:
 
 _in_cloud_run = bool(os.environ.get("K_SERVICE") or os.environ.get("CLOUD_RUN_JOB"))
 HEADLESS = os.environ.get("SELENIUM_HEADLESS", "1" if _in_cloud_run else "0") == "1"
+HEADLESS_PW = _in_cloud_run or os.environ.get("HEADLESS_PW", "0") == "1"
 TWOCAPTCHA_KEY = os.environ.get("TWOCAPTCHA_KEY") or os.environ.get("TWOCAPTCHA_API_KEY", "")
 
 _xvfb_started = False
@@ -540,44 +541,63 @@ def _selenium_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
             time.sleep(4)
             driver.execute_script("window.scrollBy(0, 400)")
             time.sleep(2)
-            # Limpiar sesión de Trabajando del perfil persistente: cookies + localStorage
-            # (sin esto, si el perfil guardó un JWT de un registro anterior, el browser
-            # entra logueado a /crea-tu-curriculum y Trabajando redirige → botón nunca aparece)
-            tbj_cookies = [c for c in driver.get_cookies()
-                           if "trabajando" in c.get("domain", "")]
-            for c in tbj_cookies:
-                try:
-                    driver.delete_cookie(c["name"])
-                except Exception:
-                    pass
-            if tbj_cookies:
-                print(f"  [debug] {len(tbj_cookies)} cookies Trabajando limpiadas del perfil")
+            # Limpiar TODA la sesión del perfil persistente via CDP (limpia cookies de
+            # todos los dominios, incluyendo api.trabajando.com que no es accesible
+            # navegando desde www.trabajando.cl con delete_cookie())
+            try:
+                driver.execute_cdp_cmd("Network.clearBrowserCookies", {})
+                print(f"  [debug] Todas las cookies del browser limpiadas (CDP)")
+            except Exception:
+                driver.delete_all_cookies()
+                print(f"  [debug] Cookies limpiadas (fallback delete_all_cookies)")
             try:
                 driver.execute_script("localStorage.clear(); sessionStorage.clear();")
-                print(f"  [debug] localStorage/sessionStorage Trabajando limpiados")
+                print(f"  [debug] localStorage/sessionStorage limpiados")
             except Exception:
                 pass
         except Exception:
             pass
 
-        driver.get("https://www.trabajando.cl/crea-tu-curriculum")
-        # 10s iniciales — reCAPTCHA v3 observa comportamiento del browser antes
-        # de que interactuemos con el formulario (igual que el script anterior que funcionaba)
-        time.sleep(10)
+        # /crea-tu-curriculum redirige client-side a /ingresa-a-tu-cuenta desde una
+        # actualización reciente del sitio. Navegar directamente al destino final.
+        try:
+            driver.get("about:blank")
+            time.sleep(1)
+        except Exception:
+            pass
+
+        driver.get("https://www.trabajando.cl/ingresa-a-tu-cuenta")
+        time.sleep(8)
 
         print(f"  [debug] URL: {driver.current_url}")
         print(f"  [debug] Title: {driver.title}")
 
-        # Esperar el botón de submit
-        btn = wait.until(EC.presence_of_element_located(
-            (By.XPATH, "//button[contains(text(),'Crear mi cuenta')]")
-        ))
-        print(f"  [debug] Botón 'Crear mi cuenta' encontrado")
+        # Inyectar mock nombre-usuario ANTES de tocar el formulario de email.
+        # El check de disponibilidad del email se dispara al hacer blur/submit.
+        driver.execute_script("""
+            (function() {
+                var _origFetch = window.fetch;
+                window.fetch = function() {
+                    var url = String(arguments[0] || '');
+                    if (url.includes('nombre-usuario')) {
+                        console.log('[tbj-mock] nombre-usuario interceptado → 404');
+                        return Promise.resolve(new Response(
+                            JSON.stringify({"message": "Usuario no encontrado"}),
+                            {status: 404, statusText: 'Not Found',
+                             headers: {'Content-Type': 'application/json'}}
+                        ));
+                    }
+                    return _origFetch.apply(this, arguments);
+                };
+                console.log('[tbj-mock] fetch wrapper activo');
+            })();
+        """)
+        print(f"  [debug] Mock nombre-usuario inyectado")
 
         # Obtener token Capsolver con score alto ANTES de llenar el formulario
         # (el token dura 2 min — tiempo suficiente para llenar y enviar)
         _TBJ_SITEKEY = "6LdSrNIgAAAAAL4UEF1GehSd5-OgS3nypjAmz_hB"
-        _TBJ_REG_URL = "https://www.trabajando.cl/crea-tu-curriculum"
+        _TBJ_REG_URL = "https://www.trabajando.cl/ingresa-a-tu-cuenta"
         capsolver_token = _solve_recaptcha(_TBJ_SITEKEY, _TBJ_REG_URL, action="register")
         # Interceptor fetch + XHR: reemplaza el token reCAPTCHA en el POST de registro.
         # Cubre tanto fetch (estándar) como XMLHttpRequest (axios), que Vue puede usar.
@@ -634,7 +654,21 @@ def _selenium_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
                         (!opts.method || opts.method.toUpperCase() !== 'GET')) {
                     try {
                         var body = JSON.parse(opts.body);
-                        if (walk(body)) {
+                        var changed = walk(body);
+                        // Para el endpoint de registro: forzar token bajo todos los
+                        // nombres de campo posibles (el nombre exacto varía por versión).
+                        // Cubre el caso donde grecaptcha.execute() aún no resolvió.
+                        if (url.includes('/public/usuarios') && !url.includes('nombre-usuario')) {
+                            ['recaptchaToken','captchaToken','tokenRecaptcha',
+                             'gToken','token','recaptcha','gRecaptchaResponse'].forEach(function(k) {
+                                if (!body[k] || typeof body[k] !== 'string' || body[k].length < 50) {
+                                    body[k] = _tok;
+                                    changed = true;
+                                }
+                            });
+                            console.log('[tbj-cap] registro: campos inyectados, body=' + JSON.stringify(body).slice(0,400));
+                        }
+                        if (changed) {
                             var newOpts = Object.assign({}, opts, {body: JSON.stringify(body)});
                             var p = _orig.apply(this, [url, newOpts]);
                             p.then(function(r) {
@@ -646,7 +680,7 @@ def _selenium_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
                             }).catch(function(){});
                             return p;
                         }
-                    } catch(e) {}
+                    } catch(e) { console.log('[tbj-cap] fetch err: ' + e); }
                 }
                 return _orig.apply(this, arguments);
             };
@@ -656,19 +690,7 @@ def _selenium_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
         else:
             print(f"  [debug] Sin token Capsolver — token nativo")
 
-        # Selectores absolutos del formulario (estables en Nuxt/Vue)
-        SELECTORS = [
-            (By.XPATH, "//*[@id='__nuxt']//form/div/input[1]"),   # nombre
-            (By.XPATH, "//*[@id='__nuxt']//form/div/input[2]"),   # apellido
-            (By.CSS_SELECTOR, 'input[placeholder="999999999"]'),   # celular
-            (By.XPATH, "//*[@id='__nuxt']//form/div/input[3]"),   # email
-            (By.CSS_SELECTOR, 'input[type="password"]'),           # password
-        ]
-        VALUES = [nombre, apellido, celular_limpio, mail, clave]
-
         def set_field(selector_by, selector_val, value):
-            # send_keys() genera eventos de teclado reales — mejor score reCAPTCHA v3
-            # que el setter JS que dispara eventos sintéticos
             for attempt in range(3):
                 try:
                     el = wait.until(EC.presence_of_element_located((selector_by, selector_val)))
@@ -681,69 +703,122 @@ def _selenium_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
                         raise
                     time.sleep(0.5)
 
-        print(f"  [debug] Llenando formulario...")
-        for i, ((by, sel), val) in enumerate(zip(SELECTORS, VALUES)):
-            set_field(by, sel, val)
+        from selenium.webdriver.common.action_chains import ActionChains
+
+        # ── PASO 1: Llenar email y click Continuar ────────────────────────────
+        # /ingresa-a-tu-cuenta muestra solo el campo email inicialmente.
+        # Al hacer blur/submit llama a nombre-usuario (mock → 404 = email libre)
+        # y expande el formulario con los campos de registro.
+        print(f"  [debug] PASO 1: llenando email...")
+        set_field(By.CSS_SELECTOR,
+                  'input[type="email"], input[name*="email"], input[name*="user"], input[placeholder*="mail"]',
+                  mail)
+        time.sleep(1.5)
+
+        # Cerrar banner de cookies si aparece
+        try:
+            acepto = driver.find_element(By.XPATH, "//button[contains(text(),'Acepto')]")
+            driver.execute_script("arguments[0].click();", acepto)
             time.sleep(0.5)
-            print(f"  [debug] Campo {i} llenado, URL: {driver.current_url}")
+        except Exception:
+            pass
 
-        # Polling: esperar hasta 10s para que reCAPTCHA ejecute y el form navegue
-        print(f"  [debug] Esperando auto-submit (hasta 10s)...")
-        for _ in range(20):
-            if "crea-tu-curriculum" not in driver.current_url:
-                break
-            time.sleep(0.5)
-
-        mid_url = driver.current_url
-        print(f"  [debug] URL tras polling: {mid_url}")
-
-        form_auto_submitted = "crea-tu-curriculum" not in mid_url
-
-        if form_auto_submitted:
-            # reCAPTCHA ejecutó y el form se envió solo — esperar que localStorage se escriba
-            print(f"  [debug] Formulario auto-enviado (reCAPTCHA nativo OK) — esperando sesión...")
-            time.sleep(8)
-            try:
-                reg_log = driver.execute_script("return window.__regLog || [];")
-                for e in reg_log:
-                    print(f"  [reg-api] {e.get('status')} {e.get('url')} req={e.get('req','')[:150]} -> {e.get('body','')[:200]}")
-            except Exception:
-                pass
-        else:
-            # Cerrar banner de cookies si aparece
-            try:
-                acepto = driver.find_element(By.XPATH, "//button[contains(text(),'Acepto')]")
-                driver.execute_script("arguments[0].click();", acepto)
-                time.sleep(0.5)
-            except Exception:
-                pass
-
-            # Re-encontrar el botón (DOM pudo haber cambiado al llenar el formulario)
-            btn = wait.until(EC.presence_of_element_located(
-                (By.XPATH, "//button[contains(text(),'Crear mi cuenta')]")
+        # Click en el primer botón de submit visible (Continuar / Ingresar)
+        try:
+            continuar = wait.until(EC.element_to_be_clickable(
+                (By.XPATH, "//button[@type='submit'][1]")
             ))
+            driver.execute_script("arguments[0].scrollIntoView(true);", continuar)
+            time.sleep(0.3)
+            ActionChains(driver).move_to_element(continuar).pause(0.4).click().perform()
+            print(f"  [debug] Click Continuar — esperando campos de registro...")
+        except Exception as e:
+            print(f"  [debug] Click Continuar falló: {e}")
+
+        # Esperar que el mock procese y aparezcan los campos de registro
+        time.sleep(5)
+        print(f"  [debug] URL tras Continuar: {driver.current_url}")
+
+        # ── PASO 2: Llenar campos de registro ─────────────────────────────────
+        # Trabajando puede mostrar todos los campos a la vez o en secuencia.
+        # Intentar llenar: nombre, apellido, celular, password.
+        print(f"  [debug] PASO 2: llenando campos de registro...")
+
+        # nombre — primer input de texto que no sea email ni phone
+        try:
+            set_field(By.XPATH,
+                      "//*[@id='__nuxt']//form//input[@type='text' or not(@type)][1]",
+                      nombre)
+            time.sleep(0.4)
+            print(f"  [debug] nombre llenado")
+        except Exception as e:
+            print(f"  [debug] nombre falló: {e}")
+
+        # apellido — segundo input de texto
+        try:
+            set_field(By.XPATH,
+                      "//*[@id='__nuxt']//form//input[@type='text' or not(@type)][2]",
+                      apellido)
+            time.sleep(0.4)
+            print(f"  [debug] apellido llenado")
+        except Exception as e:
+            print(f"  [debug] apellido falló: {e}")
+
+        # celular — por placeholder específico o type=tel
+        try:
+            set_field(By.CSS_SELECTOR, 'input[placeholder="999999999"], input[type="tel"]',
+                      celular_limpio)
+            time.sleep(0.4)
+            print(f"  [debug] celular llenado")
+        except Exception as e:
+            print(f"  [debug] celular falló: {e}")
+
+        # password
+        try:
+            set_field(By.CSS_SELECTOR, 'input[type="password"]', clave)
+            time.sleep(0.4)
+            print(f"  [debug] password llenado")
+        except Exception as e:
+            print(f"  [debug] password falló: {e}")
+
+        print(f"  [debug] URL tras campos: {driver.current_url}")
+
+        # ── PASO 3: Click "Crear mi cuenta" (o equivalente) ───────────────────
+        btn_xpaths = [
+            "//button[contains(text(),'Crear mi cuenta')]",
+            "//button[contains(text(),'Crear cuenta')]",
+            "//button[contains(text(),'Registrar')]",
+            "//button[@type='submit'][last()]",
+        ]
+        btn = None
+        for xp in btn_xpaths:
+            try:
+                btn = wait.until(EC.element_to_be_clickable((By.XPATH, xp)))
+                break
+            except Exception:
+                pass
+
+        if btn:
             driver.execute_script("arguments[0].scrollIntoView(true);", btn)
             time.sleep(0.3)
-            # ActionChains genera mousemove + mousedown + mouseup + click reales
-            # (no sintéticos via JS) — necesario para que reCAPTCHA v3 ejecute
-            from selenium.webdriver.common.action_chains import ActionChains
             ActionChains(driver).move_to_element(btn).pause(0.5).click().perform()
-            # Esperar hasta 30s para que reCAPTCHA ejecute y la página navegue
-            print(f"  [debug] Botón clickeado — esperando navegación (hasta 30s)...")
-            for _ in range(60):
-                if "crea-tu-curriculum" not in driver.current_url:
-                    break
-                time.sleep(0.5)
-            print(f"  [debug] URL post-click: {driver.current_url}")
+            print(f"  [debug] Botón submit clickeado — esperando navegación (hasta 30s)...")
+        else:
+            print(f"  [debug] No se encontró botón submit final")
 
-        current_url = driver.current_url
-        content = driver.page_source.lower()
+        # Esperar navegación post-registro
+        start_url = driver.current_url
+        for _ in range(60):
+            if driver.current_url != start_url:
+                break
+            time.sleep(0.5)
+        print(f"  [debug] URL post-click: {driver.current_url}")
 
-        # Debug: requests via JS __regLog (fetch/XHR interceptados en esta página)
+        # Loguear respuesta de la API de registro
         try:
             reg_log = driver.execute_script("return window.__regLog || [];")
             for e in reg_log:
-                print(f"  [reg-api] {e.get('status')} {e.get('req','')} {e.get('url','')} -> {e.get('body','')[:120]}")
+                print(f"  [reg-api] {e.get('status')} {e.get('url')} req={e.get('req','')[:150]} -> {e.get('body','')[:200]}")
         except Exception:
             pass
 
@@ -761,7 +836,7 @@ def _selenium_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
                         req = params.get("request", {})
                         url = req.get("url", "")
                         if any(d in url for d in ["trabajando.com", "trabajando.cl"]):
-                            post = (req.get("postData") or "")[:200]
+                            post = (req.get("postData") or "")[:500]
                             print(f"  [perf-req] {req.get('method','?')} {url[:120]} body={post}")
                     elif method == "Network.responseReceived":
                         resp = params.get("response", {})
@@ -777,7 +852,7 @@ def _selenium_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
         try:
             browser_logs = driver.get_log("browser")
             for log in browser_logs:
-                if log.get("level") in ("SEVERE", "WARNING"):
+                if log.get("level") in ("SEVERE", "WARNING", "INFO"):
                     print(f"  [console-{log['level']}] {log.get('message','')[:200]}"[:220])
         except Exception:
             pass
@@ -816,10 +891,15 @@ def _selenium_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
             all_driver_cookies = {}
             has_session_cookie = False
 
+        current_url = driver.current_url
+        content = ""
+        try:
+            content = driver.page_source.lower()
+        except Exception:
+            pass
+
         success_urls = ["cuenta-creada", "como-quieres", "mi-curriculum", "completar"]
-        # Auto-envío solo cuenta si además hay cookie de sesión real
-        auto_ok = form_auto_submitted and "crea-tu-curriculum" not in current_url and has_session_cookie
-        if any(s in current_url for s in success_urls) or has_auth or auto_ok:
+        if any(s in current_url for s in success_urls) or has_auth:
             print(f"  -> Registrado OK (auth={has_auth}), URL: {current_url}")
             # Completar wizard CV en la misma sesion (evita segundo login + reCAPTCHA)
             wizard_ok = False
@@ -855,11 +935,10 @@ def _selenium_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
             driver.quit()
             raise EmailTomadoError(mail)
 
-        # Última verificación: si la URL salió de /crea-tu-curriculum (incluso a home),
-        # navegar a /mi-curriculum para confirmar si la sesión quedó activa.
-        # El registro puede haber creado la cuenta y la sesión sin reflejar cookies
-        # inmediatamente en el driver (timing, cross-domain Set-Cookie, etc.).
-        if "crea-tu-curriculum" not in current_url:
+        # Última verificación: la URL no corresponde a un éxito confirmado.
+        # Navegar a /mi-curriculum para ver si la sesión quedó activa.
+        # Cubre el caso donde el registro redirige al home sin señal clara.
+        if "ingresa-a-tu-cuenta" in current_url or True:
             try:
                 print(f"  [debug] URL cambió pero sin sesión detectada — verificando /mi-curriculum...")
                 driver.get("https://www.trabajando.cl/mi-curriculum")
@@ -910,7 +989,7 @@ def _pw_make_context(pw):
     """Contexto Playwright con user-agent realista, headless en Cloud Run."""
     browser = pw.chromium.launch(
         channel="chrome" if not _in_cloud_run else None,
-        headless=_in_cloud_run,
+        headless=HEADLESS_PW,
         args=(["--no-sandbox", "--disable-dev-shm-usage",
                 "--disable-blink-features=AutomationControlled"]
               if _in_cloud_run else
@@ -1579,11 +1658,23 @@ def _pw_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
     """Crea cuenta en trabajando.cl con Playwright y completa wizard en misma sesión."""
     celular_limpio = _clean_phone(celular) or "912345678"
 
-    pw = _get_global_pw()
-    browser, ctx = _pw_make_context(pw)
+    _, browser, ctx, _ = _make_pw_context()
     try:
-        page = ctx.new_page()
+        page = _new_stealth_page(ctx)
         try:
+            # Interceptar el check de email para evitar 403 de bot-detection.
+            # El frontend llama a este endpoint al rellenar el campo email;
+            # si recibe 403 redirige a home sin crear la cuenta.
+            # Un 404 simula "email libre" → el formulario continúa con el registro.
+            import json as _json_mock
+            def _handle_nombre_usuario(route, request):
+                route.fulfill(
+                    status=404,
+                    content_type="application/json",
+                    body=_json_mock.dumps({"message": "Usuario no encontrado"}),
+                )
+            page.route("**/usuarios/nombre-usuario", _handle_nombre_usuario)
+
             # Interceptar grecaptcha.execute para capturar el action real de Trabajando
             ctx.add_init_script("""
                 window.__rcAction = null;
@@ -1728,9 +1819,9 @@ def _pw_crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
 def crear_cuenta_trabajando(nombre: str, apellido: str, celular: str,
                              mail: str, clave: str, uid: str | None = None,
                              user: dict | None = None) -> bool:
-    """Crea cuenta en trabajando.cl con Selenium + Capsolver (token de score alto)."""
+    """Crea cuenta en trabajando.cl con Playwright + Capsolver."""
     LAST_TBJ_ONBOARDING["wizard_ok"] = None
-    return _selenium_crear_cuenta_trabajando(nombre, apellido, celular, mail, clave, uid=uid, user=user)
+    return _pw_crear_cuenta_trabajando(nombre, apellido, celular, mail, clave, uid=uid, user=user)
 
 
 # ─── CV INTERNO TRABAJANDO.CL ────────────────────────────────────────────────
@@ -4594,36 +4685,114 @@ import unicodedata as _uc
 # ── Match de cargos (mismo algoritmo que scraper/main.py) ────────────────────
 
 import unicodedata as _uc2
+import re as _re_jau
 
 def _jau_normalize(text: str) -> str:
     text = _uc2.normalize("NFKD", text or "")
     text = "".join(ch for ch in text if not _uc2.combining(ch))
+    # Strip Spanish gender markers: "Diseñador/a" → "Diseñador", "Secretaria/o" → "Secretaria"
+    text = _re_jau.sub(r'/[ao]s?\b', '', text, flags=_re_jau.IGNORECASE)
     return " ".join(text.lower().split())
+
+def _jau_gender_variants(w: str) -> list:
+    """Para palabras largas, prueba la variante de género opuesto (o↔a)."""
+    if len(w) >= 7:
+        if w.endswith('a') and not w.endswith('ista') and not w.endswith('enta'):
+            return [w, w[:-1] + 'o']
+        if w.endswith('o'):
+            return [w, w[:-1] + 'a']
+    return [w]
 
 _JAU_STOPWORDS = {"de", "del", "la", "el", "los", "las", "para", "con", "por", "y", "o", "en"}
 
 _JAU_SINONIMOS: list[set] = [
-    {"vendedor", "ventas", "comercial", "ejecutivo comercial", "ejecutivo de ventas"},
-    {"desarrollador", "programador", "developer", "dev"},
-    {"administrativo", "asistente administrativo", "auxiliar administrativo"},
-    {"contador", "contabilidad", "analista contable"},
+    {"vendedor", "ventas", "comercial", "ejecutivo comercial", "ejecutivo de ventas", "representante comercial"},
+    {"desarrollador", "programador", "developer", "dev", "software engineer", "ingeniero software", "ingeniero de software"},
+    {"administrativo", "asistente administrativo", "auxiliar administrativo", "admin"},
+    {"contador", "contabilidad", "analista contable", "analista de contabilidad"},
     {"secretaria", "secretario", "recepcionista"},
-    {"bodeguero", "bodega", "operario de bodega"},
+    {"bodeguero", "bodega", "operario de bodega", "auxiliar de bodega"},
     {"conductor", "chofer"},
     {"garzon", "mesero", "camarero"},
     {"guardia", "vigilante", "seguridad"},
-    {"jefe de proyectos", "project manager", "jefe de proyecto"},
-    {"rrhh", "recursos humanos", "people"},
+    {"jefe de proyectos", "project manager", "jefe de proyecto", "gerente de proyectos",
+     "coordinador de proyectos", "pm", "lider de proyectos"},
+    {"rrhh", "recursos humanos", "people", "gestion de personas", "talento humano"},
     {"marketing", "mercadeo", "marketing digital"},
-    {"disenador", "diseno", "designer"},
+    {"disenador", "diseno", "designer", "disenador grafico", "disenadora"},
     {"ingeniero comercial", "ing comercial"},
     {"practica", "practicante", "trainee"},
+    {"data analyst", "analista de datos", "analista datos"},
+    {"data engineer", "ingeniero de datos", "ingeniero datos"},
+    {"community manager", "social media", "gestion redes sociales"},
+    {"servicio al cliente", "atencion al cliente", "ejecutivo de atencion", "customer service"},
+    {"jefe de bodega", "supervisor de bodega", "encargado de bodega"},
+    {"analista financiero", "analista de finanzas", "analista financiera"},
+    {"abogado", "abogada", "asesor legal", "asesor juridico"},
+    {"kinesiologo", "kinesiologa", "kinesioterapia", "kinesiologia"},
+    {"nutricionista", "nutricion", "nutriologo", "dietista"},
+    {"terapeuta ocupacional", "terapia ocupacional"},
+    {"fonoaudiologo", "fonoaudiologa", "fonoaudiologia"},
+    {"psicologo", "psicologa", "psicologia clinica"},
+    {"trabajadora social", "trabajador social", "asistente social", "trabajo social"},
+    {"productor de eventos", "productora de eventos", "coordinador de eventos"},
+    {"administrador publico", "administracion publica", "gestion publica"},
+    {"corredor de propiedades", "corredora de propiedades", "agente inmobiliario"},
 ]
+
+# Palabras de jerarquía/nivel: alta frecuencia en muchos cargos distintos;
+# no deben ser el único token que determine el match.
+_JAU_SENIORITY = {
+    "jefe", "gerente", "director", "coordinador", "analista", "asistente",
+    "auxiliar", "ejecutivo", "operario", "supervisor", "encargado", "lider",
+    "especialista", "tecnico", "practicante", "junior", "senior", "trainee",
+    "subgerente", "responsable", "ayudante", "agente", "profesional",
+}
+
+# Dominios profesionales: si job y cargo comparten dominio → score mínimo 50
+# (por encima del umbral 45, para que llegue al filtro LLM en vez de ser descartado)
+_JAU_DOMINIOS: list[set] = [
+    {"rrhh", "recursos", "humanos", "reclutamiento", "seleccion", "organizacional",
+     "bienestar", "talento", "personas", "people", "capital", "atraccion", "gestion"},
+    {"ventas", "comercial", "vendedor", "negocios", "ejecutivo"},
+    {"finanzas", "contabilidad", "tesoreria", "financiero", "presupuesto"},
+    {"logistica", "bodega", "operaciones", "produccion", "supply", "cadena"},
+    {"tecnologia", "informatica", "sistemas", "desarrollo", "programacion", "software", "datos", "data"},
+    {"marketing", "comunicaciones", "publicidad", "digital", "contenidos"},
+    {"legal", "juridico", "abogado", "compliance", "contratos"},
+    {"salud", "medicina", "enfermeria", "medico", "clinico", "farmaceutico",
+     "kinesiologo", "kinesiologa", "kinesiologia", "nutricionista", "nutricion",
+     "terapeuta", "fonoaudiologo", "fonoaudiologa", "psicologo", "psicologa",
+     "obstetra", "matrona", "dental", "odontologo", "bioquimico", "rehabilitacion"},
+    {"educacion", "docente", "profesor", "pedagogia", "capacitacion"},
+    {"construccion", "obras", "arquitecto", "inmobiliario", "proyecto"},
+    {"prevencion", "seguridad", "riesgos", "hsec", "ssoma"},
+    {"mineria", "procesos", "planta", "mantenimiento", "mecanico", "electrico"},
+    {"diseno", "disenador", "disenadora", "grafico", "creativo", "ux", "ui",
+     "multimedia", "branding", "audiovisual", "ilustrador", "animacion"},
+    {"eventos", "productor", "productora", "realizador", "entretenimiento", "shows"},
+    {"social", "comunitario", "municipal", "publico", "asistente"},
+    {"abastecimiento", "licitaciones", "compras", "adquisiciones", "proveedores"},
+    {"gastronomia", "nutricionista", "cocina", "chef", "restaurante", "alimentos"},
+    {"inmobiliario", "propiedades", "corredor", "arrendamiento", "bienes"},
+]
+
+_NIVEL_ALTO  = {"gerente", "director", "subgerente", "cto", "ceo", "cfo", "vp"}
+_NIVEL_MEDIO = {"jefe", "lider", "coordinador", "encargado", "supervisor", "head"}
+_NIVEL_BAJO  = {"analista", "asistente", "auxiliar", "operario", "ayudante", "vendedor", "cajero", "digitador", "secretaria", "recepcionista"}
+
+def _nivel_seniority(text: str) -> str | None:
+    t = _jau_normalize(text)
+    if any(w in t.split() for w in _NIVEL_ALTO):  return "alto"
+    if any(w in t.split() for w in _NIVEL_MEDIO): return "medio"
+    if any(f" {w} " in f" {t} " or t.startswith(w) for w in _NIVEL_BAJO): return "bajo"
+    return None
 
 def _jau_sinonimos(cargo_norm: str) -> set:
     variantes = {cargo_norm}
     for grupo in _JAU_SINONIMOS:
-        if any(s in cargo_norm or cargo_norm in s for s in grupo):
+        # Solo expandir si el cargo COMPLETO está en el grupo, no si comparte palabras
+        if cargo_norm in grupo:
             variantes |= grupo
     return variantes
 
@@ -4631,28 +4800,61 @@ def _jau_tokens(text: str) -> set:
     return {w for w in _jau_normalize(text).split() if len(w) > 2 and w not in _JAU_STOPWORDS}
 
 def _jau_match_score(titulo_empleo: str, user_cargos: list) -> int:
-    """Score 0-100: qué tan bien calza el título con los cargos del usuario."""
+    """Score 0-100: qué tan bien calza el título con los cargos del usuario.
+
+    Lógica:
+    - 100: match exacto (incluye sinónimos de frase)
+    - 85: uno contiene al otro
+    - 80: tokens de DOMINIO del cargo (sin palabras de jerarquía como "jefe"/"analista")
+           aparecen en el título del empleo → cargo define claramente el área
+    - 50: sin tokens de dominio (cargo es solo jerarquía, ej. "Analista"), o bien
+           comparten dominio profesional según _JAU_DOMINIOS
+    - 0: sin match
+    """
     op = _jau_normalize(titulo_empleo)
     if not user_cargos or not op:
         return 0
     mejor = 0
+    op_tokens = set(op.split())
     for cargo in user_cargos:
         c = _jau_normalize(cargo)
         if not c:
             continue
+        # Sinónimos de frase completa
         for variante in _jau_sinonimos(c):
             if variante == op:
                 mejor = max(mejor, 100)
             elif variante in op or op in variante:
                 mejor = max(mejor, 85)
-        palabras = _jau_tokens(c)
-        if palabras and op:
-            comunes = sum(1 for w in palabras if w in op)
+        # Token overlap — solo sobre tokens de dominio (excluye jerarquía)
+        palabras      = _jau_tokens(c)
+        palabras_core = palabras - _JAU_SENIORITY  # tokens que describen el ÁREA, no el nivel
+        if palabras_core:
+            # Prueba también variante de género (kinesiologa ↔ kinesiologo)
+            comunes = sum(1 for w in palabras_core if any(v in op for v in _jau_gender_variants(w)))
             if comunes:
-                mejor = max(mejor, int(80 * comunes / len(palabras)))
+                mejor = max(mejor, int(80 * comunes / len(palabras_core)))
+        elif palabras:
+            # Cargo es solo jerarquía (e.g. "Jefe", "Analista") → overlap débil
+            comunes = sum(1 for w in palabras if any(v in op for v in _jau_gender_variants(w)))
+            if comunes:
+                mejor = max(mejor, int(50 * comunes / len(palabras)))
+
+    # Dominio compartido: si job y cargo pertenecen al mismo área profesional → score 50
+    if mejor < 50:
+        for dominio in _JAU_DOMINIOS:
+            if op_tokens & dominio:
+                for cargo in user_cargos:
+                    cargo_tokens = set(_jau_normalize(cargo).split())
+                    if cargo_tokens & dominio:
+                        mejor = max(mejor, 50)
+                        break
+            if mejor >= 50:
+                break
+
     return min(mejor, 100)
 
-_JAU_SCORE_MINIMO = 25
+_JAU_SCORE_MINIMO = 30
 
 
 def job_aplica_al_usuario(titulo: str, empresa: str, user: dict, check_score: bool = True) -> tuple[bool, str]:
@@ -4709,12 +4911,20 @@ def job_aplica_al_usuario(titulo: str, empresa: str, user: dict, check_score: bo
         if isinstance(cargos, str):
             try:    cargos = _json2.loads(cargos)
             except: cargos = [cargos]
-        profesion = user.get("PROFESION") or user.get("profesion") or ""
-        perfil_cargos = [c for c in list(cargos) + [profesion] if c]
+        perfil_cargos = [c for c in list(cargos) if c]
         if perfil_cargos:
             score = _jau_match_score(titulo, perfil_cargos)
             if score < _JAU_SCORE_MINIMO:
                 return False, f"sin match con perfil (score={score})"
+
+            # Seniority: no postular a cargo inferior cuando el perfil es jefe/gerencial
+            # Excepción: si el propio perfil incluye cargos de nivel bajo, sí se postula
+            nivel_job = _nivel_seniority(titulo)
+            if nivel_job == "bajo":
+                niveles_usuario = [_nivel_seniority(c) for c in perfil_cargos]
+                perfil_tiene_bajo = any(n == "bajo" for n in niveles_usuario)
+                if not perfil_tiene_bajo and any(n in ("alto", "medio") for n in niveles_usuario):
+                    return False, f"nivel del cargo muy inferior al perfil"
 
     return True, ""
 
@@ -5153,6 +5363,23 @@ def _build_user_profile(user: dict) -> str:
     return "\n".join(lines)
 
 
+def _fallback_answers(questions: list[dict], user: dict) -> dict[str, str]:
+    """Respuestas genéricas sin LLM para plan TRIAL. Solo para preguntas de texto/textarea."""
+    profesion = str(user.get("PROFESION") or user.get("profesion") or "profesional")
+    exp       = str(user.get("EXPERIENCIA") or user.get("experiencia") or "5").replace(" años", "").strip()
+    resumen   = str(user.get("RESUMEN") or user.get("resumen") or "")
+    desc = resumen[:300] if resumen else (
+        f"Soy {profesion} con {exp} años de experiencia en el área, "
+        "con sólidas habilidades técnicas y disponibilidad inmediata."
+    )
+    result = {}
+    for i, q in enumerate(questions):
+        qtype = (q.get("type") or "text").lower()
+        if qtype in ("textarea", "text", ""):
+            result[str(i)] = desc
+    return result
+
+
 def _llm_answer_questions(questions: list[dict], user: dict, cv_text: str = "", job_title: str = "", job_description: str = "") -> dict[str, str]:
     """
     Llama a Claude Haiku con el perfil completo del candidato y las preguntas del formulario.
@@ -5168,6 +5395,10 @@ def _llm_answer_questions(questions: list[dict], user: dict, cv_text: str = "", 
     # Verificar límite diario de optimizaciones por plan
     uid  = str(user.get("ID_USUARIO") or user.get("id_usuario") or "").strip()
     plan = str(user.get("plan") or user.get("PLAN") or "FREE").upper()
+    if plan == "TRIAL":
+        print(f"    [Claude] Plan TRIAL — usando respuestas estándar sin LLM")
+        return _fallback_answers(questions, user)
+
     if uid and not bq.puede_optimizar(uid, plan):
         limite = bq.limite_optimizaciones(plan)
         print(f"    [Claude] Limite diario alcanzado para {uid} [{plan}]: {limite} optimizaciones/dia")

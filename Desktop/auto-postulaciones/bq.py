@@ -72,7 +72,8 @@ def _pf_select(alias: str = "pf", ic: str = None) -> str:
 
 
 def get_users_postula_facil() -> list[dict]:
-    """Retorna todos los usuarios que llenaron Postula Fácil (independiente de auto-postulaciones)."""
+    """Retorna usuarios que llenaron PostulaFácil y tienen el autopilot activo (ACTIVO = 1).
+    Usuarios sin fila en POSTULACIONES_AUTO se incluyen por compatibilidad con cuentas antiguas."""
     query = f"""
         SELECT {_pf_select('pf', 'ic')}, u.EMAIL, u.NOMBRE, u.CELULAR
         FROM `{PROJECT}.{DATASET}.POSTULA_FACIL` pf
@@ -83,10 +84,13 @@ def get_users_postula_facil() -> list[dict]:
             FROM `{PROJECT}.{DATASET}.INFO_CLIENTE`
             QUALIFY ROW_NUMBER() OVER (PARTITION BY ID_USUARIO ORDER BY ID_USUARIO) = 1
         ) ic ON LOWER(ic.ID_USUARIO) = LOWER(pf.ID_USUARIO)
+        LEFT JOIN `{PROJECT}.{DATASET}.POSTULACIONES_AUTO` pa
+            ON LOWER(pa.id_usuario) = LOWER(pf.ID_USUARIO)
         WHERE pf.ID_USUARIO IS NOT NULL AND pf.ID_USUARIO != ''
           AND COALESCE(u.EMAIL, '') != ''
           AND pf.CV_URL IS NOT NULL AND pf.CV_URL != ''
           AND COALESCE(u.CELULAR, '') != ''
+          AND COALESCE(pa.activo, 1) = 1
     """
     rows = list(_query(query).result())
     return [dict(r) for r in rows]
@@ -146,10 +150,15 @@ def get_active_users() -> list[dict]:
           COALESCE(
             CASE
               WHEN pc_plan = 'FREE' THEN 'FREE'
-              WHEN pc_plan = 'TRIAL'
-                AND DATE(pc_fecha_inicio) >= DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY)
+              -- TRIAL: campo PLAN='TRIAL' (esquema nuevo) o ESTADO='TRIAL' (esquema legacy)
+              WHEN (pc_plan = 'TRIAL' OR pc_estado = 'TRIAL')
+                AND (
+                  (pc_fecha_fin IS NOT NULL AND DATE(pc_fecha_fin) >= CURRENT_DATE())
+                  OR (pc_fecha_fin IS NULL
+                      AND DATE(pc_fecha_inicio) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
+                )
                 THEN 'TRIAL'
-              WHEN pc_plan NOT IN ('FREE', 'TRIAL') AND (
+              WHEN pc_plan NOT IN ('FREE', 'TRIAL') AND pc_estado != 'TRIAL' AND (
                 (pc_fecha_fin IS NOT NULL AND DATE(pc_fecha_fin) >= CURRENT_DATE())
                 OR (pc_fecha_fin IS NULL
                     AND DATE(pc_fecha_inicio) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY))
@@ -162,6 +171,7 @@ def get_active_users() -> list[dict]:
         FROM (
           SELECT {_pf_select('pf', 'ic')},
                  pc.PLAN        AS pc_plan,
+                 pc.ESTADO      AS pc_estado,
                  pc.FECHA_INICIO AS pc_fecha_inicio,
                  pc.FECHA_FIN    AS pc_fecha_fin,
                  u.EMAIL,
@@ -176,7 +186,7 @@ def get_active_users() -> list[dict]:
               ON LOWER(ic.ID_USUARIO) = LOWER(pf.ID_USUARIO)
           LEFT JOIN (
             -- Un solo plan por usuario: el más reciente en estado activo/trial/cancelado-pendiente
-            SELECT ID_USUARIO, PLAN, FECHA_INICIO, FECHA_FIN
+            SELECT ID_USUARIO, PLAN, ESTADO, FECHA_INICIO, FECHA_FIN
             FROM `{PROJECT}.{DATASET}.PLAN_CONTRATADO`
             WHERE ESTADO IN ('ACTIVO', 'CANCELADO_PENDIENTE', 'TRIAL')
             QUALIFY ROW_NUMBER() OVER (
@@ -200,6 +210,7 @@ def get_active_users() -> list[dict]:
     for r in rows:
         d = dict(r)
         d.pop('pc_plan', None)
+        d.pop('pc_estado', None)
         d.pop('pc_fecha_inicio', None)
         d['fecha_fin'] = d.pop('pc_fecha_fin', None)
         result.append(d)
@@ -224,17 +235,50 @@ def get_user_by_id(user_id: str) -> list[dict]:
     return [dict(r) for r in _query(query, cfg).result()]
 
 
-def get_applied_job_ids(user_id: str) -> set:
-    """IDs de empleos ya registrados para este usuario (evitar duplicados)."""
+def get_applied_job_ids(user_id: str, days: int | None = None) -> set:
+    """IDs de empleos ya registrados para este usuario (evitar duplicados).
+    days: si se especifica, solo considera postulaciones de los últimos N días.
+    """
+    date_filter = (
+        f"AND Fecha_Postulacion >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {int(days)} DAY)"
+        if days else ""
+    )
     query = f"""
         SELECT id_empleo
         FROM `{PROJECT}.{DATASET}.EMPLEOS`
-        WHERE id_usuario = @uid
+        WHERE id_usuario = @uid {date_filter}
     """
     cfg = bigquery.QueryJobConfig(
         query_parameters=[bigquery.ScalarQueryParameter("uid", "STRING", user_id)]
     )
     return {r.id_empleo for r in _query(query, cfg).result()}
+
+
+def get_pending_job_urls(user_id: str, portal: str | None = None) -> set:
+    """URLs de empleos que ya están en EMPLEOS_PENDIENTES para este usuario.
+    - pendiente/aprobado/postulado: se saltean mientras no expiren (36h)
+    - rechazado: se saltean permanentemente (el usuario ya dijo que no)
+    - fallido: se vuelven a intentar (no están en este set)
+    """
+    portal_filter = f"AND portal = @portal" if portal else ""
+    query = f"""
+        SELECT url
+        FROM `{PROJECT}.{DATASET}.EMPLEOS_PENDIENTES`
+        WHERE id_usuario = @uid
+          {portal_filter}
+          AND (
+            (estado IN ('pendiente', 'aprobado', 'postulado') AND fecha_expira > CURRENT_TIMESTAMP())
+            OR estado = 'rechazado'
+          )
+    """
+    params = [bigquery.ScalarQueryParameter("uid", "STRING", user_id)]
+    if portal:
+        params.append(bigquery.ScalarQueryParameter("portal", "STRING", portal))
+    cfg = bigquery.QueryJobConfig(query_parameters=params)
+    try:
+        return {r.url for r in _query(query, cfg).result()}
+    except Exception:
+        return set()
 
 
 def get_expiring_trials(days: int = 4) -> list[dict]:
@@ -244,7 +288,7 @@ def get_expiring_trials(days: int = 4) -> list[dict]:
         FROM `{PROJECT}.{DATASET}.PLAN_CONTRATADO` pc
         INNER JOIN `{PROJECT}.{DATASET}.USUARIOS` u
             ON LOWER(pc.ID_USUARIO) = LOWER(u.ID_USUARIO)
-        WHERE UPPER(pc.ESTADO) = 'TRIAL'
+        WHERE UPPER(pc.PLAN) = 'TRIAL'
           AND CAST(pc.FECHA_FIN AS DATE) = DATE_ADD(CURRENT_DATE(), INTERVAL @days DAY)
     """
     cfg = bigquery.QueryJobConfig(
@@ -463,22 +507,30 @@ def update_portal_account(user_id: str, portal: str, cv_completo: bool | None = 
     _query(query, bigquery.QueryJobConfig(query_parameters=params)).result()
 
 
-def get_cuentas_sin_verificar(portal: str) -> list[dict]:
-    """Retorna cuentas de un portal con email_verificado = FALSE y sin password inválida."""
+def get_cuentas_sin_verificar(portal: str, forzar: bool = False) -> list[dict]:
+    """Retorna cuentas de un portal pendientes de verificación.
+    forzar=True trae TODAS las cuentas del portal (útil para auditar que ninguna quedó atrás).
+    """
+    filtro_verificado = "" if forzar else "AND (cp.email_verificado IS NULL OR cp.email_verificado = FALSE)"
     query = f"""
-        SELECT id_usuario, email, password
-        FROM `{PROJECT}.{DATASET}.CUENTAS_PORTALES`
-        WHERE portal = @portal
-          AND email_verificado = FALSE
-          AND (password_invalida IS NULL OR password_invalida = FALSE)
-          AND email IS NOT NULL AND email != ''
-        ORDER BY created_at
+        SELECT cp.id_usuario, cp.email, cp.password, cp.email_verificado, cp.password_invalida,
+               u.NOMBRE AS nombre
+        FROM `{PROJECT}.{DATASET}.CUENTAS_PORTALES` cp
+        LEFT JOIN `{PROJECT}.{DATASET}.USUARIOS` u ON u.ID_USUARIO = cp.id_usuario
+        WHERE cp.portal = @portal
+          {filtro_verificado}
+          AND cp.email IS NOT NULL AND cp.email != ''
+        ORDER BY cp.created_at
     """
     cfg = bigquery.QueryJobConfig(query_parameters=[
         bigquery.ScalarQueryParameter("portal", "STRING", portal),
     ])
-    return [{"id_usuario": r.id_usuario, "email": r.email, "password": r.password}
-            for r in _query(query, cfg).result()]
+    return [
+        {"id_usuario": r.id_usuario, "email": r.email, "password": r.password,
+         "email_verificado": r.email_verificado, "password_invalida": r.password_invalida,
+         "nombre": r.nombre or ""}
+        for r in _query(query, cfg).result()
+    ]
 
 
 def get_cookie_age_hours(user_id: str, portal: str) -> float | None:
@@ -773,3 +825,151 @@ def clear_evaluaciones_cache(solo_aprobadas: bool = True):
         print(f"[bq] Caché de evaluaciones limpiada ({'solo aprobadas' if solo_aprobadas else 'todas'})")
     except Exception as e:
         print(f"[bq] Error limpiando caché: {e}")
+
+
+# ─── MODO REVISIÓN ────────────────────────────────────────────────────────────
+
+def get_modo_revision(user_id: str) -> bool:
+    """True si el usuario tiene modo_revision activado en POSTULACIONES_AUTO."""
+    query = f"""
+        SELECT COALESCE(modo_revision, FALSE) AS modo_revision
+        FROM `{PROJECT}.{DATASET}.POSTULACIONES_AUTO`
+        WHERE id_usuario = @uid LIMIT 1
+    """
+    cfg = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("uid", "STRING", user_id)]
+    )
+    try:
+        rows = list(_query(query, cfg).result())
+        return bool(rows[0].modo_revision) if rows else False
+    except Exception:
+        return False
+
+
+def set_modo_revision(user_id: str, activo: bool) -> None:
+    """Activa o desactiva el modo revisión para un usuario."""
+    query = f"""
+        UPDATE `{PROJECT}.{DATASET}.POSTULACIONES_AUTO`
+        SET modo_revision = @activo
+        WHERE id_usuario = @uid
+    """
+    cfg = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("uid",    "STRING", user_id),
+        bigquery.ScalarQueryParameter("activo", "BOOL",   activo),
+    ])
+    _query(query, cfg).result()
+
+
+def save_pending_jobs(user_id: str, portal: str, jobs: list[dict]) -> int:
+    """Guarda empleos pendientes de revisión via DML (permite UPDATE posterior). Retorna cuántos se insertaron."""
+    import uuid as _uuid
+    from datetime import datetime, timezone, timedelta
+    if not jobs:
+        return 0
+    now    = datetime.now(timezone.utc)
+    expira = now + timedelta(hours=36)
+
+    # Usar DML INSERT en lugar de streaming para evitar el streaming buffer
+    # (el streaming buffer impide hacer UPDATE/DELETE sobre las filas recién insertadas)
+    value_rows = []
+    for j in jobs:
+        row_id  = str(_uuid.uuid4())
+        titulo  = (j.get("titulo")  or "")[:500].replace("'", "\\'")
+        empresa = (j.get("empresa") or "")[:500].replace("'", "\\'")
+        url     = (j.get("link")    or j.get("url") or "")[:1024].replace("'", "\\'")
+        value_rows.append(
+            f"('{row_id}', '{user_id}', '{portal}', '{titulo}', '{empresa}', "
+            f"'{url}', 'pendiente', '{now.isoformat()}', '{expira.isoformat()}', NULL)"
+        )
+
+    query = f"""
+        INSERT INTO `{PROJECT}.{DATASET}.EMPLEOS_PENDIENTES`
+          (id, id_usuario, portal, titulo, empresa, url, estado, fecha_encontrado, fecha_expira, fecha_accion)
+        VALUES {', '.join(value_rows)}
+    """
+    try:
+        _query(query).result()
+        return len(jobs)
+    except Exception as e:
+        print(f"  [bq] EMPLEOS_PENDIENTES insert error: {e}")
+        return 0
+
+
+def get_pending_jobs(user_id: str, solo_pendientes: bool = True) -> list[dict]:
+    """Empleos en bandeja de revisión del usuario."""
+    filtro = "AND estado = 'pendiente' AND fecha_expira > CURRENT_TIMESTAMP()" if solo_pendientes else ""
+    query = f"""
+        SELECT id, portal, titulo, empresa, url, estado, fecha_encontrado, fecha_expira
+        FROM `{PROJECT}.{DATASET}.EMPLEOS_PENDIENTES`
+        WHERE id_usuario = @uid {filtro}
+        ORDER BY fecha_encontrado DESC
+        LIMIT 200
+    """
+    cfg = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("uid", "STRING", user_id)]
+    )
+    rows = list(_query(query, cfg).result())
+    return [
+        {
+            "id":               r.id,
+            "portal":           r.portal,
+            "titulo":           r.titulo,
+            "empresa":          r.empresa,
+            "url":              r.url,
+            "estado":           r.estado,
+            "fecha_encontrado": r.fecha_encontrado.isoformat() if hasattr(r.fecha_encontrado, "isoformat") else str(r.fecha_encontrado),
+            "fecha_expira":     r.fecha_expira.isoformat() if hasattr(r.fecha_expira, "isoformat") else str(r.fecha_expira),
+        }
+        for r in rows
+    ]
+
+
+def get_approved_pending_jobs(user_id: str | None = None, portal: str | None = None) -> list[dict]:
+    """Empleos aprobados listos para postular (no expirados)."""
+    filtros = ["estado = 'aprobado'", "fecha_expira > CURRENT_TIMESTAMP()"]
+    params: list = []
+    if user_id:
+        filtros.append("id_usuario = @uid")
+        params.append(bigquery.ScalarQueryParameter("uid", "STRING", user_id))
+    if portal:
+        filtros.append("portal = @portal")
+        params.append(bigquery.ScalarQueryParameter("portal", "STRING", portal))
+    query = f"""
+        SELECT id, id_usuario, portal, titulo, empresa, url
+        FROM `{PROJECT}.{DATASET}.EMPLEOS_PENDIENTES`
+        WHERE {" AND ".join(filtros)}
+        ORDER BY fecha_encontrado
+    """
+    cfg = bigquery.QueryJobConfig(query_parameters=params) if params else None
+    return [dict(r) for r in _query(query, cfg).result()]
+
+
+def update_pending_job_estado(job_id: str, estado: str) -> None:
+    """Cambia el estado de un empleo pendiente."""
+    query = f"""
+        UPDATE `{PROJECT}.{DATASET}.EMPLEOS_PENDIENTES`
+        SET estado = @estado, fecha_accion = CURRENT_TIMESTAMP()
+        WHERE id = @id
+    """
+    cfg = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("id",     "STRING", job_id),
+        bigquery.ScalarQueryParameter("estado", "STRING", estado),
+    ])
+    _query(query, cfg).result()
+
+
+def aprobar_todos_pending(user_id: str) -> int:
+    """Aprueba todos los empleos pendientes no expirados del usuario. Retorna cuántos."""
+    query = f"""
+        UPDATE `{PROJECT}.{DATASET}.EMPLEOS_PENDIENTES`
+        SET estado = 'aprobado', fecha_accion = CURRENT_TIMESTAMP()
+        WHERE id_usuario = @uid
+          AND estado = 'pendiente'
+          AND fecha_expira > CURRENT_TIMESTAMP()
+    """
+    cfg = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("uid", "STRING", user_id)]
+    )
+    job = _query(query, cfg)
+    job.result()
+    return job.num_dml_affected_rows or 0

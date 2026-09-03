@@ -106,6 +106,7 @@ export class AdminService {
         pl.ESTADO AS plan_estado,
         pl.FECHA_FIN,
         COALESCE(pa.ACTIVO, 0) AS autopilot_activo,
+        COALESCE(pa.MODO_REVISION, FALSE) AS modo_revision,
         (pf.ID_USUARIO IS NOT NULL) AS tiene_postulafacil,
         pf.CARGOS,
         pf.UBICACIONES,
@@ -175,6 +176,7 @@ export class AdminService {
       plan_original:           r.plan || 'FREE',
       fecha_fin:               r.FECHA_FIN?.value ?? r.FECHA_FIN ?? null,
       autopilot_activo:        Boolean(r.autopilot_activo),
+      modo_revision:           Boolean(r.modo_revision),
       tiene_postulafacil:      Boolean(r.tiene_postulafacil),
       cargos:                  this.parseJson(r.CARGOS),
       tiene_cargos:            this.parseJson(r.CARGOS).length > 0,
@@ -202,33 +204,6 @@ export class AdminService {
       postulaciones_7dias_lkd: Number(r.postulaciones_7dias_lkd ?? 0),
       limite_dia:              Boolean(r.plan_vigente) ? (PLAN_LIMITS[r.plan] ?? PLAN_LIMITS['FREE']) : PLAN_LIMITS['FREE'],
       ultima_conexion:         (() => { const v = loginMap.get(r.ID_USUARIO); return v?.value ?? v ?? null; })(),
-    }));
-  }
-
-  async getPortalStats(days: number = 14) {
-    const rows = await this.bq.query<any>(`
-      SELECT
-        DATE(Fecha_Postulacion, 'America/Santiago') AS fecha,
-        COUNTIF(portal = 'chiletrabajos') AS chiletrabajos,
-        COUNTIF(portal = 'computrabajo')  AS computrabajo,
-        COUNTIF(portal = 'laborum')       AS laborum,
-        COUNTIF(portal = 'empleaxchile')  AS empleaxchile,
-        COUNTIF(portal = 'getonboard')    AS getonboard
-      FROM ${this.bq.t('EMPLEOS')}
-      WHERE DATE(Fecha_Postulacion, 'America/Santiago')
-              >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL @days DAY)
-        AND portal NOT IN ('email_directo', 'linkedin', '')
-      GROUP BY fecha
-      ORDER BY fecha
-    `, { days });
-
-    return rows.map((r: any) => ({
-      fecha:         String(r.fecha?.value ?? r.fecha ?? ''),
-      chiletrabajos: Number(r.chiletrabajos ?? 0),
-      computrabajo:  Number(r.computrabajo  ?? 0),
-      laborum:       Number(r.laborum       ?? 0),
-      empleaxchile:  Number(r.empleaxchile  ?? 0),
-      getonboard:    Number(r.getonboard    ?? 0),
     }));
   }
 
@@ -415,6 +390,14 @@ export class AdminService {
       DELETE FROM ${this.bq.t('CUENTAS_PORTALES')}
       WHERE LOWER(id_usuario) = LOWER(@id) AND LOWER(portal) = LOWER(@portal)
     `, { id: userId, portal });
+    return { success: true };
+  }
+
+  async deletePostulacion(userId: string, idEmpleo: string) {
+    await this.bq.query(`
+      DELETE FROM ${this.bq.t('EMPLEOS')}
+      WHERE id_usuario = @uid AND (id_empleo = @emp OR link = @emp)
+    `, { uid: userId, emp: idEmpleo });
     return { success: true };
   }
 
@@ -898,6 +881,95 @@ export class AdminService {
     if (!val) return [];
     if (Array.isArray(val)) return val;
     try { return JSON.parse(val); } catch { return []; }
+  }
+
+  // ─── Cargo quality ────────────────────────────────────────────────────────
+
+  private readonly _SENIORITY = new Set([
+    'jefe', 'gerente', 'director', 'coordinador', 'analista', 'asistente',
+    'auxiliar', 'ejecutivo', 'operario', 'supervisor', 'encargado', 'lider',
+    'especialista', 'tecnico', 'practicante', 'junior', 'senior', 'trainee',
+    'subgerente', 'responsable', 'ayudante', 'agente', 'profesional',
+    'consultor', 'consultora', 'vendedor', 'vendedora', 'comercial',
+    'subdirector', 'subdirectora', 'representante', 'promotor', 'promotora',
+  ]);
+
+  private _normCargo(text: string): string {
+    return text.normalize('NFKD').replace(/[̀-ͯ]/g, '')
+      .toLowerCase().replace(/\/[ao]s?\b/gi, '').trim();
+  }
+
+  private _isBadCargo(cargo: string): boolean {
+    const words = this._normCargo(cargo).split(/\s+/).filter(w => w.length > 2);
+    return words.length > 0 && words.every(w => this._SENIORITY.has(w));
+  }
+
+  async getCargoQuality() {
+    const rows = await this.bq.query<any>(`
+      SELECT u.ID_USUARIO, u.NOMBRE, u.EMAIL, pf.CARGOS
+      FROM ${this.bq.t('USUARIOS')} u
+      JOIN ${this.bq.t('POSTULA_FACIL')} pf ON pf.ID_USUARIO = u.ID_USUARIO
+      JOIN ${this.bq.t('POSTULACIONES_AUTO')} pa ON pa.ID_USUARIO = u.ID_USUARIO
+      WHERE pf.CARGOS IS NOT NULL AND pf.CARGOS != '[]' AND pf.CARGOS != ''
+    `);
+
+    const flagged: any[] = [];
+    for (const r of rows) {
+      if (INTERNAL_EMAIL_PATTERN.test(r.EMAIL || '')) continue;
+      const cargos: string[] = this.parseJson(r.CARGOS);
+      if (!cargos.length) continue;
+      const badOnes = cargos.filter(c => this._isBadCargo(c));
+      if (badOnes.length > 0) {
+        flagged.push({
+          uid:    r.ID_USUARIO,
+          nombre: r.NOMBRE || '',
+          email:  r.EMAIL  || '',
+          cargos,
+          bad:    badOnes,
+        });
+      }
+    }
+    return flagged;
+  }
+
+  async notifyCargoQuality(uids: string[]) {
+    const all = await this.getCargoQuality();
+    const targets = uids.length ? all.filter(u => uids.includes(u.uid)) : all;
+    const sent: string[] = []; const failed: string[] = [];
+    for (const u of targets) {
+      try {
+        const html = this.email.cargoQualityHtml(u.nombre, u.cargos);
+        await this.email.send(u.email, 'Mejora tus cargos en AplicAI — postula mejor', html);
+        sent.push(u.email);
+      } catch { failed.push(u.email); }
+    }
+    return { sent: sent.length, failed };
+  }
+
+  async getPortalStats(days: number = 14) {
+    const rows = await this.bq.query<any>(`
+      SELECT
+        DATE(Fecha_Postulacion, 'America/Santiago') AS fecha,
+        portal,
+        COUNT(*) AS total
+      FROM ${this.bq.t('EMPLEOS')}
+      WHERE DATE(Fecha_Postulacion, 'America/Santiago') >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL @days DAY)
+        AND portal IS NOT NULL
+      GROUP BY fecha, portal
+      ORDER BY fecha ASC
+    `, { days });
+
+    // Pivotear: [{ fecha, computrabajo, laborum, chiletrabajos, empleaxchile }]
+    const byDate: Record<string, Record<string, number>> = {};
+    for (const r of rows) {
+      const d = r.fecha?.value ?? r.fecha;
+      if (!d) continue;
+      if (!byDate[d]) byDate[d] = {};
+      byDate[d][r.portal] = Number(r.total ?? 0);
+    }
+    return Object.entries(byDate)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([fecha, portales]) => ({ fecha, ...portales }));
   }
 
   async getUserFeedback(userId: string) {

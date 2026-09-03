@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(_dir, ".env"))
 
 SOLO_USUARIO = None  # ej: "jobs8"
+# SOLO_USUARIO = "jobs292"
 
 
 def _run():
