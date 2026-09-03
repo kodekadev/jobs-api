@@ -425,7 +425,7 @@ def _postular_empleo_pw(page, job_url: str, user: dict, titulo: str) -> "dict | 
             pass
         if salario and pretension and salario < pretension:
             print(f"    [cht] Salario {salario:,} < pretensión {pretension:,} — skip")
-            return False
+            return {"skip": "salario"}
 
         # Click "Postular"
         postular_selectors = [
@@ -597,7 +597,8 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
     modo_revision = False
     pending_jobs: list = []
     stats = {"encontrados": 0, "ya_aplicado": 0, "ciudad_offsite": 0,
-             "no_aplica": 0, "postulados": 0, "ya_postulado_portal": 0, "error": 0}
+             "no_aplica": 0, "postulados": 0, "pendientes": 0, "ya_postulado_portal": 0,
+             "salario": 0, "error": 0}
     try:
         _ident = user.get("EMAIL") or user.get("NOMBRE") or user_id
         print(f"[cht] Iniciando postulaciones para {_ident}")
@@ -668,8 +669,12 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
                         except Exception:
                             continue
 
-                print(f"[cht] Empleos encontrados: {len(jobs)}")
-                stats["encontrados"] += len(jobs)
+                n_encontrados = len(jobs)
+                print(f"[cht] Empleos encontrados: {n_encontrados}")
+                stats["encontrados"] += n_encontrados
+                lc = {"encontrados": n_encontrados, "ya_aplicado": 0, "ciudad_offsite": 0,
+                      "no_aplica": 0, "salario": 0, "pendientes": 0, "postulados": 0,
+                      "ya_portal": 0, "error": 0}
 
                 # Ciudades válidas para este usuario (normalizadas sin acentos)
                 _user_cities_norm = set()
@@ -682,7 +687,7 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
                     job_id = job["link"].split("/")[-1].split("?")[0]
                     if job_id in applied_ids:
                         print(f"[cht] {j+1}/{len(jobs)} Ya aplicado — skip")
-                        stats["ya_aplicado"] += 1
+                        stats["ya_aplicado"] += 1; lc["ya_aplicado"] += 1
                         continue
 
                     titulo = job["titulo"]
@@ -695,18 +700,19 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
                     )
                     if ciudad_offsita and not any(c in titulo_norm for c in _user_cities_norm):
                         print(f"[cht] {j+1}/{len(jobs)} SALTADO (ciudad '{ciudad_offsita}'): '{_safe(titulo[:40])}'")
-                        stats["ciudad_offsite"] += 1
+                        stats["ciudad_offsite"] += 1; lc["ciudad_offsite"] += 1
                         continue
 
                     aplica, motivo = job_aplica_al_usuario(titulo, "", user)
                     if not aplica:
                         print(f"[cht] {j+1}/{len(jobs)} SALTADO ({motivo}): '{_safe(titulo[:40])}'")
-                        stats["no_aplica"] += 1
+                        stats["no_aplica"] += 1; lc["no_aplica"] += 1
                         continue
 
                     if modo_revision:
                         pending_jobs.append({"titulo": titulo, "link": job["link"], "empresa": ""})
                         print(f"[cht] {j+1}/{len(jobs)} PENDIENTE revisión: '{_safe(titulo[:40])}'")
+                        stats["pendientes"] += 1; lc["pendientes"] += 1
                         continue
 
                     print(f"[cht] {j+1}/{len(jobs)} {_safe(titulo[:50])}")
@@ -734,8 +740,10 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
 
                     if ok and isinstance(ok, dict) and ok.get("ya_postulado"):
                         applied_ids.add(job_id)
-                        stats["ya_postulado_portal"] += 1
+                        stats["ya_postulado_portal"] += 1; lc["ya_portal"] += 1
                         print(f"[cht] {j+1}/{len(jobs)} Ya postulado — skip")
+                    elif ok and isinstance(ok, dict) and ok.get("skip") == "salario":
+                        stats["salario"] += 1; lc["salario"] += 1
                     elif ok:
                         descripcion  = (isinstance(ok, dict) and ok.get("descripcion")) or ""
                         empresa_cht  = (isinstance(ok, dict) and ok.get("empresa")) or ""
@@ -752,7 +760,7 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
                                     email_rec,
                                 )
                                 if enviado_ok:
-                                    print(f"[cht] Email enviado a {email_rec} ✓")
+                                    print(f"[cht] Email enviado a {email_rec} ok")
                                     descripcion += f"\n\n[email_directo: {email_rec}]"
 
                         bq.save_jobs([{
@@ -768,18 +776,30 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
                         }])
                         applied_ids.add(job_id)
                         count += 1
-                        stats["postulados"] += 1
+                        stats["postulados"] += 1; lc["postulados"] += 1
                         print(f"[cht] Guardado ({count})")
                         if count >= max_count:
-                            print(f"[cht] Límite {max_count} alcanzado — deteniendo ChileTrabajos")
+                            print(f"[cht] Limite {max_count} alcanzado — deteniendo ChileTrabajos")
                             raise StopIteration
                     else:
-                        stats["error"] += 1
+                        stats["error"] += 1; lc["error"] += 1
                         try:
                             page.go_back()
                             page.wait_for_timeout(2000)
                         except Exception:
                             pass
+
+                # Resumen por búsqueda
+                partes = [f"encontrados={lc['encontrados']}"]
+                if lc["ya_aplicado"]:   partes.append(f"ya_aplicado={lc['ya_aplicado']}")
+                if lc["ya_portal"]:     partes.append(f"ya_portal={lc['ya_portal']}")
+                if lc["ciudad_offsite"]: partes.append(f"ciudad={lc['ciudad_offsite']}")
+                if lc["no_aplica"]:     partes.append(f"no_aplica={lc['no_aplica']}")
+                if lc["salario"]:       partes.append(f"salario_bajo={lc['salario']}")
+                if lc["pendientes"]:    partes.append(f"pendientes={lc['pendientes']}")
+                if lc["postulados"]:    partes.append(f"postulados={lc['postulados']}")
+                if lc["error"]:         partes.append(f"error={lc['error']}")
+                print(f"[cht] >> '{cargo}' en '{ubicacion}': {' | '.join(partes)}")
 
     except StopIteration:
         pass  # límite alcanzado — salida limpia
@@ -796,15 +816,18 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
         for pj in pending_jobs:
             print(f"  -> {_safe(pj['titulo'][:70])}")
 
+    _ident2 = user.get("EMAIL") or user.get("NOMBRE") or user_id
     print(
-        f"[cht] RESUMEN {user_id} | "
+        f"[cht] RESUMEN {_ident2} | "
         f"encontrados={stats['encontrados']} | "
         f"ya_aplicado={stats['ya_aplicado']} | "
-        f"ciudad_offsite={stats['ciudad_offsite']} | "
+        f"ya_portal={stats['ya_postulado_portal']} | "
+        f"ciudad={stats['ciudad_offsite']} | "
         f"no_aplica={stats['no_aplica']} | "
-        f"ya_postulado_portal={stats['ya_postulado_portal']} | "
-        f"error={stats['error']} | "
-        f"postulados={stats['postulados']}"
+        f"salario_bajo={stats['salario']} | "
+        f"pendientes={stats['pendientes']} | "
+        f"postulados={stats['postulados']} | "
+        f"error={stats['error']}"
     )
 
     return count
