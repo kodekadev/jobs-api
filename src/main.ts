@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import env from './modules/shared/infrastructure/environment';
+import * as express from 'express';
 
 async function bootstrap() {
   // Fail-fast: en Cloud Run (K_SERVICE definido) el secret JWT es obligatorio.
@@ -13,6 +14,9 @@ async function bootstrap() {
   }
 
   const app = await NestFactory.create(AppModule, { rawBody: true });
+
+  // Necesario para que el webhook de Flow (application/x-www-form-urlencoded) llegue parseado
+  app.use(express.urlencoded({ extended: true }));
 
   app.enableCors({
     origin: [

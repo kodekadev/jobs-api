@@ -349,7 +349,7 @@ export class PlanService {
 
   private async confirmPayment(token: string) {
     const rows = await this.bq.query<any>(`
-      SELECT ID_USUARIO, PLAN FROM ${this.bq.t('PAGOS_PENDIENTES')}
+      SELECT ID_USUARIO, PLAN, ORDER_ID FROM ${this.bq.t('PAGOS_PENDIENTES')}
       WHERE TOKEN = @token LIMIT 1
     `, { token }).catch((e) => {
       console.error('[plan] Error leyendo PAGOS_PENDIENTES para token', token, ':', e?.message ?? e);
@@ -361,7 +361,7 @@ export class PlanService {
       return;
     }
 
-    const { ID_USUARIO: userId, PLAN: plan } = rows[0];
+    const { ID_USUARIO: userId, PLAN: plan, ORDER_ID: orderId } = rows[0];
 
     await this.activatePlan(userId, plan);
 
@@ -369,17 +369,27 @@ export class PlanService {
       DELETE FROM ${this.bq.t('PAGOS_PENDIENTES')} WHERE TOKEN = @token
     `, { token }).catch(() => null);
 
-    // Notificación Telegram
+    // Notificación Telegram + registro en HISTORIAL_PAGOS
     const userRows = await this.bq.query<any>(`
       SELECT NOMBRE, EMAIL FROM ${this.bq.t('USUARIOS')} WHERE ID_USUARIO = @id LIMIT 1
     `, { id: userId }).catch(() => []);
     const u = userRows[0];
-    const precio = { PRO: '9.990', TURBO: '14.990', PREMIUM: '19.990' }[plan] ?? '?';
+    const montos: Record<string, number> = { PRO: 9990, TURBO: 14990, PREMIUM: 19990 };
+    const monto = montos[plan] ?? 0;
+    const precioFmt = monto.toLocaleString('es-CL');
+
+    await this.bq.query(`
+      INSERT INTO ${this.bq.t('HISTORIAL_PAGOS')} (ORDER_ID, ID_USUARIO, PLAN, MONTO, TOKEN, FECHA_PAGO, NOMBRE, EMAIL)
+      VALUES (@orderId, @userId, @plan, @monto, @token, CURRENT_TIMESTAMP(), @nombre, @email)
+    `, { orderId, userId, plan, monto, token, nombre: u?.NOMBRE ?? '', email: u?.EMAIL ?? '' }).catch((e) => {
+      console.error('[plan] No se pudo registrar en HISTORIAL_PAGOS:', e?.message ?? e);
+    });
+
     this.telegram.send(
       `💰 <b>Nuevo pago recibido</b>\n` +
       `👤 ${u?.NOMBRE || userId}\n` +
       `✉️ ${u?.EMAIL || ''}\n` +
-      `📦 Plan: <b>${plan}</b> — $${precio} CLP`
+      `📦 Plan: <b>${plan}</b> — $${precioFmt} CLP`
     ).catch(() => null);
   }
 
@@ -391,5 +401,117 @@ export class PlanService {
       .join('');
 
     return crypto.createHmac('sha256', env.flowSecretKey).update(sorted).digest('hex');
+  }
+
+  // ─── EMPLEO FOLLOWUP ──────────────────────────────────────────────────────
+
+  generateEmpleoToken(userId: string): string {
+    return crypto.createHmac('sha256', env.jwtSecret).update(`empleo:${userId}`).digest('hex');
+  }
+
+  verifyEmpleoToken(userId: string, token: string): boolean {
+    try {
+      const expected = Buffer.from(this.generateEmpleoToken(userId), 'hex');
+      const provided  = Buffer.from(token, 'hex');
+      if (expected.length !== provided.length) return false;
+      return crypto.timingSafeEqual(expected, provided);
+    } catch {
+      return false;
+    }
+  }
+
+  // Cron: envía email de seguimiento a usuarios con ≥60 días de suscripción
+  // que aún no hayan respondido.
+  async sendEmpleoFollowup(): Promise<{ enviados: number }> {
+    const rows = await this.bq.query<any>(`
+      SELECT u.ID_USUARIO, u.NOMBRE, u.EMAIL
+      FROM ${this.bq.t('USUARIOS')} u
+      JOIN ${this.bq.t('PLAN_CONTRATADO')} pc ON u.ID_USUARIO = pc.ID_USUARIO
+      WHERE pc.PLAN NOT IN ('FREE', 'TRIAL')
+        AND pc.ESTADO NOT IN ('CANCELADO')
+        AND DATE(pc.FECHA_INICIO) <= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
+        AND u.NOMBRE != 'CUENTA_ELIMINADA'
+        AND NOT STARTS_WITH(u.EMAIL, 'deleted_')
+        AND NOT EXISTS (
+          SELECT 1 FROM ${this.bq.t('EMPLEO_CONSEGUIDO')}
+          WHERE ID_USUARIO = u.ID_USUARIO
+        )
+    `).catch(() => [] as any[]);
+
+    await Promise.all(rows.map(async (r: any) => {
+      const token  = this.generateEmpleoToken(r.ID_USUARIO);
+      const base   = `${env.frontendUrl}/consegui-empleo?uid=${r.ID_USUARIO}&token=${token}`;
+      const linkSi = `${base}&r=si`;
+      const linkNo = `${base}&r=no`;
+
+      // Registrar envío antes de mandar (evita reenvíos si el cron corre dos veces)
+      await this.bq.query(`
+        INSERT INTO ${this.bq.t('EMPLEO_CONSEGUIDO')}
+          (ID, ID_USUARIO, RESPUESTA, EMPRESA, CARGO, FUE_CON_APLICAI, TESTIMONIAL, FECHA_EMAIL, FECHA_RESPUESTA)
+        VALUES
+          (GENERATE_UUID(), @uid, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP(), NULL)
+      `, { uid: r.ID_USUARIO }).catch(() => null);
+
+      return this.email.send(
+        r.EMAIL,
+        '¿Conseguiste empleo? Cuéntanos 🎉',
+        this.email.empleoFollowupHtml(r.NOMBRE, linkSi, linkNo),
+        'empleo_followup',
+      ).catch(() => null);
+    }));
+
+    return { enviados: rows.length };
+  }
+
+  // Registra la respuesta sí/no del usuario (llamado desde la página del frontend)
+  async registrarRespuestaEmpleo(
+    userId: string,
+    token: string,
+    respuesta: 'si' | 'no',
+    datos?: { empresa?: string; cargo?: string; fueCon?: boolean; testimonial?: string },
+  ): Promise<{ ok: boolean }> {
+    if (!this.verifyEmpleoToken(userId, token)) {
+      throw new ForbiddenException('Token inválido');
+    }
+
+    const { empresa = null, cargo = null, fueCon = null, testimonial = null } = datos ?? {};
+
+    // UPDATE si ya existe fila (del envío del email), INSERT si no
+    const existing = await this.bq.query<any>(`
+      SELECT ID FROM ${this.bq.t('EMPLEO_CONSEGUIDO')}
+      WHERE ID_USUARIO = @uid AND RESPUESTA IS NULL
+      LIMIT 1
+    `, { uid: userId }).catch(() => [] as any[]);
+
+    if (existing.length > 0) {
+      await this.bq.query(`
+        UPDATE ${this.bq.t('EMPLEO_CONSEGUIDO')}
+        SET RESPUESTA = @resp,
+            EMPRESA = @empresa,
+            CARGO = @cargo,
+            FUE_CON_APLICAI = @fueCon,
+            TESTIMONIAL = @testimonial,
+            FECHA_RESPUESTA = CURRENT_TIMESTAMP()
+        WHERE ID_USUARIO = @uid AND RESPUESTA IS NULL
+      `, { uid: userId, resp: respuesta, empresa, cargo, fueCon, testimonial });
+    } else {
+      await this.bq.query(`
+        INSERT INTO ${this.bq.t('EMPLEO_CONSEGUIDO')}
+          (ID, ID_USUARIO, RESPUESTA, EMPRESA, CARGO, FUE_CON_APLICAI, TESTIMONIAL, FECHA_EMAIL, FECHA_RESPUESTA)
+        VALUES
+          (GENERATE_UUID(), @uid, @resp, @empresa, @cargo, @fueCon, @testimonial, NULL, CURRENT_TIMESTAMP())
+      `, { uid: userId, resp: respuesta, empresa, cargo, fueCon, testimonial });
+    }
+
+    if (respuesta === 'si') {
+      this.telegram.send(
+        `🎉 <b>¡Usuario consiguió empleo!</b>\n` +
+        `👤 ${userId}\n` +
+        `🏢 ${empresa || '(sin empresa)'} — ${cargo || '(sin cargo)'}\n` +
+        `✅ Con AplicAI: ${fueCon ? 'Sí' : fueCon === false ? 'No' : '?'}`
+      ).catch(() => null);
+    }
+
+    return { ok: true };
   }
 }
