@@ -988,4 +988,68 @@ export class AdminService {
       fecha:                r.FECHA?.value ?? r.FECHA ?? null,
     }));
   }
+
+  async getFeedbackStats() {
+    const [agg, dist, recientes] = await Promise.all([
+      this.bq.query<any>(`
+        SELECT
+          ROUND(AVG(RATING_SERVICIO), 2)      AS avg_servicio,
+          ROUND(AVG(RATING_POSTULACIONES), 2) AS avg_postulaciones,
+          COUNT(*)                             AS total
+        FROM ${this.bq.t('AUTOPILOT_FEEDBACK')}
+        WHERE RATING_SERVICIO IS NOT NULL
+      `),
+      this.bq.query<any>(`
+        SELECT
+          RATING_SERVICIO AS rating,
+          COUNT(*) AS n_servicio,
+          0        AS n_postulaciones
+        FROM ${this.bq.t('AUTOPILOT_FEEDBACK')}
+        WHERE RATING_SERVICIO IS NOT NULL
+        GROUP BY 1
+        UNION ALL
+        SELECT
+          RATING_POSTULACIONES AS rating,
+          0                    AS n_servicio,
+          COUNT(*)             AS n_postulaciones
+        FROM ${this.bq.t('AUTOPILOT_FEEDBACK')}
+        WHERE RATING_POSTULACIONES IS NOT NULL
+        GROUP BY 1
+        ORDER BY rating
+      `),
+      this.bq.query<any>(`
+        SELECT af.COMENTARIO, af.RATING_SERVICIO, af.RATING_POSTULACIONES, af.TIPO,
+               af.FECHA, u.NOMBRE
+        FROM ${this.bq.t('AUTOPILOT_FEEDBACK')} af
+        JOIN ${this.bq.t('USUARIOS')} u ON af.ID_USUARIO = u.ID_USUARIO
+        WHERE af.COMENTARIO IS NOT NULL AND TRIM(af.COMENTARIO) != ''
+        ORDER BY af.FECHA DESC
+        LIMIT 20
+      `),
+    ]).catch(() => [[], [], []]);
+
+    const a = agg[0] ?? {};
+    const distServicio:      Record<number, number> = {};
+    const distPostulaciones: Record<number, number> = {};
+    for (const r of dist) {
+      if (r.n_servicio)      distServicio[r.rating]      = (distServicio[r.rating]      || 0) + Number(r.n_servicio);
+      if (r.n_postulaciones) distPostulaciones[r.rating] = (distPostulaciones[r.rating] || 0) + Number(r.n_postulaciones);
+    }
+
+    return {
+      avg_servicio:      Number(a.avg_servicio ?? 0),
+      avg_postulaciones: Number(a.avg_postulaciones ?? 0),
+      total:             Number(a.total ?? 0),
+      dist_servicio:      distServicio,
+      dist_postulaciones: distPostulaciones,
+      comentarios: recientes.map((r: any) => ({
+        nombre:              r.NOMBRE || '',
+        comentario:          r.COMENTARIO || '',
+        rating_servicio:     r.RATING_SERVICIO ?? null,
+        rating_postulaciones: r.RATING_POSTULACIONES ?? null,
+        tipo:                r.TIPO || '',
+        fecha:               r.FECHA?.value ?? r.FECHA ?? null,
+      })),
+    };
+  }
 }

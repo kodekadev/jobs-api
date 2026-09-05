@@ -52,6 +52,15 @@ export class CronController {
     return { ok: true, ...expired, enviados_post_expiry: notified.enviados };
   }
 
+  @Post('empleo-followup')
+  async empleoFollowup(@Headers('authorization') auth: string) {
+    if (!env.cronSecret || auth !== `Bearer ${env.cronSecret}`) {
+      throw new UnauthorizedException('Forbidden');
+    }
+    const result = await this.planService.sendEmpleoFollowup();
+    return { ok: true, ...result };
+  }
+
   @Post('cleanup-unverified')
   async cleanupUnverified(@Headers('authorization') auth: string) {
     if (!env.cronSecret || auth !== `Bearer ${env.cronSecret}`) {

@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Param, Body, HttpCode, Query, Header, Headers, UnauthorizedException } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, HttpCode, Query, Header, Headers, UnauthorizedException, BadRequestException } from '@nestjs/common';
 import { PlanService } from '../../application/plan.service';
 import { Public } from '../../../shared/infrastructure/guards/jwt-auth.guard';
 import env from '../../../shared/infrastructure/environment';
@@ -66,6 +66,30 @@ export class PlanController {
   @Get('retorno/:token')
   getReturnStatus(@Param('token') token: string) {
     return this.planService.getReturnStatus(token);
+  }
+
+  // ── EMPLEO FOLLOWUP ────────────────────────────────────────────────────────
+  @Public()
+  @Post('empleo/respuesta')
+  @HttpCode(200)
+  async empleoRespuesta(@Body() body: {
+    uid: string;
+    token: string;
+    respuesta: 'si' | 'no';
+    empresa?: string;
+    cargo?: string;
+    fueCon?: boolean;
+    testimonial?: string;
+  }) {
+    if (!body.uid || !body.token || !['si', 'no'].includes(body.respuesta)) {
+      throw new BadRequestException('Parámetros inválidos');
+    }
+    return this.planService.registrarRespuestaEmpleo(body.uid, body.token, body.respuesta, {
+      empresa: body.empresa,
+      cargo: body.cargo,
+      fueCon: body.fueCon,
+      testimonial: body.testimonial,
+    });
   }
 
   // ── CRON: Cloud Scheduler llama esto diariamente ───────────────────────────

@@ -390,6 +390,44 @@ export class EmailService {
     return this.base('linear-gradient(135deg, #1E3A5F 0%, #2A8FA5 100%)', headerContent, body);
   }
 
+  empleoFollowupHtml(nombre: string, linkSi: string, linkNo: string): string {
+    const headerContent = `
+      <h1 style="color:white;margin:16px 0 4px;font-size:22px">¿Conseguiste empleo? 🎉</h1>
+      <p style="color:rgba(255,255,255,0.65);margin:0;font-size:14px">Cuéntanos cómo te fue</p>`;
+
+    const body = `
+      <p style="color:#334155;font-size:15px;line-height:1.6;margin:0 0 20px">
+        Hola <strong>${nombre}</strong>, llevamos un tiempo ayudándote a postular.
+        Queremos saber cómo te está yendo — tu respuesta nos ayuda a mejorar AplicAI.
+      </p>
+
+      <p style="color:#334155;font-size:15px;font-weight:600;margin:0 0 20px">
+        ¿Conseguiste trabajo usando AplicAI?
+      </p>
+
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:28px">
+        <a href="${linkSi}"
+          style="flex:1;min-width:160px;display:inline-block;background:linear-gradient(135deg,#059669,#10B981);color:white;padding:16px 24px;border-radius:12px;text-decoration:none;font-weight:700;font-size:16px;text-align:center">
+          ✅ Sí, conseguí empleo
+        </a>
+        <a href="${linkNo}"
+          style="flex:1;min-width:160px;display:inline-block;background:#F1F5F9;color:#475569;padding:16px 24px;border-radius:12px;text-decoration:none;font-weight:700;font-size:16px;text-align:center;border:2px solid #E2E8F0">
+          🔍 Aún estoy buscando
+        </a>
+      </div>
+
+      <p style="color:#94A3B8;font-size:13px;margin:0;line-height:1.5">
+        Toma menos de 30 segundos. Tu respuesta es confidencial y nos ayuda a mejorar el servicio.<br>
+        ¿Tienes dudas? Escríbenos a <a href="mailto:soporte@aplicai.cl" style="color:#2A8FA5">soporte@aplicai.cl</a>
+      </p>`;
+
+    return this.base(
+      'linear-gradient(135deg, #064E3B 0%, #065F46 100%)',
+      headerContent,
+      body,
+    );
+  }
+
   postExpiryHtml(nombre: string, postulaciones: number): string {
     const headerContent = `
       <h1 style="color:white;margin:16px 0 4px;font-size:22px">Tu período de prueba terminó</h1>
