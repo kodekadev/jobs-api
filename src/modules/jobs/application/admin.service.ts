@@ -1040,8 +1040,8 @@ export class AdminService {
       avg_servicio:      Number(a.avg_servicio ?? 0),
       avg_postulaciones: Number(a.avg_postulaciones ?? 0),
       total:             Number(a.total ?? 0),
-      dist_servicio:      distServicio,
-      dist_postulaciones: distPostulaciones,
+      dist_servicio:      Object.entries(distServicio).map(([score, count]) => ({ score: Number(score), count })),
+      dist_postulaciones: Object.entries(distPostulaciones).map(([score, count]) => ({ score: Number(score), count })),
       comentarios: recientes.map((r: any) => ({
         nombre:              r.NOMBRE || '',
         comentario:          r.COMENTARIO || '',
