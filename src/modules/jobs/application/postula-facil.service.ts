@@ -24,12 +24,16 @@ export class PostulaFacilService {
 
   private async ensureExtraColumns() {
     if (this.extraColumnsReady) return;
-    try {
-      await this.bq.query(`ALTER TABLE ${this.bq.t('POSTULA_FACIL')} ADD COLUMN IF NOT EXISTS EMPRESAS_EXCLUIDAS STRING`);
-    } catch { /* ya existe */ }
-    try {
-      await this.bq.query(`ALTER TABLE ${this.bq.t('POSTULA_FACIL')} ADD COLUMN IF NOT EXISTS BUSQUEDA_ACTIVA BOOL`);
-    } catch { /* ya existe */ }
+    const cols = [
+      `ALTER TABLE ${this.bq.t('POSTULA_FACIL')} ADD COLUMN IF NOT EXISTS EMPRESAS_EXCLUIDAS STRING`,
+      `ALTER TABLE ${this.bq.t('POSTULA_FACIL')} ADD COLUMN IF NOT EXISTS BUSQUEDA_ACTIVA BOOL`,
+      `ALTER TABLE ${this.bq.t('POSTULA_FACIL')} ADD COLUMN IF NOT EXISTS NIVEL_INGLES STRING`,
+      `ALTER TABLE ${this.bq.t('POSTULA_FACIL')} ADD COLUMN IF NOT EXISTS TIENE_VEHICULO BOOL`,
+      `ALTER TABLE ${this.bq.t('POSTULA_FACIL')} ADD COLUMN IF NOT EXISTS TIENE_LICENCIA BOOL`,
+    ];
+    for (const sql of cols) {
+      try { await this.bq.query(sql); } catch { /* ya existe */ }
+    }
     this.extraColumnsReady = true;
   }
 
@@ -58,6 +62,9 @@ export class PostulaFacilService {
     jornada?: string;
     empresas_excluidas?: string[];
     busqueda_activa?: boolean;
+    nivel_ingles?: string;
+    tiene_vehiculo?: boolean;
+    tiene_licencia?: boolean;
   }) {
     await this.ensureExtraColumns();
     const limits = PLAN_LIMITS[(body.plan || 'FREE').toUpperCase()] ?? PLAN_LIMITS.FREE;
@@ -91,11 +98,14 @@ export class PostulaFacilService {
         JORNADA = COALESCE(NULLIF(@jornada, ''), T.JORNADA),
         EMPRESAS_EXCLUIDAS = @empresas_excluidas,
         BUSQUEDA_ACTIVA = @busqueda_activa,
+        NIVEL_INGLES = COALESCE(NULLIF(@nivel_ingles, ''), T.NIVEL_INGLES),
+        TIENE_VEHICULO = @tiene_vehiculo,
+        TIENE_LICENCIA = @tiene_licencia,
         FECHA_ACTUALIZACION = CURRENT_TIMESTAMP()
       WHEN NOT MATCHED THEN INSERT
-        (ID_USUARIO, PLAN, PROFESION, RESUMEN, CV_URL, CARGOS, EXPERIENCIA, UBICACIONES, PRETENSION_GENERAL, RUT, FECHA_NACIMIENTO, EMPRESA, ANIO_INICIO, ACTUALMENTE_TRABAJANDO, ANIO_FIN, NIVEL_EDUCATIVO, INSTITUCION, CARRERA, SITUACION_ESTUDIOS, ANIO_INICIO_ESTUDIOS, TIPO_BUSQUEDA, JORNADA, EMPRESAS_EXCLUIDAS, BUSQUEDA_ACTIVA, FECHA_ACTUALIZACION)
+        (ID_USUARIO, PLAN, PROFESION, RESUMEN, CV_URL, CARGOS, EXPERIENCIA, UBICACIONES, PRETENSION_GENERAL, RUT, FECHA_NACIMIENTO, EMPRESA, ANIO_INICIO, ACTUALMENTE_TRABAJANDO, ANIO_FIN, NIVEL_EDUCATIVO, INSTITUCION, CARRERA, SITUACION_ESTUDIOS, ANIO_INICIO_ESTUDIOS, TIPO_BUSQUEDA, JORNADA, EMPRESAS_EXCLUIDAS, BUSQUEDA_ACTIVA, NIVEL_INGLES, TIENE_VEHICULO, TIENE_LICENCIA, FECHA_ACTUALIZACION)
       VALUES
-        (@id, @plan, @prof, @resumen, @cv, @cargos, @exp, @ubic, @pretension, @rut, @fn, NULLIF(@empresa, ''), SAFE_CAST(NULLIF(@anio_inicio, '') AS INT64), @actualmente, IF(@actualmente, NULL, SAFE_CAST(NULLIF(@anio_fin, '') AS INT64)), NULLIF(@nivel_educativo, ''), NULLIF(@institucion, ''), NULLIF(@carrera, ''), NULLIF(@situacion_estudios, ''), SAFE_CAST(NULLIF(@anio_inicio_estudios, '') AS INT64), NULLIF(@tipo_busqueda, ''), NULLIF(@jornada, ''), @empresas_excluidas, @busqueda_activa, CURRENT_TIMESTAMP())
+        (@id, @plan, @prof, @resumen, @cv, @cargos, @exp, @ubic, @pretension, @rut, @fn, NULLIF(@empresa, ''), SAFE_CAST(NULLIF(@anio_inicio, '') AS INT64), @actualmente, IF(@actualmente, NULL, SAFE_CAST(NULLIF(@anio_fin, '') AS INT64)), NULLIF(@nivel_educativo, ''), NULLIF(@institucion, ''), NULLIF(@carrera, ''), NULLIF(@situacion_estudios, ''), SAFE_CAST(NULLIF(@anio_inicio_estudios, '') AS INT64), NULLIF(@tipo_busqueda, ''), NULLIF(@jornada, ''), @empresas_excluidas, @busqueda_activa, NULLIF(@nivel_ingles, ''), @tiene_vehiculo, @tiene_licencia, CURRENT_TIMESTAMP())
     `, {
       id: body.id_usuario,
       plan: body.plan,
@@ -121,6 +131,9 @@ export class PostulaFacilService {
       jornada: body.jornada || '',
       empresas_excluidas: JSON.stringify(body.empresas_excluidas || []),
       busqueda_activa: body.busqueda_activa ?? false,
+      nivel_ingles: body.nivel_ingles || '',
+      tiene_vehiculo: body.tiene_vehiculo ?? false,
+      tiene_licencia: body.tiene_licencia ?? false,
     });
 
     // Sync profession/experiencia to INFO_CLIENTE so /perfil shows it pre-filled
@@ -230,6 +243,9 @@ export class PostulaFacilService {
       anio_inicio_estudios: r.ANIO_INICIO_ESTUDIOS ? String(r.ANIO_INICIO_ESTUDIOS) : '',
       empresas_excluidas: this.parseJson(r.EMPRESAS_EXCLUIDAS),
       busqueda_activa: r.BUSQUEDA_ACTIVA ?? false,
+      nivel_ingles: r.NIVEL_INGLES || '',
+      tiene_vehiculo: r.TIENE_VEHICULO ?? false,
+      tiene_licencia: r.TIENE_LICENCIA ?? false,
     };
   }
 
