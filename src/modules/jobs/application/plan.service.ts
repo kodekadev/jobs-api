@@ -197,6 +197,13 @@ export class PlanService {
         AND FECHA_FIN IS NOT NULL
         AND DATE(FECHA_FIN) < CURRENT_DATE()
     `).catch(() => null);
+
+    // Limpiar pagos pendientes huérfanos (>7 días sin confirmar)
+    await this.bq.query(`
+      DELETE FROM ${this.bq.t('PAGOS_PENDIENTES')}
+      WHERE FECHA < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)
+    `).catch(() => null);
+
     return { ok: true };
   }
 
