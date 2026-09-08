@@ -5506,6 +5506,96 @@ def _titulo_gate(titulo: str, user: dict) -> str:
     return "evaluar"
 
 
+def _idiomas_del_perfil(user: dict) -> list[str]:
+    """Retorna los idiomas del usuario. Usa NIVEL_INGLES de BQ si está disponible."""
+    idiomas = []
+
+    nivel_ingles = (user.get("NIVEL_INGLES") or "").lower().strip()
+    if nivel_ingles in ("basico", "intermedio", "avanzado", "fluido"):
+        idiomas.append("inglés")
+    else:
+        textos = " ".join(str(v) for v in [
+            user.get("RESUMEN", ""), user.get("HABILIDADES", ""),
+            user.get("IDIOMAS", ""), user.get("CV_TEXTO", ""),
+        ] if v).lower()
+        if any(w in textos for w in ["inglés", "ingles", "english", "nivel inglés", "nivel b", "nivel c"]):
+            idiomas.append("inglés")
+
+    textos_otros = " ".join(str(v) for v in [
+        user.get("RESUMEN", ""), user.get("HABILIDADES", ""),
+        user.get("IDIOMAS", ""), user.get("CV_TEXTO", ""),
+    ] if v).lower()
+    if any(w in textos_otros for w in ["portugués", "portugues", "portuguese"]):
+        idiomas.append("portugués")
+    if any(w in textos_otros for w in ["francés", "frances", "french"]):
+        idiomas.append("francés")
+    if any(w in textos_otros for w in ["alemán", "aleman", "german", "deutsch"]):
+        idiomas.append("alemán")
+
+    return idiomas
+
+
+def _hard_filter(texto: str, user: dict) -> tuple[bool, str]:
+    """
+    Pre-filtro sin LLM para requisitos excluyentes obvios.
+    Retorna (rechazar: bool, razon: str).
+    """
+    t = texto.lower()
+
+    idiomas_usuario = _idiomas_del_perfil(user)
+
+    _req_ingles = any(p in t for p in [
+        "inglés avanzado", "inglés fluido", "inglés fluente", "english advanced",
+        "english fluent", "fluent english", "nivel avanzado de inglés",
+        "inglés intermedio-avanzado", "inglés intermedio avanzado",
+        "english required", "english mandatory", "advanced english",
+        "intermediate english", "inglés intermedio", "nivel b2", "nivel c1", "nivel c2",
+        "english: intermediate", "english: advanced", "inglés: intermedio", "inglés: avanzado",
+    ])
+    if _req_ingles and "inglés" not in idiomas_usuario:
+        return True, "requiere inglés intermedio/avanzado — candidato no lo tiene"
+
+    _req_portugues = any(p in t for p in [
+        "portugués avanzado", "português avançado", "portuguese required",
+        "portuguese fluent", "fluent portuguese",
+    ])
+    if _req_portugues and "portugués" not in idiomas_usuario:
+        return True, "requiere portugués avanzado — candidato no lo tiene"
+
+    prof_usuario = (user.get("PROFESION") or user.get("CARRERA") or "").lower()
+    _es_tech = any(w in prof_usuario for w in [
+        "ingeniero", "informática", "sistemas", "computación", "software",
+        "desarrollador", "programador", "data", "ti ", "it ",
+    ])
+    _cargos_medicos = ["médico", "medico", "enfermero", "kinesiolog", "psicolog",
+                       "fonoaudiolog", "nutricion", "odontolog", "farmacéutico"]
+    _cargos_legales = ["abogado", "notario", "fiscal", "juez", "procurador"]
+
+    if _es_tech:
+        if any(p in t for p in _cargos_medicos):
+            return True, "cargo del área de salud — candidato es de tecnología"
+        if any(p in t for p in _cargos_legales):
+            return True, "cargo legal — candidato es de tecnología"
+
+    _req_vehiculo = any(p in t for p in [
+        "vehículo propio", "vehiculo propio", "auto propio", "movilización propia",
+        "movilizacion propia", "tener vehículo", "tener vehiculo",
+        "contar con vehículo", "contar con vehiculo",
+    ])
+    if _req_vehiculo and not user.get("TIENE_VEHICULO"):
+        return True, "requiere vehículo propio — candidato no lo tiene"
+
+    _req_licencia = any(p in t for p in [
+        "licencia de conducir", "licencia conducir", "licencia clase b",
+        "licencia b", "manejo de vehículo", "manejo de vehiculo",
+        "carnet de conducir",
+    ])
+    if _req_licencia and not user.get("TIENE_LICENCIA") and not user.get("TIENE_VEHICULO"):
+        return True, "requiere licencia de conducir — candidato no la tiene"
+
+    return False, ""
+
+
 def _llm_job_aplica(
     descripcion: str, titulo: str, empresa: str, user: dict,
     link: str = "", portal: str = "",
@@ -5566,10 +5656,36 @@ def _llm_job_aplica(
     perfil_str = "\n".join(perfil_parts) or "Sin datos de perfil"
     desc_str   = (descripcion or "Sin descripción").strip()[:1500]
 
-    prompt = f"""Eres un evaluador de postulaciones laborales en Chile. Debes decidir si vale la pena que este candidato postule a esta oferta.
+    # ── Pre-filtro duro (sin LLM, gratis) ─────────────────────────────────────
+    hard_no, hard_razon = _hard_filter(desc_str + " " + titulo, user)
+    if hard_no:
+        razon = f"NO - {hard_razon}"
+        print(f"    [hard-filtro] ✗ {hard_razon}")
+        if uid and link:
+            try:
+                bq.save_evaluacion_empleo(uid, link, portal, titulo, False, razon)
+            except Exception:
+                pass
+        return False, razon
+
+    # Idiomas y movilización del candidato (para el prompt)
+    idiomas_usuario = _idiomas_del_perfil(user)
+    idiomas_str = f"Idiomas del candidato: {', '.join(idiomas_usuario)}" if idiomas_usuario else "Idiomas del candidato: solo español"
+    nivel_ingles = (user.get("NIVEL_INGLES") or "").strip()
+    if nivel_ingles:
+        nivel_label = {"basico": "básico (A1/A2)", "intermedio": "intermedio (B1/B2)", "avanzado": "avanzado (C1)", "fluido": "fluido/nativo (C2)"}.get(nivel_ingles, nivel_ingles)
+        idiomas_str += f" — nivel inglés: {nivel_label}"
+    vehiculo_str = []
+    if user.get("TIENE_VEHICULO"): vehiculo_str.append("vehículo propio")
+    if user.get("TIENE_LICENCIA"): vehiculo_str.append("licencia de conducir")
+    movilizacion_str = f"Movilización: {', '.join(vehiculo_str)}" if vehiculo_str else "Movilización: sin vehículo ni licencia"
+
+    prompt = f"""Eres un evaluador estricto de postulaciones laborales en Chile.
 
 PERFIL DEL CANDIDATO:
 {perfil_str}
+{idiomas_str}
+{movilizacion_str}
 
 OFERTA:
 Título: {titulo}
@@ -5577,23 +5693,27 @@ Empresa: {empresa}
 Descripción:
 {desc_str}
 
-INSTRUCCIONES:
-1. Identifica las principales FUNCIONES del cargo. Evalúa si el candidato, según su experiencia y perfil, es capaz de realizarlas.
-2. Identifica los principales REQUISITOS (educación, años de experiencia, herramientas, certificaciones). Evalúa si el candidato los cumple o se acerca.
-3. Decide:
-   - SÍ: el candidato puede realizar las funciones Y cumple la mayoría de los requisitos (no necesita cumplirlos todos).
-   - NO: las funciones requieren una especialidad que el candidato claramente no tiene, o los requisitos técnicos son incompatibles con su perfil.
+INSTRUCCIONES — evalúa en este orden:
 
-No rechaces por industria diferente si las funciones son similares. Sí rechaza si las funciones o requisitos técnicos son incompatibles.
+1. REQUISITOS EXCLUYENTES (si no se cumple alguno → NO inmediato):
+   - Idioma: si la oferta exige inglés, portugués u otro idioma en nivel intermedio/avanzado/fluido y el candidato no lo tiene → NO
+   - Especialidad técnica incompatible: si requiere una carrera o certificación específica que el candidato claramente no tiene (ej: médico, abogado, contador si el candidato es ingeniero de software)
+   - Años de experiencia muy superiores: si pide 8+ años y el candidato es claramente junior/sin experiencia
+
+2. COMPATIBILIDAD GENERAL: si pasó los excluyentes, evalúa si las funciones y el perfil general son compatibles.
+   - SÍ si puede realizar las funciones y cumple la mayoría de requisitos (no necesita ser perfecto)
+   - NO si las funciones o requisitos técnicos son claramente incompatibles
+
+No rechaces por: industria diferente (si las funciones son similares), empresa desconocida, salario no indicado, trabajo remoto/presencial.
 
 Responde SOLO en este formato (nada más):
-SÍ - [razón máximo 10 palabras]
-NO - [razón máximo 10 palabras]"""
+SÍ - [razón máximo 12 palabras]
+NO - [razón máximo 12 palabras]"""
 
     try:
         resp = _client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=60,
+            max_tokens=80,
             messages=[{"role": "user", "content": prompt}],
         )
         text = (resp.content[0].text if resp.content else "").strip()
