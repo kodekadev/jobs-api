@@ -96,17 +96,22 @@ export class PostulacionesService {
       `, { id: userId }),
       this.bq.query<any>(`
         SELECT
-          id_empleo, cargo, Empresa, Fecha_Postulacion, titulo_empleo, Descripcion, link,
-          COALESCE(portal,
+          e.id_empleo, e.cargo, e.Empresa, e.Fecha_Postulacion, e.titulo_empleo, e.Descripcion, e.link,
+          COALESCE(e.portal,
             CASE
-              WHEN STARTS_WITH(Descripcion, '[linkedin]') OR STARTS_WITH(Descripcion, '[extension]') THEN 'linkedin'
-              WHEN STARTS_WITH(Descripcion, '[email_directo]') THEN 'email_directo'
+              WHEN STARTS_WITH(e.Descripcion, '[linkedin]') OR STARTS_WITH(e.Descripcion, '[extension]') THEN 'linkedin'
+              WHEN STARTS_WITH(e.Descripcion, '[email_directo]') THEN 'email_directo'
               ELSE 'otro'
             END
-          ) AS portal
-        FROM ${this.bq.t('EMPLEOS')}
-        WHERE id_usuario = @id
-        ORDER BY Fecha_Postulacion DESC
+          ) AS portal,
+          REGEXP_REPLACE(COALESCE(ev.razon, ''), r'^(SÍ|SI|Sí)\\s*-\\s*', '') AS razon_llm
+        FROM ${this.bq.t('EMPLEOS')} e
+        LEFT JOIN ${this.bq.t('EVALUACIONES_EMPLEO')} ev
+          ON ev.id_usuario = e.id_usuario
+         AND ev.link = e.link
+         AND ev.aplica = TRUE
+        WHERE e.id_usuario = @id
+        ORDER BY e.Fecha_Postulacion DESC
         LIMIT 5000
       `, { id: userId }),
     ]);
@@ -135,6 +140,7 @@ export class PostulacionesService {
         tiempo:      this.relTime(r.Fecha_Postulacion),
         descripcion: r.Descripcion || '',
         portal:      r.portal || 'otro',
+        razon_llm:   r.razon_llm || '',
       });
     }
 
