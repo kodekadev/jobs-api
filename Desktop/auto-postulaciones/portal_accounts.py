@@ -5695,6 +5695,8 @@ def _llm_job_aplica(
     if user.get("JORNADA"):             perfil_parts.append(f"Jornada: {user['JORNADA']}")
 
     perfil_str = "\n".join(perfil_parts) or "Sin datos de perfil"
+    cv_texto   = (user.get("CV_TEXTO") or "").strip()[:2000]
+    cv_str     = f"\nCV del candidato (extracto):\n{cv_texto}" if cv_texto else ""
     desc_str   = (descripcion or "Sin descripción").strip()[:1500]
 
     # ── Pre-filtro duro (sin LLM, gratis) ─────────────────────────────────────
@@ -5726,7 +5728,7 @@ def _llm_job_aplica(
 PERFIL DEL CANDIDATO:
 {perfil_str}
 {idiomas_str}
-{movilizacion_str}
+{movilizacion_str}{cv_str}
 
 OFERTA:
 Título: {titulo}
