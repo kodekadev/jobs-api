@@ -130,6 +130,14 @@ export class PostulacionesService {
 
       if (!grouped[cargo]) grouped[cargo] = [];
 
+      const rawDesc = r.Descripcion || '';
+      let qa: { q: string; a: string }[] = [];
+      let descripcion = rawDesc;
+      if (rawDesc.startsWith('[QA]')) {
+        try { qa = JSON.parse(rawDesc.slice(4)); } catch { qa = []; }
+        descripcion = '';
+      }
+
       grouped[cargo].push({
         id_empleo:   r.id_empleo || r.link || '',
         empresa:     r.Empresa || '',
@@ -138,7 +146,8 @@ export class PostulacionesService {
         link:        r.link || '',
         titulo:      r.titulo_empleo || '',
         tiempo:      this.relTime(r.Fecha_Postulacion),
-        descripcion: r.Descripcion || '',
+        descripcion,
+        qa,
         portal:      r.portal || 'otro',
         razon_llm:   r.razon_llm || '',
       });
