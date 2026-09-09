@@ -3858,7 +3858,7 @@ def close_chiletrabajos_pw_session(uid: str) -> None:
             del _cht_pw_sessions[key]
 
 
-def _responder_preguntas_playwright(page, user: dict = {}, job_title: str = "") -> None:
+def _responder_preguntas_playwright(page, user: dict = {}, job_title: str = "") -> list:
     """Responde preguntas del modal de postulación usando Playwright + Claude + CV."""
     import unicodedata
 
@@ -4076,8 +4076,17 @@ def _responder_preguntas_playwright(page, user: dict = {}, job_title: str = "") 
 
         print(f"    [trabajando] Preguntas PW respondidas: {len(grupos)} radios, {len(pending)} inputs")
 
+        qa_pairs = []
+        for idx, item in enumerate(pending):
+            label = (item.get("label") or item.get("placeholder") or "").strip()
+            resp, _ = answers.get(idx, (_fallback_pw(item), "fallback"))
+            if label and resp:
+                qa_pairs.append({"q": label, "a": str(resp)})
+        return qa_pairs
+
     except Exception as e:
         print(f"    [trabajando] Error respondiendo preguntas PW: {e}")
+        return []
 
 
 def apply_trabajando_playwright(page, job_url: str, user: dict = {}, resumen: str = "", job_title: str = "") -> "dict | bool":
@@ -4552,6 +4561,13 @@ def apply_trabajando_playwright(page, job_url: str, user: dict = {}, resumen: st
                 # Dar tiempo a Vue para correr validación
                 time.sleep(2)
 
+                # Recolectar Q&A para persistir en BigQuery
+                _qa_tbj = [
+                    {"q": preguntas[idx]["label"][:300], "a": str(answers.get(idx, ("", ""))[0])[:500]}
+                    for idx in range(len(preguntas))
+                    if preguntas[idx].get("label") and answers.get(idx, ("", ""))[0]
+                ]
+
                 # Click al botón via JS (mismo enfoque que 'Comenzar' — bypasa boton-deshabilitado)
                 try:
                     btn_txt = page.evaluate("""
@@ -4582,7 +4598,7 @@ def apply_trabajando_playwright(page, job_url: str, user: dict = {}, resumen: st
                     if btn_txt:
                         time.sleep(2)
                         print(f"    [trabajando] OK Postulado (preguntas → '{btn_txt}')")
-                        return _ok()
+                        return {**_ok(), "qa": _qa_tbj}
                     else:
                         print(f"    [trabajando] Sin botón de envío habilitado tras preguntas")
                 except Exception as e:
@@ -5539,6 +5555,7 @@ def _hard_filter(texto: str, user: dict) -> tuple[bool, str]:
     """
     Pre-filtro sin LLM para requisitos excluyentes obvios.
     Retorna (rechazar: bool, razon: str).
+    texto debe incluir el TÍTULO del empleo para que los filtros de título funcionen.
     """
     t = texto.lower()
 
@@ -5561,6 +5578,30 @@ def _hard_filter(texto: str, user: dict) -> tuple[bool, str]:
     ])
     if _req_portugues and "portugués" not in idiomas_usuario:
         return True, "requiere portugués avanzado — candidato no lo tiene"
+
+    _req_chino = any(p in t for p in [
+        "chino mandarín", "chino mandarin", "mandarín", "mandarin",
+        "chinese", "chino nativo", "habla china", "mandarin required",
+        "español – chino", "español - chino", "bilingüe chino", "bilingue chino",
+    ])
+    if _req_chino:
+        return True, "requiere chino mandarín — candidato no lo habla"
+
+    # Bilingüe con idioma no dominado por el candidato
+    _otros_idiomas_exigentes = [
+        ("francés",  ["francés", "frances", "french"]),
+        ("alemán",   ["alemán", "aleman", "german", "deutsch"]),
+        ("italiano", ["italiano", "italian"]),
+        ("japonés",  ["japonés", "japones", "japanese"]),
+        ("coreano",  ["coreano", "korean"]),
+    ]
+    if "bilingüe" in t or "bilingue" in t:
+        for idioma_key, pats in _otros_idiomas_exigentes:
+            if any(p in t for p in pats) and idioma_key not in idiomas_usuario:
+                return True, f"requiere ser bilingüe en {idioma_key} — candidato no lo habla"
+        # Bilingüe inglés ya cubierto arriba, pero si lo mencionan sin nivel explícito:
+        if ("inglés" in t or "english" in t) and "inglés" not in idiomas_usuario:
+            return True, "requiere ser bilingüe en inglés — candidato no lo habla"
 
     prof_usuario = (user.get("PROFESION") or user.get("CARRERA") or "").lower()
     _es_tech = any(w in prof_usuario for w in [
