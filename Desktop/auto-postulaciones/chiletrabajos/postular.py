@@ -606,8 +606,15 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
         modo_revision = bq.get_modo_revision(user_id)
         print(f"[cht] Modo: {'REVISIÓN (guardará para aprobar)' if modo_revision else 'AUTOPILOT (postula directo)'}")
         pending_urls: set = bq.get_pending_job_urls(user_id, PORTAL_ID) if modo_revision else set()
-        if pending_urls:
-            print(f"[cht] {len(pending_urls)} empleos ya en cola de revision — se saltaran")
+        cupo_revision = max_count
+        if modo_revision:
+            ya_pendientes = bq.get_pending_job_count(user_id, PORTAL_ID)
+            cupo_revision = max(0, max_count - ya_pendientes)
+            if ya_pendientes:
+                print(f"[cht] {ya_pendientes} empleos ya en cola sin revisar — cupo revision: {cupo_revision}/{max_count}")
+            if cupo_revision == 0:
+                print(f"[cht] Cola llena ({ya_pendientes} pendientes) — el usuario debe revisar antes de agregar mas")
+                return 0
 
         for cargo in cargos:
             for ubicacion in ubicaciones:
@@ -650,34 +657,65 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
                 except Exception:
                     pass
 
-                # Recopilar links de empleos
+                # Recopilar links de empleos — con paginación (hasta 3 páginas)
                 jobs: list = []
                 seen: set = set()
-                for sel_css in [
-                    "h2 a", "h3 a", ".job-item h2 a", ".job-item h3 a",
-                    "a.font-weight-bold", "a[href*='/trabajo/']", "a[href*='/empleo/']",
-                ]:
-                    for a in page.locator(sel_css).all():
-                        try:
-                            href  = a.get_attribute("href") or ""
-                            title = a.inner_text().strip()
-                            if (href and title and href not in seen
-                                    and any(k in href for k in ["/trabajo/", "/empleo/"])
-                                    and not any(k in href for k in [
-                                        "/ciudad/", "/empresa/", "/encuentra-", "/categoria/"
-                                    ])
-                                    and len(title) > 5):
-                                jobs.append({"titulo": title, "link": href})
-                                seen.add(href)
-                        except Exception:
-                            continue
+
+                def _scrapear_pagina(pg) -> int:
+                    antes = len(jobs)
+                    for sel_css in [
+                        "h2 a", ".job-item h2 a", "a.font-weight-bold",
+                        "a[href*='/trabajo/']", "a[href*='/empleo/']",
+                    ]:
+                        for a in pg.locator(sel_css).all():
+                            try:
+                                href  = a.get_attribute("href") or ""
+                                title = (a.inner_text() or "").strip()
+                                if (href and title and href not in seen
+                                        and any(k in href for k in ["/trabajo/", "/empleo/"])
+                                        and not any(k in href for k in [
+                                            "/ciudad/", "/empresa/", "/encuentra-", "/categoria/"
+                                        ])
+                                        and len(title) > 5):
+                                    jobs.append({"titulo": title, "link": href})
+                                    seen.add(href)
+                            except Exception:
+                                continue
+                    return len(jobs) - antes
+
+                nuevos = _scrapear_pagina(page)
+                # Paginación: intentar hasta 2 páginas más
+                for _pg_num in range(2, 4):
+                    if nuevos == 0:
+                        break
+                    try:
+                        next_btn = page.locator("a[rel='next'], .pagination a:has-text('Siguiente'), li.next a").first
+                        if next_btn.count() == 0 or not next_btn.is_visible():
+                            break
+                        next_btn.click()
+                        page.wait_for_load_state("domcontentloaded", timeout=8000)
+                        page.wait_for_timeout(2000)
+                        nuevos = _scrapear_pagina(page)
+                        print(f"[cht]   Página {_pg_num}: +{nuevos} empleos")
+                    except Exception:
+                        break
 
                 n_encontrados = len(jobs)
-                print(f"[cht] Empleos encontrados: {n_encontrados}")
+                print(f"[cht] Empleos encontrados: {n_encontrados} total")
+                # Imprimir toda la lista antes de filtrar
+                for _ji, _jj in enumerate(jobs):
+                    print(f"[cht]   {_ji+1:>3}. {_safe(_jj['titulo'][:70])}")
                 stats["encontrados"] += n_encontrados
                 lc = {"encontrados": n_encontrados, "ya_aplicado": 0, "ciudad_offsite": 0,
-                      "no_aplica": 0, "salario": 0, "pendientes": 0, "postulados": 0,
-                      "ya_portal": 0, "error": 0}
+                      "no_aplica": 0, "nivel": 0, "salario": 0, "pendientes": 0,
+                      "postulados": 0, "ya_portal": 0, "error": 0}
+
+                # Palabras clave de nivel inferior — no postular si el candidato busca cargos senior
+                _NIVEL_INFERIOR = [
+                    "asistente de", "asistente al", "auxiliar de", "junior", " jr ",
+                    "jr.", "(jr)", "trainee", "practicante", "en práctica", "en practica",
+                    "apoyo a", "ayudante de",
+                ]
 
                 # Ciudades válidas para este usuario (normalizadas sin acentos)
                 _user_cities_norm = set()
@@ -686,7 +724,7 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
                     _n = "".join(ch for ch in _n if not unicodedata.combining(ch))
                     _user_cities_norm.add(_n)
 
-                for j, job in enumerate(jobs[:20]):
+                for j, job in enumerate(jobs):
                     job_id = job["link"].split("/")[-1].split("?")[0]
                     if job_id in applied_ids:
                         print(f"[cht] {j+1}/{len(jobs)} Ya aplicado — skip")
@@ -702,13 +740,20 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
                         (c for c in _OFFSITE_CITY_KEYWORDS if c in titulo_norm), None
                     )
                     if ciudad_offsita and not any(c in titulo_norm for c in _user_cities_norm):
-                        print(f"[cht] {j+1}/{len(jobs)} SALTADO (ciudad '{ciudad_offsita}'): '{_safe(titulo[:40])}'")
+                        print(f"[cht] {j+1}/{len(jobs)} SALTADO (ciudad fuera de target '{ciudad_offsita}'): '{_safe(titulo[:50])}'")
                         stats["ciudad_offsite"] += 1; lc["ciudad_offsite"] += 1
+                        continue
+
+                    # Filtro: nivel inferior al perfil del candidato
+                    kw_nivel = next((k for k in _NIVEL_INFERIOR if k in f" {titulo_norm} "), None)
+                    if kw_nivel:
+                        print(f"[cht] {j+1}/{len(jobs)} SALTADO (nivel inferior '{kw_nivel.strip()}'): '{_safe(titulo[:50])}'")
+                        stats["no_aplica"] += 1; lc["nivel"] = lc.get("nivel", 0) + 1
                         continue
 
                     aplica, motivo = job_aplica_al_usuario(titulo, "", user)
                     if not aplica:
-                        print(f"[cht] {j+1}/{len(jobs)} SALTADO ({motivo}): '{_safe(titulo[:40])}'")
+                        print(f"[cht] {j+1}/{len(jobs)} SALTADO ({motivo}): '{_safe(titulo[:50])}'")
                         stats["no_aplica"] += 1; lc["no_aplica"] += 1
                         continue
 
@@ -717,12 +762,33 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
                             print(f"[cht] {j+1}/{len(jobs)} Ya en cola — skip: '{_safe(titulo[:40])}'")
                             stats["ya_aplicado"] += 1; lc["ya_aplicado"] += 1
                             continue
+                        if stats["pendientes"] >= cupo_revision:
+                            continue  # cupo de revision alcanzado — no agregar mas
+                        # Chequear salario antes de encolar (requiere visitar la página)
+                        pretension_mr = None
+                        try:
+                            raw_p = str(user.get("PRETENSION_GENERAL") or user.get("pretension_general") or "")
+                            cleaned_p = re.sub(r"[^\d]", "", raw_p)
+                            pretension_mr = int(cleaned_p) if cleaned_p else None
+                        except Exception:
+                            pass
+                        if pretension_mr:
+                            try:
+                                page.goto(job["link"], wait_until="domcontentloaded", timeout=15000)
+                                page.wait_for_timeout(1500)
+                                salario_mr = _extraer_salario_cht(page)
+                                if salario_mr and salario_mr < pretension_mr:
+                                    print(f"[cht] {j+1}/{len(jobs)} Salario {salario_mr:,} < pretensión {pretension_mr:,} — skip")
+                                    stats["salario"] += 1; lc["salario"] += 1
+                                    continue
+                            except Exception:
+                                pass
                         pending_jobs.append({"titulo": titulo, "link": job["link"], "empresa": ""})
                         print(f"[cht] {j+1}/{len(jobs)} PENDIENTE revision: '{_safe(titulo[:40])}'")
                         stats["pendientes"] += 1; lc["pendientes"] += 1
                         continue
 
-                    print(f"[cht] {j+1}/{len(jobs)} {_safe(titulo[:50])}")
+                    print(f"[cht] {j+1}/{len(jobs)} POSTULANDO: '{_safe(titulo[:60])}'")
 
                     # Postular con reconexión en TargetClosedError
                     ok = False
@@ -798,14 +864,15 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
 
                 # Resumen por búsqueda
                 partes = [f"encontrados={lc['encontrados']}"]
-                if lc["ya_aplicado"]:   partes.append(f"ya_aplicado={lc['ya_aplicado']}")
-                if lc["ya_portal"]:     partes.append(f"ya_portal={lc['ya_portal']}")
-                if lc["ciudad_offsite"]: partes.append(f"ciudad={lc['ciudad_offsite']}")
-                if lc["no_aplica"]:     partes.append(f"no_aplica={lc['no_aplica']}")
-                if lc["salario"]:       partes.append(f"salario_bajo={lc['salario']}")
-                if lc["pendientes"]:    partes.append(f"pendientes={lc['pendientes']}")
-                if lc["postulados"]:    partes.append(f"postulados={lc['postulados']}")
-                if lc["error"]:         partes.append(f"error={lc['error']}")
+                if lc["ya_aplicado"]:        partes.append(f"ya_aplicado={lc['ya_aplicado']}")
+                if lc["ya_portal"]:          partes.append(f"ya_portal={lc['ya_portal']}")
+                if lc["ciudad_offsite"]:     partes.append(f"ciudad_fuera={lc['ciudad_offsite']}")
+                if lc.get("nivel"):          partes.append(f"nivel_inferior={lc['nivel']}")
+                if lc["no_aplica"]:          partes.append(f"no_aplica={lc['no_aplica']}")
+                if lc["salario"]:            partes.append(f"salario_bajo={lc['salario']}")
+                if lc["pendientes"]:         partes.append(f"pendientes={lc['pendientes']}")
+                if lc["postulados"]:         partes.append(f"postulados={lc['postulados']}")
+                if lc["error"]:              partes.append(f"error={lc['error']}")
                 print(f"[cht] >> '{cargo}' en '{ubicacion}': {' | '.join(partes)}")
 
     except StopIteration:
