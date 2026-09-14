@@ -663,24 +663,49 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
 
                 def _scrapear_pagina(pg) -> int:
                     antes = len(jobs)
-                    for sel_css in [
-                        "h2 a", ".job-item h2 a", "a.font-weight-bold",
-                        "a[href*='/trabajo/']", "a[href*='/empleo/']",
-                    ]:
-                        for a in pg.locator(sel_css).all():
+                    # Iterar por .job-item para capturar título + ciudad juntos
+                    items = pg.locator(".job-item").all()
+                    if items:
+                        for item in items:
                             try:
+                                a = item.locator("h2 a, a.font-weight-bold").first
+                                if not a.count():
+                                    continue
                                 href  = a.get_attribute("href") or ""
                                 title = (a.inner_text() or "").strip()
-                                if (href and title and href not in seen
+                                if not (href and title and href not in seen
                                         and any(k in href for k in ["/trabajo/", "/empleo/"])
-                                        and not any(k in href for k in [
-                                            "/ciudad/", "/empresa/", "/encuentra-", "/categoria/"
-                                        ])
                                         and len(title) > 5):
-                                    jobs.append({"titulo": title, "link": href})
-                                    seen.add(href)
+                                    continue
+                                # Capturar ciudad del metadata del card
+                                ciudad_item = ""
+                                try:
+                                    city_a = item.locator("h3.meta a[href*='/ciudad/']").first
+                                    if city_a.count():
+                                        ciudad_item = (city_a.inner_text() or "").strip().lower()
+                                        ciudad_item = unicodedata.normalize("NFKD", ciudad_item)
+                                        ciudad_item = "".join(ch for ch in ciudad_item if not unicodedata.combining(ch))
+                                except Exception:
+                                    pass
+                                jobs.append({"titulo": title, "link": href, "ciudad": ciudad_item})
+                                seen.add(href)
                             except Exception:
                                 continue
+                    else:
+                        # Fallback: sin .job-item, scrape genérico sin ciudad
+                        for sel_css in ["h2 a", "a.font-weight-bold", "a[href*='/trabajo/']"]:
+                            for a in pg.locator(sel_css).all():
+                                try:
+                                    href  = a.get_attribute("href") or ""
+                                    title = (a.inner_text() or "").strip()
+                                    if (href and title and href not in seen
+                                            and any(k in href for k in ["/trabajo/", "/empleo/"])
+                                            and not any(k in href for k in ["/ciudad/", "/empresa/", "/encuentra-", "/categoria/"])
+                                            and len(title) > 5):
+                                        jobs.append({"titulo": title, "link": href, "ciudad": ""})
+                                        seen.add(href)
+                                except Exception:
+                                    continue
                     return len(jobs) - antes
 
                 nuevos = _scrapear_pagina(page)
@@ -735,12 +760,22 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
                     titulo_norm = unicodedata.normalize("NFKD", titulo.lower())
                     titulo_norm = "".join(ch for ch in titulo_norm if not unicodedata.combining(ch))
 
+                    # Filtro: ciudad del card (metadata) no coincide con ubicaciones del usuario
+                    ciudad_card = job.get("ciudad", "")
+                    if ciudad_card and not any(
+                        _user_c in ciudad_card or ciudad_card in _user_c
+                        for _user_c in _user_cities_norm
+                    ):
+                        print(f"[cht] {j+1}/{len(jobs)} SALTADO (ubicación '{ciudad_card}' ≠ target): '{_safe(titulo[:50])}'")
+                        stats["ciudad_offsite"] += 1; lc["ciudad_offsite"] += 1
+                        continue
+
                     # Filtro: ciudad fuera del target mencionada en el título
                     ciudad_offsita = next(
                         (c for c in _OFFSITE_CITY_KEYWORDS if c in titulo_norm), None
                     )
                     if ciudad_offsita and not any(c in titulo_norm for c in _user_cities_norm):
-                        print(f"[cht] {j+1}/{len(jobs)} SALTADO (ciudad fuera de target '{ciudad_offsita}'): '{_safe(titulo[:50])}'")
+                        print(f"[cht] {j+1}/{len(jobs)} SALTADO (ciudad en título '{ciudad_offsita}'): '{_safe(titulo[:50])}'")
                         stats["ciudad_offsite"] += 1; lc["ciudad_offsite"] += 1
                         continue
 
