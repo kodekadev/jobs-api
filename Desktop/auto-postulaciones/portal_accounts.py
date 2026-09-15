@@ -4776,10 +4776,10 @@ _JAU_DOMINIOS: list[set] = [
     {"tecnologia", "informatica", "sistemas", "desarrollo", "programacion", "software", "datos", "data"},
     {"marketing", "comunicaciones", "publicidad", "digital", "contenidos"},
     {"legal", "juridico", "abogado", "compliance", "contratos"},
-    {"salud", "medicina", "enfermeria", "medico", "clinico", "farmaceutico",
-     "kinesiologo", "kinesiologa", "kinesiologia", "nutricionista", "nutricion",
-     "terapeuta", "fonoaudiologo", "fonoaudiologa", "psicologo", "psicologa",
-     "obstetra", "matrona", "dental", "odontologo", "bioquimico", "rehabilitacion"},
+    # Nota: NO se agrupan profesiones de salud en un dominio compartido — son
+    # títulos profesionales regulados y distintos (un terapeuta ocupacional no
+    # puede postular como psicólogo, ni un kinesiólogo como nutricionista, etc.).
+    # El match exacto entre variantes de la MISMA profesión ya vive en _JAU_SINONIMOS.
     {"educacion", "docente", "profesor", "pedagogia", "capacitacion"},
     {"construccion", "obras", "arquitecto", "inmobiliario", "proyecto"},
     {"prevencion", "seguridad", "riesgos", "hsec", "ssoma"},
