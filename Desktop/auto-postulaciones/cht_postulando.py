@@ -10,15 +10,15 @@ Para un usuario específico: SOLO_USUARIO = "jobs2"
 """
 import os
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 _dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else r"C:\Users\bastian\Desktop\auto-postulaciones"
 
 # None = todos los usuarios activos; "jobs2" = solo ese usuario
 SOLO_USUARIO = None
-SOLO_USUARIO = "jobs2"
+# SOLO_USUARIO = "jobs2"
 
-N_WORKERS = 1  # procesos en paralelo
+N_WORKERS = 3  # procesos en paralelo
 
 PLAN_ORDER  = {"PREMIUM": 0, "TURBO": 1, "PRO": 2, "TRIAL": 3, "FREE": 4}
 PLAN_LIMITS = {"FREE": 5, "TRIAL": 10, "PRO": 25, "TURBO": 40, "PREMIUM": 50}
@@ -104,7 +104,7 @@ def _run() -> None:
     print(f"[cht_postulando] {len(uids)} usuario(s) a procesar | {N_WORKERS} procesos\n")
 
     total_ok = 0
-    with ThreadPoolExecutor(max_workers=N_WORKERS) as pool:
+    with ProcessPoolExecutor(max_workers=N_WORKERS) as pool:
         futures = {pool.submit(_procesar_usuario, uid): uid for uid in uids}
         for fut in as_completed(futures):
             uid = futures[fut]
