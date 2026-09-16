@@ -555,6 +555,11 @@ def _postular_empleo_pw(page, job_url: str, user: dict, titulo: str) -> "dict | 
         return False
 
 
+# Métricas de la última llamada a postular_empleos_cht. Se expone así en vez de
+# cambiar el tipo de retorno para no romper a quien ya llama a la función.
+ULTIMA_CORRIDA: dict = {"compatibles": 0, "postuladas": 0, "perdidas_limite": 0}
+
+
 def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
     """
     Busca y postula empleos en ChileTrabajos para el usuario.
@@ -593,7 +598,14 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
         print(f"[cht] Sin sesión Playwright para {user_id} — cookies expiradas o faltantes")
         return 0
 
+    ULTIMA_CORRIDA.update({"compatibles": 0, "postuladas": 0, "perdidas_limite": 0})
     count = 0
+    # Métricas del día: una oferta es "compatible" si pasó toda la cadena de
+    # filtros gratis. Al topar el cupo seguimos contando (sin postular ni llamar
+    # al LLM) para saber cuántas se perdieron por el límite del plan.
+    compatibles = 0
+    perdidas_limite = 0
+    cupo_agotado = False
     modo_revision = False
     pending_jobs: list = []
     stats = {"encontrados": 0, "ya_aplicado": 0, "ciudad_offsite": 0,
@@ -792,6 +804,12 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
                         stats["no_aplica"] += 1; lc["no_aplica"] += 1
                         continue
 
+                    # Pasó todos los filtros: cuenta como oferta compatible
+                    compatibles += 1
+                    if cupo_agotado:
+                        perdidas_limite += 1
+                        continue
+
                     if modo_revision:
                         if job["link"] in pending_urls:
                             print(f"[cht] {j+1}/{len(jobs)} Ya en cola — skip: '{_safe(titulo[:40])}'")
@@ -887,8 +905,8 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
                         stats["postulados"] += 1; lc["postulados"] += 1
                         print(f"[cht] Guardado ({count})")
                         if count >= max_count:
-                            print(f"[cht] Limite {max_count} alcanzado — deteniendo ChileTrabajos")
-                            raise StopIteration
+                            print(f"[cht] Limite {max_count} alcanzado — sigo contando ofertas sin postular")
+                            cupo_agotado = True
                     else:
                         stats["error"] += 1; lc["error"] += 1
                         try:
@@ -909,6 +927,10 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
                 if lc["postulados"]:         partes.append(f"postulados={lc['postulados']}")
                 if lc["error"]:              partes.append(f"error={lc['error']}")
                 print(f"[cht] >> '{cargo}' en '{ubicacion}': {' | '.join(partes)}")
+
+                # Ya contamos el resto de esta lista: no scrapear más búsquedas
+                if cupo_agotado:
+                    raise StopIteration
 
     except StopIteration:
         pass  # límite alcanzado — salida limpia
@@ -944,6 +966,13 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
         f"postulados={stats['postulados']} | "
         f"error={stats['error']}"
     )
+
+    ULTIMA_CORRIDA.update({
+        "compatibles": compatibles,
+        "postuladas": count,
+        "perdidas_limite": perdidas_limite,
+    })
+    print(f"[cht] Métricas: compatibles={compatibles} postuladas={count} perdidas_por_limite={perdidas_limite}")
 
     return count
 
