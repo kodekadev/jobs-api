@@ -3,6 +3,20 @@ import { BigQueryService } from '../../shared/infrastructure/services/bigquery.s
 import { GcsService } from '../../shared/infrastructure/services/gcs.service';
 import env from '../../shared/infrastructure/environment';
 import { isValidRating } from './rating.utils';
+import { normalizarOpcion } from './feedback.utils';
+
+export interface AutopilotFeedbackInput {
+  id: string;
+  rating_servicio?: number | null;
+  rating_postulaciones?: number | null;
+  comentario?: string;
+  tipo?: string;
+  ofertas_relevantes?: string | null;
+  llamadas?: string | null;
+  consiguio_trabajo?: string | null;
+  que_falta?: string;
+  rating_general?: number | null;
+}
 
 @Injectable()
 export class ProfileService {
@@ -107,18 +121,28 @@ export class ProfileService {
     return { success: true, cv_url: cvUrl };
   }
 
-  async saveAutopilotFeedback(userId: string, ratingServicio: number, ratingPostulaciones: number, comentario: string, tipo: string) {
+  async saveAutopilotFeedback(input: AutopilotFeedbackInput) {
     await this.bq.query(`
       INSERT INTO ${this.bq.t('AUTOPILOT_FEEDBACK')}
-        (ID_USUARIO, RATING_SERVICIO, RATING_POSTULACIONES, COMENTARIO, TIPO, FECHA)
-      VALUES (@id, @rs, @rp, @comentario, @tipo, CURRENT_TIMESTAMP())
+        (ID_USUARIO, RATING_SERVICIO, RATING_POSTULACIONES, COMENTARIO, TIPO, FECHA,
+         OFERTAS_RELEVANTES, LLAMADAS, CONSIGUIO_TRABAJO, QUE_FALTA, RATING_GENERAL)
+      VALUES (@id, @rs, @rp, @comentario, @tipo, CURRENT_TIMESTAMP(),
+              @ofertas, @llamadas, @trabajo, @queFalta, @ratingGeneral)
     `, {
-      id: userId,
-      rs: isValidRating(ratingServicio) ? Number(ratingServicio) : null,
-      rp: isValidRating(ratingPostulaciones) ? Number(ratingPostulaciones) : null,
-      comentario: comentario || '',
-      tipo: tipo || 'desconocido',
-    }, { rs: 'INT64', rp: 'INT64' });
+      id: input.id,
+      rs: isValidRating(input.rating_servicio) ? Number(input.rating_servicio) : null,
+      rp: isValidRating(input.rating_postulaciones) ? Number(input.rating_postulaciones) : null,
+      comentario: input.comentario || '',
+      tipo: input.tipo || 'desconocido',
+      ofertas: normalizarOpcion(input.ofertas_relevantes, 'ofertas_relevantes'),
+      llamadas: normalizarOpcion(input.llamadas, 'llamadas'),
+      trabajo: normalizarOpcion(input.consiguio_trabajo, 'consiguio_trabajo'),
+      queFalta: input.que_falta || '',
+      ratingGeneral: isValidRating(input.rating_general) ? Number(input.rating_general) : null,
+    }, {
+      rs: 'INT64', rp: 'INT64', ratingGeneral: 'INT64',
+      ofertas: 'STRING', llamadas: 'STRING', trabajo: 'STRING',
+    });
 
     return { success: true };
   }

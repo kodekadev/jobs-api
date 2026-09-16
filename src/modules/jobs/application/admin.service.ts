@@ -3,6 +3,7 @@ import { BigQueryService } from '../../shared/infrastructure/services/bigquery.s
 import { EmailService } from '../../shared/infrastructure/services/email.service';
 import env from '../../shared/infrastructure/environment';
 import { isValidRating, summarizeRatings } from './rating.utils';
+import { distribucion } from './feedback.utils';
 
 const PLAN_LIMITS: Record<string, number> = {
   FREE: 5, PRO: 25, PREMIUM: 50, TRIAL: 10, TURBO: 40,
@@ -132,6 +133,7 @@ export class AdminService {
         COALESCE(por.tiene_exc, 0) AS tiene_empleaxchile,
         COALESCE(por.cv_exc, 0)    AS cv_empleaxchile,
         COALESCE(por.tiene_gob, 0) AS tiene_getonboard,
+        (hp.ID_USUARIO IS NOT NULL) AS pago_confirmado,
         CASE
           WHEN COALESCE(pl.PLAN, 'FREE') = 'FREE' THEN TRUE
           WHEN (pl.PLAN = 'TRIAL' OR pl.ESTADO = 'TRIAL')
@@ -152,6 +154,9 @@ export class AdminService {
       LEFT JOIN ${this.bq.t('POSTULA_FACIL')} pf ON u.ID_USUARIO = pf.ID_USUARIO
       LEFT JOIN post_stats ps ON u.ID_USUARIO = ps.id_usuario
       LEFT JOIN portal_stats por ON u.ID_USUARIO = por.id_usuario
+      LEFT JOIN (
+        SELECT DISTINCT ID_USUARIO FROM ${this.bq.t('HISTORIAL_PAGOS')}
+      ) hp ON u.ID_USUARIO = hp.ID_USUARIO
       WHERE u.NOMBRE != 'CUENTA_ELIMINADA'
         AND NOT STARTS_WITH(u.EMAIL, 'deleted_')
       ORDER BY postulaciones_hoy DESC, total_postulaciones DESC
@@ -175,6 +180,7 @@ export class AdminService {
       plan_estado:             r.plan_estado || null,
       plan_vigente:            Boolean(r.plan_vigente),
       plan_original:           r.plan || 'FREE',
+      pago_confirmado:         Boolean(r.pago_confirmado),
       fecha_fin:               r.FECHA_FIN?.value ?? r.FECHA_FIN ?? null,
       autopilot_activo:        Boolean(r.autopilot_activo),
       modo_revision:           Boolean(r.modo_revision),
@@ -993,7 +999,8 @@ export class AdminService {
   async getFeedbackStats() {
     const [notas, dist, recientes] = await Promise.all([
       this.bq.query<any>(`
-        SELECT RATING_SERVICIO, RATING_POSTULACIONES
+        SELECT RATING_SERVICIO, RATING_POSTULACIONES, RATING_GENERAL,
+               OFERTAS_RELEVANTES, LLAMADAS, CONSIGUIO_TRABAJO, QUE_FALTA
         FROM ${this.bq.t('AUTOPILOT_FEEDBACK')}
       `),
       this.bq.query<any>(`
@@ -1027,6 +1034,7 @@ export class AdminService {
 
     const servicio      = summarizeRatings(notas.map((r: any) => r.RATING_SERVICIO));
     const postulaciones = summarizeRatings(notas.map((r: any) => r.RATING_POSTULACIONES));
+    const general       = summarizeRatings(notas.map((r: any) => r.RATING_GENERAL));
 
     const distServicio:      Record<number, number> = {};
     const distPostulaciones: Record<number, number> = {};
@@ -1040,7 +1048,18 @@ export class AdminService {
       calificaciones_servicio:      servicio.calificaciones,
       avg_postulaciones:            postulaciones.average,
       calificaciones_postulaciones: postulaciones.calificaciones,
+      avg_general:                  general.average,
+      calificaciones_general:       general.calificaciones,
       respuestas:                   servicio.respuestas,
+      encuesta: {
+        ofertas_relevantes: distribucion(notas.map((r: any) => r.OFERTAS_RELEVANTES), 'ofertas_relevantes'),
+        llamadas:           distribucion(notas.map((r: any) => r.LLAMADAS), 'llamadas'),
+        consiguio_trabajo:  distribucion(notas.map((r: any) => r.CONSIGUIO_TRABAJO), 'consiguio_trabajo'),
+        que_falta: notas
+          .map((r: any) => (r.QUE_FALTA || '').trim())
+          .filter((t: string) => t.length > 0)
+          .slice(0, 30),
+      },
       dist_servicio:      Object.entries(distServicio).map(([score, count]) => ({ score: Number(score), count })),
       dist_postulaciones: Object.entries(distPostulaciones).map(([score, count]) => ({ score: Number(score), count })),
       comentarios: recientes.map((r: any) => ({

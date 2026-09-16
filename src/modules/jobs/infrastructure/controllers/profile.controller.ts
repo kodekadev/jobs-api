@@ -3,7 +3,7 @@ import {
   UploadedFile, HttpCode,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { ProfileService } from '../../application/profile.service';
+import { ProfileService, AutopilotFeedbackInput } from '../../application/profile.service';
 
 @Controller('profile')
 export class ProfileController {
@@ -46,15 +46,7 @@ export class ProfileController {
 
   @Post('autopilot-feedback')
   @HttpCode(200)
-  autopilotFeedback(@Body() body: {
-    id: string;
-    rating_servicio: number;
-    rating_postulaciones: number;
-    comentario: string;
-    tipo: string;
-  }) {
-    return this.profileService.saveAutopilotFeedback(
-      body.id, body.rating_servicio, body.rating_postulaciones, body.comentario, body.tipo,
-    );
+  autopilotFeedback(@Body() body: AutopilotFeedbackInput) {
+    return this.profileService.saveAutopilotFeedback(body);
   }
 }
