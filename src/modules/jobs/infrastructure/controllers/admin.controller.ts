@@ -58,6 +58,12 @@ export class AdminController {
     return this.service.getUserFeedback(userId);
   }
 
+  @Get('ofertas-perdidas')
+  ofertasPerdidas(@Request() req: any) {
+    this.service.checkAdmin(req.user.email);
+    return this.service.getOfertasPerdidas();
+  }
+
   @Get('feedback-stats')
   feedbackStats(@Request() req: any) {
     this.service.checkAdmin(req.user.email);

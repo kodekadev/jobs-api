@@ -4,6 +4,7 @@ import { GcsService } from '../../shared/infrastructure/services/gcs.service';
 import env from '../../shared/infrastructure/environment';
 import { isValidRating } from './rating.utils';
 import { normalizarOpcion } from './feedback.utils';
+import { getDailyLimit } from './plan.limits';
 
 export interface AutopilotFeedbackInput {
   id: string;
@@ -119,6 +120,59 @@ export class ProfileService {
     `, { id: userId, cv: cvUrl });
 
     return { success: true, cv_url: cvUrl };
+  }
+
+  /**
+   * Postulaciones de hoy contra el límite del usuario, más las ofertas que
+   * quedaron sin postular por el tope. Alimenta el contador del dashboard.
+   */
+  async getMetricasHoy(userId: string) {
+    const [planRows, metricaRows, hoyRows] = await Promise.all([
+      this.bq.query<any>(`
+        SELECT pc.PLAN, pc.ESTADO, pc.FECHA_INICIO, pc.FECHA_FIN, pf.LIMITE_DIARIO
+        FROM ${this.bq.t('POSTULA_FACIL')} pf
+        LEFT JOIN ${this.bq.t('PLAN_CONTRATADO')} pc
+          ON pc.ID_USUARIO = pf.ID_USUARIO
+         AND pc.ESTADO IN ('ACTIVO','CANCELADO_PENDIENTE','TRIAL')
+        WHERE pf.ID_USUARIO = @id
+        ORDER BY pc.FECHA_INICIO DESC LIMIT 1
+      `, { id: userId }).catch(() => []),
+
+      this.bq.query<any>(`
+        SELECT IFNULL(SUM(OFERTAS_COMPATIBLES), 0)  AS compatibles,
+               IFNULL(SUM(NO_POSTULADAS_LIMITE), 0) AS perdidas
+        FROM ${this.bq.t('METRICAS_DIARIAS')}
+        WHERE FECHA = CURRENT_DATE('America/Santiago') AND ID_USUARIO = @id
+      `, { id: userId }).catch(() => []),
+
+      this.bq.query<any>(`
+        SELECT COUNT(*) AS n FROM ${this.bq.t('EMPLEOS')}
+        WHERE id_usuario = @id
+          AND DATE(Fecha_Postulacion, 'America/Santiago') = CURRENT_DATE('America/Santiago')
+          AND portal NOT IN ('email_directo', '')
+      `, { id: userId }).catch(() => []),
+    ]);
+
+    const p = planRows[0] ?? {};
+    const vencido = p.FECHA_FIN ? new Date(p.FECHA_FIN.value ?? p.FECHA_FIN) < new Date() : false;
+
+    const limite = getDailyLimit({
+      plan: p.PLAN,
+      plan_vigente: !vencido,
+      limite_diario: p.LIMITE_DIARIO,
+    });
+
+    const postuladas = Number(hoyRows[0]?.n ?? 0);
+    const perdidas   = Number(metricaRows[0]?.perdidas ?? 0);
+
+    return {
+      postuladas,
+      limite,
+      compatibles: Number(metricaRows[0]?.compatibles ?? 0),
+      perdidas,
+      // Solo sugerir subir de plan si de verdad se perdieron ofertas hoy
+      mostrar_upsell: perdidas > 0 && postuladas >= limite,
+    };
   }
 
   async saveAutopilotFeedback(input: AutopilotFeedbackInput) {

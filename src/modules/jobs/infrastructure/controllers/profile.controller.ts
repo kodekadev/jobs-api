@@ -44,6 +44,11 @@ export class ProfileController {
     return this.profileService.toggleAutoPostulaciones(body.id, body.activo ? 1 : 0);
   }
 
+  @Get('metricas-hoy/:id')
+  metricasHoy(@Param('id') id: string) {
+    return this.profileService.getMetricasHoy(id);
+  }
+
   @Post('autopilot-feedback')
   @HttpCode(200)
   autopilotFeedback(@Body() body: AutopilotFeedbackInput) {

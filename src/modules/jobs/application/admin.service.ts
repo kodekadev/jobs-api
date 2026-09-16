@@ -4,10 +4,9 @@ import { EmailService } from '../../shared/infrastructure/services/email.service
 import env from '../../shared/infrastructure/environment';
 import { isValidRating, summarizeRatings } from './rating.utils';
 import { distribucion } from './feedback.utils';
+import { getDailyLimit } from './plan.limits';
 
-const PLAN_LIMITS: Record<string, number> = {
-  FREE: 5, PRO: 25, PREMIUM: 50, TRIAL: 10, TURBO: 40,
-};
+// Los límites viven en plan.limits.ts (espejo de auto-postulaciones/plan_limits.py)
 
 // Cuentas internas excluidas de métricas comerciales
 const INTERNAL_IDS = new Set([
@@ -112,6 +111,7 @@ export class AdminService {
         (pf.ID_USUARIO IS NOT NULL) AS tiene_postulafacil,
         pf.CARGOS,
         pf.UBICACIONES,
+        pf.LIMITE_DIARIO,
         COALESCE(ps.hoy, 0)      AS postulaciones_hoy,
         COALESCE(ps.total, 0)    AS total_postulaciones,
         COALESCE(ps.semana, 0)   AS postulaciones_7dias,
@@ -209,7 +209,7 @@ export class AdminService {
       postulaciones_7dias_exc: Number(r.postulaciones_7dias_exc ?? 0),
       postulaciones_7dias_gob: Number(r.postulaciones_7dias_gob ?? 0),
       postulaciones_7dias_lkd: Number(r.postulaciones_7dias_lkd ?? 0),
-      limite_dia:              Boolean(r.plan_vigente) ? (PLAN_LIMITS[r.plan] ?? PLAN_LIMITS['FREE']) : PLAN_LIMITS['FREE'],
+      limite_dia:              getDailyLimit({ plan: r.plan, plan_vigente: Boolean(r.plan_vigente), limite_diario: r.LIMITE_DIARIO }),
       ultima_conexion:         (() => { const v = loginMap.get(r.ID_USUARIO); return v?.value ?? v ?? null; })(),
     }));
   }
@@ -217,7 +217,7 @@ export class AdminService {
   async getDiagnostics(userId: string) {
     const [pfRows, planRows, portalRows, stats] = await Promise.all([
       this.bq.query<any>(`
-        SELECT CARGOS, UBICACIONES FROM ${this.bq.t('POSTULA_FACIL')}
+        SELECT CARGOS, UBICACIONES, LIMITE_DIARIO FROM ${this.bq.t('POSTULA_FACIL')}
         WHERE ID_USUARIO = @id LIMIT 1
       `, { id: userId }),
 
@@ -271,7 +271,7 @@ export class AdminService {
     const cargos     = this.parseJson(pf?.CARGOS);
     const ubicaciones = this.parseJson(pf?.UBICACIONES);
     const planStr    = plan?.PLAN || 'FREE';
-    const limite     = PLAN_LIMITS[planStr] ?? 5;
+    const limite     = getDailyLimit({ plan: planStr, plan_vigente: true, limite_diario: pf?.LIMITE_DIARIO });
     const hoy        = Number(stat?.hoy ?? 0);
     const hoyLkd     = Number(stat?.hoy_linkedin ?? 0);
     const semana     = Number(stat?.semana ?? 0);
@@ -994,6 +994,61 @@ export class AdminService {
       tipo:                 r.TIPO || '',
       fecha:                r.FECHA?.value ?? r.FECHA ?? null,
     }));
+  }
+
+  /**
+   * Ofertas que quedaron sin postular por el límite del plan, últimos 14 días.
+   * Solo aparecen los portales ya instrumentados; el resto reporta 0 perdidas.
+   */
+  async getOfertasPerdidas() {
+    const [porPlan, porCarrera, porPortal] = await Promise.all([
+      this.bq.query<any>(`
+        SELECT PLAN AS plan,
+               COUNT(DISTINCT ID_USUARIO)          AS usuarios,
+               SUM(OFERTAS_COMPATIBLES)            AS compatibles,
+               SUM(POSTULADAS)                     AS postuladas,
+               SUM(NO_POSTULADAS_LIMITE)           AS perdidas
+        FROM ${this.bq.t('METRICAS_DIARIAS')}
+        WHERE FECHA >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL 14 DAY)
+        GROUP BY 1 ORDER BY perdidas DESC
+      `).catch(() => []),
+
+      this.bq.query<any>(`
+        SELECT IFNULL(NULLIF(TRIM(pf.PROFESION), ''), '(sin profesión)') AS carrera,
+               COUNT(DISTINCT m.ID_USUARIO)  AS usuarios,
+               SUM(m.OFERTAS_COMPATIBLES)    AS compatibles,
+               SUM(m.POSTULADAS)             AS postuladas,
+               SUM(m.NO_POSTULADAS_LIMITE)   AS perdidas
+        FROM ${this.bq.t('METRICAS_DIARIAS')} m
+        LEFT JOIN ${this.bq.t('POSTULA_FACIL')} pf ON pf.ID_USUARIO = m.ID_USUARIO
+        WHERE m.FECHA >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL 14 DAY)
+        GROUP BY 1 HAVING perdidas > 0 ORDER BY perdidas DESC LIMIT 20
+      `).catch(() => []),
+
+      this.bq.query<any>(`
+        SELECT PORTAL AS portal,
+               SUM(OFERTAS_COMPATIBLES)  AS compatibles,
+               SUM(POSTULADAS)           AS postuladas,
+               SUM(NO_POSTULADAS_LIMITE) AS perdidas
+        FROM ${this.bq.t('METRICAS_DIARIAS')}
+        WHERE FECHA >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL 14 DAY)
+        GROUP BY 1 ORDER BY perdidas DESC
+      `).catch(() => []),
+    ]);
+
+    const num = (r: any) => ({
+      ...r,
+      usuarios:    Number(r.usuarios ?? 0),
+      compatibles: Number(r.compatibles ?? 0),
+      postuladas:  Number(r.postuladas ?? 0),
+      perdidas:    Number(r.perdidas ?? 0),
+    });
+
+    return {
+      por_plan:    (porPlan as any[]).map(num),
+      por_carrera: (porCarrera as any[]).map(num),
+      por_portal:  (porPortal as any[]).map(num),
+    };
   }
 
   async getFeedbackStats() {
