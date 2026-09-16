@@ -2,6 +2,7 @@ import { Injectable, BadRequestException } from '@nestjs/common';
 import { BigQueryService } from '../../shared/infrastructure/services/bigquery.service';
 import { GcsService } from '../../shared/infrastructure/services/gcs.service';
 import env from '../../shared/infrastructure/environment';
+import { isValidRating } from './rating.utils';
 
 @Injectable()
 export class ProfileService {
@@ -111,7 +112,13 @@ export class ProfileService {
       INSERT INTO ${this.bq.t('AUTOPILOT_FEEDBACK')}
         (ID_USUARIO, RATING_SERVICIO, RATING_POSTULACIONES, COMENTARIO, TIPO, FECHA)
       VALUES (@id, @rs, @rp, @comentario, @tipo, CURRENT_TIMESTAMP())
-    `, { id: userId, rs: ratingServicio || 0, rp: ratingPostulaciones || 0, comentario: comentario || '', tipo: tipo || 'desconocido' });
+    `, {
+      id: userId,
+      rs: isValidRating(ratingServicio) ? Number(ratingServicio) : null,
+      rp: isValidRating(ratingPostulaciones) ? Number(ratingPostulaciones) : null,
+      comentario: comentario || '',
+      tipo: tipo || 'desconocido',
+    }, { rs: 'INT64', rp: 'INT64' });
 
     return { success: true };
   }

@@ -2,6 +2,7 @@ import { Injectable, ForbiddenException } from '@nestjs/common';
 import { BigQueryService } from '../../shared/infrastructure/services/bigquery.service';
 import { EmailService } from '../../shared/infrastructure/services/email.service';
 import env from '../../shared/infrastructure/environment';
+import { isValidRating, summarizeRatings } from './rating.utils';
 
 const PLAN_LIMITS: Record<string, number> = {
   FREE: 5, PRO: 25, PREMIUM: 50, TRIAL: 10, TURBO: 40,
@@ -981,8 +982,8 @@ export class AdminService {
       LIMIT 20
     `, { id: userId });
     return rows.map((r: any) => ({
-      rating_servicio:      r.RATING_SERVICIO ?? null,
-      rating_postulaciones: r.RATING_POSTULACIONES ?? null,
+      rating_servicio:      isValidRating(r.RATING_SERVICIO)      ? Number(r.RATING_SERVICIO)      : null,
+      rating_postulaciones: isValidRating(r.RATING_POSTULACIONES) ? Number(r.RATING_POSTULACIONES) : null,
       comentario:           r.COMENTARIO || '',
       tipo:                 r.TIPO || '',
       fecha:                r.FECHA?.value ?? r.FECHA ?? null,
@@ -990,14 +991,10 @@ export class AdminService {
   }
 
   async getFeedbackStats() {
-    const [agg, dist, recientes] = await Promise.all([
+    const [notas, dist, recientes] = await Promise.all([
       this.bq.query<any>(`
-        SELECT
-          ROUND(AVG(RATING_SERVICIO), 2)      AS avg_servicio,
-          ROUND(AVG(RATING_POSTULACIONES), 2) AS avg_postulaciones,
-          COUNT(*)                             AS total
+        SELECT RATING_SERVICIO, RATING_POSTULACIONES
         FROM ${this.bq.t('AUTOPILOT_FEEDBACK')}
-        WHERE RATING_SERVICIO IS NOT NULL
       `),
       this.bq.query<any>(`
         SELECT
@@ -1028,7 +1025,9 @@ export class AdminService {
       `),
     ]).catch(() => [[], [], []]);
 
-    const a = agg[0] ?? {};
+    const servicio      = summarizeRatings(notas.map((r: any) => r.RATING_SERVICIO));
+    const postulaciones = summarizeRatings(notas.map((r: any) => r.RATING_POSTULACIONES));
+
     const distServicio:      Record<number, number> = {};
     const distPostulaciones: Record<number, number> = {};
     for (const r of dist) {
@@ -1037,16 +1036,18 @@ export class AdminService {
     }
 
     return {
-      avg_servicio:      Number(a.avg_servicio ?? 0),
-      avg_postulaciones: Number(a.avg_postulaciones ?? 0),
-      total:             Number(a.total ?? 0),
+      avg_servicio:                 servicio.average,
+      calificaciones_servicio:      servicio.calificaciones,
+      avg_postulaciones:            postulaciones.average,
+      calificaciones_postulaciones: postulaciones.calificaciones,
+      respuestas:                   servicio.respuestas,
       dist_servicio:      Object.entries(distServicio).map(([score, count]) => ({ score: Number(score), count })),
       dist_postulaciones: Object.entries(distPostulaciones).map(([score, count]) => ({ score: Number(score), count })),
       comentarios: recientes.map((r: any) => ({
         nombre:              r.NOMBRE || '',
         comentario:          r.COMENTARIO || '',
-        rating_servicio:     r.RATING_SERVICIO ?? null,
-        rating_postulaciones: r.RATING_POSTULACIONES ?? null,
+        rating_servicio:     isValidRating(r.RATING_SERVICIO)      ? Number(r.RATING_SERVICIO)      : null,
+        rating_postulaciones: isValidRating(r.RATING_POSTULACIONES) ? Number(r.RATING_POSTULACIONES) : null,
         tipo:                r.TIPO || '',
         fecha:               r.FECHA?.value ?? r.FECHA ?? null,
       })),

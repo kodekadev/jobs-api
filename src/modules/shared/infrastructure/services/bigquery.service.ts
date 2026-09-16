@@ -14,8 +14,14 @@ export class BigQueryService {
     this.bq = new BigQuery(opts);
   }
 
-  async query<T = any>(sql: string, params?: Record<string, any>): Promise<T[]> {
-    const [rows] = await this.bq.query({ query: sql, params });
+  async query<T = any>(
+    sql: string,
+    params?: Record<string, any>,
+    types?: Record<string, any>,
+  ): Promise<T[]> {
+    // `types` es obligatorio para parámetros que pueden venir en null:
+    // BigQuery no puede inferir el tipo de un valor nulo.
+    const [rows] = await this.bq.query({ query: sql, params, types });
     return rows as T[];
   }
 
