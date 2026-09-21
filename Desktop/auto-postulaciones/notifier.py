@@ -19,8 +19,10 @@ FROM_DOMAIN    = os.environ.get("FROM_DOMAIN", "aplicai.cl")
 APP_URL        = os.environ.get("APP_URL", "https://aplicai.cl")
 BCC_EMAIL      = os.environ.get("BCC_EMAIL", "")
 
-# Cambiar a False para notificar postulaciones de hoy (comportamiento normal)
-NOTIFICAR_AYER = False
+# El correo sale 9:00 y las postulaciones corren 00:00-07:00 mas un job a las
+# 23:00. Mirando "hoy" se perdia el 16% del dia, incluido ese job de las 23h
+# que no alcanzaba a reportarse nunca. Mirando "ayer" el dia esta cerrado.
+NOTIFICAR_AYER = True
 
 def _fecha_sql() -> str:
     """Expresión SQL de la fecha a notificar (hoy o ayer según NOTIFICAR_AYER)."""
@@ -112,6 +114,63 @@ def _send_smtp(from_addr: str, to: str, subject: str, html: str) -> bool:
         raise e
 
 
+MAX_UPSELL_SEMANA = 2   # cuantas veces por semana puede aparecer el bloque de upsell
+TIPO_UPSELL = "summary_upsell"
+
+
+def puede_mostrar_upsell(llego_al_limite: bool, enviados_semana) -> bool:
+    """
+    El bloque de upsell solo tiene sentido si el usuario de verdad topo su cupo
+    ese dia, y aun asi no mas de MAX_UPSELL_SEMANA veces por semana: antes
+    aparecia en CADA resumen, asi que un FREE que postula a diario recibia
+    siete al mes de siete dias.
+    """
+    if not llego_al_limite:
+        return False
+    try:
+        n = int(enviados_semana)
+    except (TypeError, ValueError):
+        n = 0
+    return n < MAX_UPSELL_SEMANA
+
+
+def _upsells_ultima_semana(uid: str) -> int:
+    """Cuantas veces se le mostro el upsell en los ultimos 7 dias."""
+    try:
+        import bq
+        from google.cloud import bigquery
+        cfg = bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("uid", "STRING", uid),
+            bigquery.ScalarQueryParameter("tipo", "STRING", TIPO_UPSELL),
+        ])
+        rows = list(bq._query("""
+            SELECT COUNT(*) AS n FROM `jobs-425301.DWH.CORREOS_ENVIADOS`
+            WHERE ID_USUARIO = @uid AND TIPO = @tipo
+              AND FECHA >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)
+        """, cfg).result())
+        return int(rows[0]["n"]) if rows else 0
+    except Exception as e:
+        # Ante la duda NO mostramos: preferimos un upsell de menos que spamear
+        print(f"  [notifier] no se pudo leer el historial de upsell de {uid}: {e}")
+        return MAX_UPSELL_SEMANA
+
+
+def _registrar_upsell(uid: str) -> None:
+    try:
+        import bq
+        from google.cloud import bigquery
+        cfg = bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("uid", "STRING", uid),
+            bigquery.ScalarQueryParameter("tipo", "STRING", TIPO_UPSELL),
+        ])
+        bq._query("""
+            INSERT INTO `jobs-425301.DWH.CORREOS_ENVIADOS` (ID_USUARIO, TIPO, FECHA)
+            VALUES (@uid, @tipo, CURRENT_TIMESTAMP())
+        """, cfg).result()
+    except Exception as e:
+        print(f"  [notifier] no se pudo registrar el upsell de {uid}: {e}")
+
+
 def _texto_ofertas_perdidas(perdidas) -> str:
     """
     Linea para el correo cuando quedaron ofertas sin enviar por el limite.
@@ -133,9 +192,11 @@ def _texto_ofertas_perdidas(perdidas) -> str:
     )
 
 
-def send_summary(user: dict, jobs_found: list[dict], applied: list[dict]) -> None:
+def send_summary(user: dict, jobs_found: list[dict], applied: list[dict],
+                 llego_al_limite: bool = True) -> bool:
+    """Devuelve True si el correo incluyo el bloque de upsell."""
     if not os.environ.get("RESEND_API_KEY", RESEND_API_KEY) or not user.get("EMAIL"):
-        return
+        return False
 
     nombre = user.get("NOMBRE", "")
     to     = user.get("EMAIL")
@@ -148,10 +209,14 @@ def send_summary(user: dict, jobs_found: list[dict], applied: list[dict]) -> Non
 
     total         = len(portales) + len(email_directo)
     if total == 0:
-        return
+        return False
 
     upsell_block = ""
-    if plan in ("FREE", "TRIAL", "PRO"):
+    mostro_upsell = (
+        plan in ("FREE", "TRIAL", "PRO")
+        and puede_mostrar_upsell(llego_al_limite, _upsells_ultima_semana(uid))
+    )
+    if mostro_upsell:
         planes_url  = _tracked_link(uid, "summary_planes", "/planes")
         limite_plan = {"FREE": 5, "TRIAL": 10, "PRO": 25}.get(plan, 10)
         pro_posts   = 25
@@ -206,7 +271,7 @@ def send_summary(user: dict, jobs_found: list[dict], applied: list[dict]) -> Non
 
         <div style="margin-top:24px">
           <p style="color:#555;font-size:14px;margin:0 0 16px">
-            Entrá a tu cuenta para ver el detalle completo de cada postulación.
+            Entra a tu cuenta para ver el detalle completo de cada postulación.
           </p>
           <a href="{_tracked_link(uid, 'summary_postulaciones', '/mis-postulaciones')}"
              style="background:#2A8FA5;color:white;padding:14px 36px;border-radius:8px;text-decoration:none;font-weight:700;font-size:16px;display:inline-block">
@@ -229,6 +294,12 @@ def send_summary(user: dict, jobs_found: list[dict], applied: list[dict]) -> Non
         print(f"  OK: Resumen enviado a {to} ({total} postulaciones)")
     except Exception as e:
         print(f"  ERROR: Error enviando resumen a {to}: {e}")
+        return False
+
+    # Solo se registra si el correo salio: si no, el cupo semanal no se gasta
+    if mostro_upsell:
+        _registrar_upsell(uid)
+    return mostro_upsell
 
 
 def _tabla_planes(plan_actual: str = "TRIAL") -> str:
@@ -615,7 +686,9 @@ def _run() -> None:
     hoy = date.today().strftime("%d/%m")
 
     emails_ok   = 0
-    emails_skip = 0
+    sin_posts   = 0
+    errores     = 0
+    upsells     = 0
     total_posts = 0
 
     print(f"[notifier] Enviando resúmenes — {len(all_users)} usuarios activos")
@@ -634,27 +707,39 @@ def _run() -> None:
             email_directo = _get_email_directo_hoy(uid)
             total = len(portales) + len(email_directo)
 
-            if total < limite:
-                print(f"  [{uid}] {total}/{limite} postulaciones — aún no llegó al límite, skip")
-                emails_skip += 1
+            # El resumen va a TODOS los que postularon, no solo a quienes
+            # toparon el cupo: antes el 87% de los usuarios activos no recibia
+            # nada aunque hubiesemos postulado por ellos.
+            if total == 0:
+                print(f"  [{uid}] sin postulaciones {_label_dia()} — skip")
+                sin_posts += 1
                 continue
 
+            llego_al_limite = total >= limite
+
             # Pasamos portales ya obtenidos para evitar doble consulta a BQ
-            send_summary(user, [], portales)
+            con_upsell = send_summary(user, [], portales, llego_al_limite=llego_al_limite)
             total_posts += total
             emails_ok   += 1
-            print(f"  [{uid}] Email enviado ({total}/{limite} postulaciones)")
+            if con_upsell:
+                upsells += 1
+            _tope = " · topó el límite" if llego_al_limite else ""
+            _ups  = " · con upsell" if con_upsell else ""
+            print(f"  [{uid}] Email enviado ({total}/{limite}){_tope}{_ups}")
         except Exception as e:
             print(f"  [{uid}] Error: {e}")
-            emails_skip += 1
+            errores += 1
 
-    print(f"\n[notifier] Finalizado — {emails_ok} emails enviados, {emails_skip} sin postulaciones")
+    print(f"\n[notifier] Finalizado — {emails_ok} enviados · {upsells} con upsell · "
+          f"{sin_posts} sin postulaciones · {errores} errores")
 
     msg = (
-        f"[AplicAI] Notificaciones {hoy}\n"
-        f"Emails enviados: {emails_ok}\n"
-        f"Total postulaciones notificadas: {total_posts}\n"
-        f"Usuarios sin postulaciones hoy: {emails_skip}"
+        f"[AplicAI] Resumen diario {hoy} (postulaciones de {_label_dia()})\n"
+        f"Enviados: {emails_ok}\n"
+        f"Con upsell: {upsells}\n"
+        f"Sin postulaciones: {sin_posts}\n"
+        f"Errores: {errores}\n"
+        f"Postulaciones notificadas: {total_posts}"
     )
     telegram(msg)
 

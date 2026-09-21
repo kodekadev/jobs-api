@@ -9,7 +9,39 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from notifier import _texto_ofertas_perdidas
+from notifier import (
+    _texto_ofertas_perdidas, puede_mostrar_upsell, MAX_UPSELL_SEMANA,
+)
+
+
+class TestTopeDeUpsell(unittest.TestCase):
+    def test_no_se_muestra_si_no_topo_el_limite(self):
+        # Antes aparecia en CADA resumen, dijera lo que dijera el numero
+        self.assertFalse(puede_mostrar_upsell(False, 0))
+        self.assertFalse(puede_mostrar_upsell(False, 99))
+
+    def test_se_muestra_si_topo_y_no_alcanzo_el_tope(self):
+        self.assertTrue(puede_mostrar_upsell(True, 0))
+        self.assertTrue(puede_mostrar_upsell(True, MAX_UPSELL_SEMANA - 1))
+
+    def test_no_se_muestra_al_alcanzar_el_tope(self):
+        self.assertFalse(puede_mostrar_upsell(True, MAX_UPSELL_SEMANA))
+        self.assertFalse(puede_mostrar_upsell(True, MAX_UPSELL_SEMANA + 5))
+
+    def test_el_tope_son_dos_por_semana(self):
+        self.assertEqual(MAX_UPSELL_SEMANA, 2)
+
+    def test_historial_ilegible_no_bloquea_si_es_cero(self):
+        # int() falla -> se asume 0 y se permite, el que corta es el caller
+        self.assertTrue(puede_mostrar_upsell(True, None))
+        self.assertTrue(puede_mostrar_upsell(True, "abc"))
+
+    def test_una_semana_completa_de_topes_da_solo_dos(self):
+        mostrados = 0
+        for _ in range(7):                       # siete dias seguidos topando
+            if puede_mostrar_upsell(True, mostrados):
+                mostrados += 1
+        self.assertEqual(mostrados, 2)
 
 
 class TestTextoOfertasPerdidas(unittest.TestCase):
