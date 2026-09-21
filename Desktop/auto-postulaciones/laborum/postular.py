@@ -52,6 +52,10 @@ _YA_POSTULADO_SIGNALS = [
     "ya aplicaste a esta oferta", "ya te postulaste", "ya aplicaste",
     "ya has aplicado", "ya postulaste", "ya eres postulante",
     "ya postulaste a esta", "candidato a esta oferta",
+    # Marcador real del DOM de Laborum. Se usa el aria-label completo y no la
+    # palabra "postulado" suelta, que aparece en cualquier pagina del sitio
+    # (por ejemplo dentro de "Postulacion rapida") y daria falsos positivos.
+    'aria-label="aviso postulado"',
 ]
 _ACTIVATION_SIGNALS = [
     "activa tu cuenta",
@@ -775,8 +779,15 @@ def buscar_y_postular_lab(user_id: str, user: dict, cargos: list, ubicacion: str
     modo_revision = bq.get_modo_revision(user_id)
     print(f"  [lab-post] Modo: {'REVISIÓN (guardará para aprobar)' if modo_revision else 'AUTOPILOT (postula directo)'}")
     pending_urls: set = bq.get_pending_job_urls(user_id, PORTAL_ID) if modo_revision else set()
-    if pending_urls:
-        print(f"  [lab-post] {len(pending_urls)} empleos ya en cola de revision — se saltaran")
+    cupo_revision = max_n
+    if modo_revision:
+        ya_pendientes = bq.get_pending_job_count(user_id, PORTAL_ID)
+        cupo_revision = max(0, max_n - ya_pendientes)
+        if ya_pendientes:
+            print(f"  [lab-post] {ya_pendientes} empleos ya en cola sin revisar — cupo revision: {cupo_revision}/{max_n}")
+        if cupo_revision == 0:
+            print(f"  [lab-post] Cola llena ({ya_pendientes} pendientes) — el usuario debe revisar antes de agregar mas")
+            return 0
 
     ok_count = 0
 
@@ -822,6 +833,13 @@ def buscar_y_postular_lab(user_id: str, user: dict, cargos: list, ubicacion: str
                     if not eid or eid in vistos or eid in ya_postulados:
                         continue
                     vistos.add(eid)
+                    # El propio listado marca los avisos ya postulados. Abrirlos solo
+                    # gasta una navegacion y termina en "sin_boton", porque cuando ya
+                    # postulaste el boton no existe.
+                    if emp.get("ya_postulado"):
+                        ya_postulados.add(eid)
+                        print(f"    ~ [lab] ya postulado (listado): '{emp.get('titulo','')[:45]}'")
+                        continue
                     aplica, motivo = job_aplica_al_usuario(emp.get("titulo", ""), emp.get("empresa", ""), user)
                     if aplica:
                         empleos_filtrados.append(emp)
@@ -835,9 +853,10 @@ def buscar_y_postular_lab(user_id: str, user: dict, cargos: list, ubicacion: str
             # Modo revisión: guardar todos como pendientes y salir
             if modo_revision:
                 nuevos = [e for e in empleos_filtrados if e.get("link") not in pending_urls]
+                nuevos = nuevos[:cupo_revision]  # respetar cupo diario
                 omitidos = len(empleos_filtrados) - len(nuevos)
                 if omitidos:
-                    print(f"  [lab-post] {omitidos} ya en cola de revision — omitidos")
+                    print(f"  [lab-post] {omitidos} ya en cola o cupo alcanzado — omitidos")
                 saved = bq.save_pending_jobs(user_id, PORTAL_ID, nuevos)
                 print(f"  [lab-post] {saved} empleos guardados para revision:")
                 for pj in nuevos:
