@@ -139,7 +139,7 @@ export class AdminService {
           WHEN (pl.PLAN = 'TRIAL' OR pl.ESTADO = 'TRIAL')
             AND (
               (pl.FECHA_FIN IS NOT NULL AND DATE(pl.FECHA_FIN) >= CURRENT_DATE())
-              OR (pl.FECHA_FIN IS NULL AND DATE(pl.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
+              OR (pl.FECHA_FIN IS NULL AND DATE(pl.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY))
             ) THEN TRUE
           WHEN pl.PLAN NOT IN ('FREE', 'TRIAL') AND pl.ESTADO != 'TRIAL' AND (
             (pl.FECHA_FIN IS NOT NULL AND DATE(pl.FECHA_FIN) >= CURRENT_DATE())
@@ -228,7 +228,7 @@ export class AdminService {
             WHEN PLAN = 'TRIAL'
               AND (
                 (FECHA_FIN IS NOT NULL AND DATE(FECHA_FIN) >= CURRENT_DATE())
-                OR (FECHA_FIN IS NULL AND DATE(FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
+                OR (FECHA_FIN IS NULL AND DATE(FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY))
               ) THEN TRUE
             WHEN PLAN NOT IN ('FREE', 'TRIAL') AND (
               (FECHA_FIN IS NOT NULL AND DATE(FECHA_FIN) >= CURRENT_DATE())
@@ -726,7 +726,7 @@ export class AdminService {
           WHEN (pl.PLAN = 'TRIAL' OR pl.ESTADO = 'TRIAL')
             AND (
               (pl.FECHA_FIN IS NOT NULL AND DATE(pl.FECHA_FIN) >= CURRENT_DATE())
-              OR (pl.FECHA_FIN IS NULL AND DATE(pl.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
+              OR (pl.FECHA_FIN IS NULL AND DATE(pl.FECHA_INICIO) >= DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY))
             ) THEN TRUE
           WHEN pl.PLAN NOT IN ('FREE', 'TRIAL') AND pl.ESTADO != 'TRIAL' AND (
             (pl.FECHA_FIN IS NOT NULL AND DATE(pl.FECHA_FIN) >= CURRENT_DATE())
