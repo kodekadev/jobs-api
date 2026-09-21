@@ -66,15 +66,29 @@ _ACTIVATION_SIGNALS = [
 ]
 
 
+# Marcadores verificados comparando la misma pagina con y sin cookies.
+# Los anteriores ("cerrar sesión", "mi cuenta", "mis postulaciones", ...) ya no
+# existen en el sitio, asi que _esta_logueado devolvia False SIEMPRE y cada
+# usuario terminaba haciendo un login con OTP completo aunque su sesion
+# estuviera perfecta.
+_LOGUEADO_SIGNALS = [
+    "icon-light-notification",   # campana de notificaciones del header
+    "notificaciones",
+    "mi cv",
+]
+# Solo se renderizan cuando NO hay sesion; sirven como confirmacion negativa.
+_DESLOGUEADO_SIGNALS = ["ingresar", "crear cuenta"]
+
+
 def _esta_logueado(page) -> bool:
-    cur     = page.url.lower()
-    content = page.content().lower()
+    cur = page.url.lower()
     if any(s in cur for s in ("login", "signin", "/acceso")):
         return False
-    return any(s in content for s in [
-        "cerrar sesión", "mi cuenta", "salir", "logout",
-        "mis postulaciones", "editar perfil",
-    ])
+
+    content = page.content().lower()
+    if any(s in content for s in _DESLOGUEADO_SIGNALS):
+        return False
+    return any(s in content for s in _LOGUEADO_SIGNALS)
 
 
 def _type_react(page, selector: str, value: str, timeout: int = 5000):
@@ -803,7 +817,9 @@ def buscar_y_postular_lab(user_id: str, user: dict, cargos: list, ubicacion: str
                 print(f"  [lab-post] {len(cookies)} cookies inyectadas")
 
             # Verificar sesión con cookies
-            page.goto(f"{BASE_URL}/mi-cuenta", wait_until="domcontentloaded", timeout=30000)
+            # /mi-cuenta devuelve 404 desde hace tiempo; la home si existe y muestra
+            # los marcadores de sesion.
+            page.goto(f"{BASE_URL}/", wait_until="domcontentloaded", timeout=30000)
             page.wait_for_timeout(2000)
 
             if not _esta_logueado(page):
@@ -960,7 +976,9 @@ def postular_empleos_lab(user_id: str, user: dict, empleos: list, max_n: int = 1
                 print(f"  [lab-post] {len(cookies)} cookies inyectadas")
 
             # Verificar sesión
-            page.goto(f"{BASE_URL}/mi-cuenta", wait_until="domcontentloaded", timeout=30000)
+            # /mi-cuenta devuelve 404 desde hace tiempo; la home si existe y muestra
+            # los marcadores de sesion.
+            page.goto(f"{BASE_URL}/", wait_until="domcontentloaded", timeout=30000)
             page.wait_for_timeout(2000)
 
             if not _esta_logueado(page):
