@@ -1051,6 +1051,68 @@ export class AdminService {
     };
   }
 
+  /**
+   * Preguntas de formulario y lo que respondió AplicAI.
+   * `userId` acota a un usuario — es lo que va a usar "Mis Postulaciones".
+   */
+  async getRespuestasFormulario(userId?: string) {
+    const filtroUsuario = userId ? 'AND ID_USUARIO = @uid' : '';
+    const params = userId ? { uid: userId } : {};
+
+    const [porOrigen, frecuentes, recientes] = await Promise.all([
+      // Calidad: cuántas salen del perfil, cuántas del LLM y cuántas de relleno
+      this.bq.query<any>(`
+        SELECT ORIGEN AS origen, PORTAL AS portal, COUNT(*) AS n
+        FROM ${this.bq.t('RESPUESTAS_FORMULARIO')}
+        WHERE FECHA >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY) ${filtroUsuario}
+        GROUP BY 1, 2 ORDER BY n DESC
+      `, params).catch(() => []),
+
+      // Las preguntas que más aparecen: sirven para armar respuestas fijas
+      this.bq.query<any>(`
+        SELECT PREGUNTA AS pregunta,
+               COUNT(*)                      AS veces,
+               COUNT(DISTINCT ID_USUARIO)    AS usuarios,
+               COUNTIF(ORIGEN = 'fallback')  AS sin_responder
+        FROM ${this.bq.t('RESPUESTAS_FORMULARIO')}
+        WHERE FECHA >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY) ${filtroUsuario}
+        GROUP BY 1 ORDER BY veces DESC LIMIT 25
+      `, params).catch(() => []),
+
+      this.bq.query<any>(`
+        SELECT rf.FECHA, rf.ID_USUARIO, rf.PORTAL, rf.TITULO_EMPLEO,
+               rf.PREGUNTA, rf.RESPUESTA, rf.ORIGEN, rf.ID_EMPLEO, u.NOMBRE
+        FROM ${this.bq.t('RESPUESTAS_FORMULARIO')} rf
+        LEFT JOIN ${this.bq.t('USUARIOS')} u ON u.ID_USUARIO = rf.ID_USUARIO
+        WHERE TRUE ${filtroUsuario.replace('ID_USUARIO', 'rf.ID_USUARIO')}
+        ORDER BY rf.FECHA DESC LIMIT 120
+      `, params).catch(() => []),
+    ]);
+
+    return {
+      por_origen: (porOrigen as any[]).map((r) => ({
+        origen: r.origen, portal: r.portal, n: Number(r.n ?? 0),
+      })),
+      frecuentes: (frecuentes as any[]).map((r) => ({
+        pregunta: r.pregunta,
+        veces: Number(r.veces ?? 0),
+        usuarios: Number(r.usuarios ?? 0),
+        sin_responder: Number(r.sin_responder ?? 0),
+      })),
+      recientes: (recientes as any[]).map((r) => ({
+        fecha:     r.FECHA?.value ?? r.FECHA ?? null,
+        id_usuario: r.ID_USUARIO,
+        nombre:    r.NOMBRE || r.ID_USUARIO,
+        portal:    r.PORTAL || '',
+        titulo:    r.TITULO_EMPLEO || '',
+        pregunta:  r.PREGUNTA || '',
+        respuesta: r.RESPUESTA || '',
+        origen:    r.ORIGEN || '',
+        link:      r.ID_EMPLEO || '',
+      })),
+    };
+  }
+
   async getFeedbackStats() {
     const [notas, dist, recientes] = await Promise.all([
       this.bq.query<any>(`

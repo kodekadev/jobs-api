@@ -58,6 +58,12 @@ export class AdminController {
     return this.service.getUserFeedback(userId);
   }
 
+  @Get('respuestas-formulario')
+  respuestasFormulario(@Request() req: any, @Query('userId') userId?: string) {
+    this.service.checkAdmin(req.user.email);
+    return this.service.getRespuestasFormulario(userId);
+  }
+
   @Get('ofertas-perdidas')
   ofertasPerdidas(@Request() req: any) {
     this.service.checkAdmin(req.user.email);
