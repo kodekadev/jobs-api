@@ -147,7 +147,8 @@ _SET_VALUE_JS = """(el, v) => {
 }"""
 
 
-def _responder_preguntas_cht_pw(page, user: dict, job_title: str = "") -> None:
+def _responder_preguntas_cht_pw(page, user: dict, job_title: str = "",
+                                job_link: str = "") -> None:
     """Responde formulario de preguntas de postulación en ChileTrabajos."""
     _EXCL = {"hidden", "radio", "checkbox", "submit", "button", "file", "image", "reset"}
 
@@ -256,6 +257,21 @@ def _responder_preguntas_cht_pw(page, user: dict, job_title: str = "") -> None:
             pass
 
     print(f"    [cht] Preguntas: {len(grupos)} radios, {len(pending)} inputs")
+
+    # Registrar que se pregunto y que se respondio
+    try:
+        from respuestas_formulario import guardar_desde
+        guardar_desde(
+            id_usuario=user.get("ID_USUARIO") or user.get("id") or "",
+            portal=PORTAL_ID,
+            id_empleo=job_link,
+            titulo_empleo=job_title,
+            pending=pending,
+            answers=answers,
+            fallback_fn=_fallback,
+        )
+    except Exception as _qe:
+        print(f"    [qa] {_qe}")
 
 
 _DESC_END_MARKERS = [
@@ -489,7 +505,8 @@ def _postular_empleo_pw(page, job_url: str, user: dict, titulo: str) -> "dict | 
         if form_loc.count() > 0:
             try:
                 if form_loc.first.is_visible():
-                    _responder_preguntas_cht_pw(page, user, job_title=titulo)
+                    _responder_preguntas_cht_pw(page, user, job_title=titulo,
+                                                job_link=job_url)
                     page.wait_for_timeout(1500)
             except Exception:
                 pass

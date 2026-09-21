@@ -201,7 +201,8 @@ _SET_VALUE_JS = """(el, v) => {
 _NUMERIC_KWS = {"PRETENSION", "SUELDO", "RENTA", "SALARIO", "AÑOS DE EXP", "ANOS DE EXP", "EXPERIENCIA"}
 
 
-def _responder_preguntas(page, user: dict, job_title: str = "") -> None:
+def _responder_preguntas(page, user: dict, job_title: str = "",
+                         job_link: str = "") -> None:
     """Responde formulario de preguntas de postulación."""
     _EXCL = {"hidden", "radio", "checkbox", "submit", "button", "file"}
 
@@ -298,6 +299,20 @@ def _responder_preguntas(page, user: dict, job_title: str = "") -> None:
             pass
 
     print(f"    [exc] Preguntas: {len(grupos)} radios, {len(pending)} inputs")
+
+    try:
+        from respuestas_formulario import guardar_desde
+        guardar_desde(
+            id_usuario=user.get("ID_USUARIO") or user.get("id") or "",
+            portal=PORTAL_ID,
+            id_empleo=job_link,
+            titulo_empleo=job_title,
+            pending=pending,
+            answers=answers,
+            fallback_fn=_fallback,
+        )
+    except Exception as _qe:
+        print(f"    [qa] {_qe}")
 
 
 # ── Postulación individual ────────────────────────────────────────────────────
@@ -424,7 +439,8 @@ def _postular_empleo(page, job_url: str, user: dict, titulo: str) -> "dict | boo
         if form_loc.count() > 0:
             try:
                 if form_loc.first.is_visible():
-                    _responder_preguntas(page, user, job_title=titulo)
+                    _responder_preguntas(page, user, job_title=titulo,
+                                         job_link=job_url)
                     page.wait_for_timeout(1500)
             except Exception:
                 pass
@@ -612,8 +628,15 @@ def postular_empleos_exc(user_id: str, user: dict, max_count: int = 999) -> int:
         modo_revision = bq.get_modo_revision(user_id)
         print(f"[exc] Modo: {'REVISIÓN (guardará para aprobar)' if modo_revision else 'AUTOPILOT (postula directo)'}")
         pending_urls: set = bq.get_pending_job_urls(user_id, PORTAL_ID) if modo_revision else set()
-        if pending_urls:
-            print(f"[exc] {len(pending_urls)} empleos ya en cola de revision — se saltaran")
+        cupo_revision = max_count
+        if modo_revision:
+            ya_pendientes = bq.get_pending_job_count(user_id, PORTAL_ID)
+            cupo_revision = max(0, max_count - ya_pendientes)
+            if ya_pendientes:
+                print(f"[exc] {ya_pendientes} empleos ya en cola sin revisar — cupo revision: {cupo_revision}/{max_count}")
+            if cupo_revision == 0:
+                print(f"[exc] Cola llena ({ya_pendientes} pendientes) — el usuario debe revisar antes de agregar mas")
+                return 0
 
         # Ciudades del usuario normalizadas
         user_cities_norm = set()
@@ -695,6 +718,8 @@ def postular_empleos_exc(user_id: str, user: dict, max_count: int = 999) -> int:
                         if job["link"] in pending_urls:
                             print(f"[exc] {j+1}/{len(jobs)} Ya en cola — skip: '{titulo[:40]}'")
                             continue
+                        if len(pending_jobs) >= cupo_revision:
+                            continue  # cupo de revision alcanzado
                         pending_jobs.append({"titulo": titulo, "link": job["link"], "empresa": ""})
                         print(f"[exc] {j+1}/{len(jobs)} PENDIENTE revision: '{titulo[:40]}'")
                         continue

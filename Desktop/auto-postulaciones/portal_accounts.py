@@ -4568,6 +4568,21 @@ def apply_trabajando_playwright(page, job_url: str, user: dict = {}, resumen: st
                     if preguntas[idx].get("label") and answers.get(idx, ("", ""))[0]
                 ]
 
+                # Persistir aca mismo: el retorno con "qa" existe desde siempre,
+                # pero el camino de produccion nunca lo leyo y se perdia.
+                try:
+                    from respuestas_formulario import guardar_desde
+                    guardar_desde(
+                        id_usuario=user.get("ID_USUARIO") or user.get("id") or "",
+                        portal="trabajando",
+                        id_empleo=job_url,
+                        titulo_empleo=job_title,
+                        pending=preguntas,
+                        answers=answers,
+                    )
+                except Exception as _qe:
+                    print(f"    [qa] {_qe}")
+
                 # Click al botón via JS (mismo enfoque que 'Comenzar' — bypasa boton-deshabilitado)
                 try:
                     btn_txt = page.evaluate("""

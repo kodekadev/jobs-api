@@ -483,7 +483,8 @@ def _extraer_descripcion_cpt(page) -> str:
     return (raw or "").strip()
 
 
-def _responder_killer_questions(page, user: dict, job_title: str, cv_text: str) -> bool:
+def _responder_killer_questions(page, user: dict, job_title: str, cv_text: str,
+                                job_link: str = "") -> bool:
     """
     Detecta y responde las Killer Questions de Computrabajo.
     Maneja textareas (OpenQuestion), radios y selects.
@@ -590,6 +591,7 @@ def _responder_killer_questions(page, user: dict, job_title: str, cv_text: str) 
 
     # Resolver cada pregunta
     answers: dict[int, str] = {}
+    origenes: dict[int, str] = {}   # de donde salio cada respuesta
     unresolved_idx: list[int] = []
     llm_items: list[dict] = []
 
@@ -598,6 +600,7 @@ def _responder_killer_questions(page, user: dict, job_title: str, cv_text: str) 
         std = _standard_answer(item, user)
         if std:
             answers[i] = std
+            origenes[i] = "perfil"
         else:
             unresolved_idx.append(i)
             llm_items.append({"label": q["label"], "type": q["kind"],
@@ -610,6 +613,7 @@ def _responder_killer_questions(page, user: dict, job_title: str, cv_text: str) 
             ans = llm_ans.get(str(llm_i), "")
             if ans:
                 answers[orig_i] = ans
+                origenes[orig_i] = "llm"
 
     # Aplicar respuestas al DOM
     for i, q in enumerate(all_questions):
@@ -692,6 +696,20 @@ def _responder_killer_questions(page, user: dict, job_title: str, cv_text: str) 
         print(f"    [cpt] {q['kind']} '{q['label'][:45]}' → '{ans_text[:40]}'")
 
     page.wait_for_timeout(500)
+
+    try:
+        from respuestas_formulario import guardar_desde
+        guardar_desde(
+            id_usuario=user.get("ID_USUARIO") or user.get("id") or "",
+            portal=PORTAL_ID,
+            id_empleo=job_link,
+            titulo_empleo=job_title,
+            pending=[{"label": q["label"]} for q in all_questions],
+            answers={i: (a, origenes.get(i, "fallback"))
+                     for i, a in answers.items()},
+        )
+    except Exception as _qe:
+        print(f"    [qa] {_qe}")
 
     # Submit
     submitted = page.evaluate("""
@@ -783,7 +801,8 @@ def _postular_uno(page, empleo: dict, user: dict, cv_text: str = "", skip_llm: b
         return False, "ya_postulado_previamente"
 
     # Responder killer questions si aparecen
-    _responder_killer_questions(page, user, job_title=titulo, cv_text=cv_text)
+    _responder_killer_questions(page, user, job_title=titulo, cv_text=cv_text,
+                                job_link=empleo.get("link") or empleo.get("id") or "")
     page.wait_for_timeout(2000)
 
     # Verificar éxito
@@ -856,8 +875,15 @@ def postular_empleos_cpt(user_id: str, user: dict, max_n: int = 10) -> int:
     modo_revision = bq.get_modo_revision(user_id)
     print(f"  [cpt-post] Modo: {'REVISIÓN (guardará para aprobar)' if modo_revision else 'AUTOPILOT (postula directo)'}")
     pending_urls: set = bq.get_pending_job_urls(user_id, PORTAL_ID) if modo_revision else set()
-    if pending_urls:
-        print(f"  [cpt-post] {len(pending_urls)} empleos ya en cola de revision — se saltaran")
+    cupo_revision = max_n
+    if modo_revision:
+        ya_pendientes = bq.get_pending_job_count(user_id, PORTAL_ID)
+        cupo_revision = max(0, max_n - ya_pendientes)
+        if ya_pendientes:
+            print(f"  [cpt-post] {ya_pendientes} empleos ya en cola sin revisar — cupo revision: {cupo_revision}/{max_n}")
+        if cupo_revision == 0:
+            print(f"  [cpt-post] Cola llena ({ya_pendientes} pendientes) — el usuario debe revisar antes de agregar mas")
+            return 0
 
     ok_count = 0
 
@@ -927,9 +953,11 @@ def postular_empleos_cpt(user_id: str, user: dict, max_n: int = 10) -> int:
                             print(f"    [cpt] Ya en cola — skip: {emp.get('titulo','')[:50]}")
                             ya_postulados.add(url)
                             continue
+                        if len(pending_jobs) >= cupo_revision:
+                            continue  # cupo de revision alcanzado
                         pending_jobs.append(emp)
                         ya_postulados.add(url)
-                        print(f"    📋 [cpt] pendiente revisión: {emp.get('titulo','')[:50]}")
+                        print(f"    [cpt] pendiente revision: {emp.get('titulo','')[:50]}")
                         continue
 
                     ok, motivo = _postular_uno(page, emp, user, cv_text=cv_text, skip_llm=(gate == "aprobar"))
