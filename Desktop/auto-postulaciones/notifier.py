@@ -112,6 +112,27 @@ def _send_smtp(from_addr: str, to: str, subject: str, html: str) -> bool:
         raise e
 
 
+def _texto_ofertas_perdidas(perdidas) -> str:
+    """
+    Linea para el correo cuando quedaron ofertas sin enviar por el limite.
+    Devuelve "" si no hubo perdidas o si el dato no existe: preferimos no decir
+    nada antes que afirmar un numero que no medimos.
+    """
+    try:
+        n = int(perdidas)
+    except (TypeError, ValueError):
+        return ""
+    if n <= 0:
+        return ""
+
+    plural = "ofertas más que no alcanzamos" if n > 1 else "oferta más que no alcanzamos"
+    return (
+        '<p style="font-size:14px;color:#B4741B;margin:0 0 14px;font-weight:600">'
+        f'Encontramos <strong>{n}</strong> {plural} a enviar.'
+        '</p>'
+    )
+
+
 def send_summary(user: dict, jobs_found: list[dict], applied: list[dict]) -> None:
     if not os.environ.get("RESEND_API_KEY", RESEND_API_KEY) or not user.get("EMAIL"):
         return
@@ -139,11 +160,20 @@ def send_summary(user: dict, jobs_found: list[dict], applied: list[dict]) -> Non
             ganancia = f"Con <strong>PREMIUM</strong> habrías enviado <strong>{prem_posts}</strong>."
         else:
             ganancia = f"Con <strong>PRO</strong> habrías enviado <strong>{pro_posts}</strong>, con <strong>PREMIUM</strong> hasta <strong>{prem_posts}</strong>."
+        # Ofertas que quedaron fuera por el tope del plan (METRICAS_DIARIAS)
+        _perdidas_html = ""
+        try:
+            from metricas_diarias import resumen_hoy
+            _perdidas_html = _texto_ofertas_perdidas(resumen_hoy(uid).get("perdidas"))
+        except Exception as _me:
+            print(f"  [notifier] sin metricas de ofertas perdidas para {uid}: {_me}")
+
         upsell_block = f"""
         <div style="margin-top:28px;border-top:1px solid #E2E8F0;padding-top:24px;text-align:left">
           <p style="font-size:15px;color:#1E6E82;font-weight:700;margin:0 0 6px">
             Llegaste al límite de {limite_plan} postulaciones de hoy.
           </p>
+          {_perdidas_html}
           <p style="font-size:14px;color:#374151;margin:0 0 14px">
             {ganancia}
           </p>
