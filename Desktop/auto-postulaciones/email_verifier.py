@@ -119,8 +119,15 @@ def esperar_verificacion(
         return None
 
     # Filtrar por destinatario directamente — el header To se preserva con la dirección
-    # original @tektia.cl aunque Cloudflare reenvíe a Gmail
-    query = f"newer_than:2h {email_usuario}"
+    # original @tektia.cl aunque Cloudflare reenvíe a Gmail.
+    #
+    # La ventana de la query se ajusta a la de aceptación (freshness_minutes): antes
+    # pedía 2h siempre, así que traía hasta 20 correos viejos que jamás podían
+    # calificar, gastaba una llamada a la API por cada uno y encima los marcaba como
+    # leídos. En buzones con muchas notificaciones del portal, esos 20 resultados
+    # podían dejar fuera al correo del código.
+    _ventana = "1h" if not freshness_minutes or freshness_minutes <= 60 else "2h"
+    query = f"newer_than:{_ventana} {email_usuario}"
     print(f"  [gmail] Query: {query}")
 
     _img_exts = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico")

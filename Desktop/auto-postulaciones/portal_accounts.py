@@ -4711,13 +4711,44 @@ def _jau_normalize(text: str) -> str:
     return " ".join(text.lower().split())
 
 def _jau_gender_variants(w: str) -> list:
-    """Para palabras largas, prueba la variante de género opuesto (o↔a)."""
-    if len(w) >= 7:
-        if w.endswith('a') and not w.endswith('ista') and not w.endswith('enta'):
-            return [w, w[:-1] + 'o']
-        if w.endswith('o'):
-            return [w, w[:-1] + 'a']
-    return [w]
+    """
+    Variantes de una misma palabra: género (o↔a) y número (plural→singular).
+
+    El matcher compara por substring, y esa comparación es asimétrica:
+    'proyecto' sí calza dentro de 'proyectos', pero 'proyectos' no calza
+    dentro de 'proyecto'. Por eso un cargo con sustantivo plural ('Jefe de
+    proyectos') descartaba títulos en singular ('Líder Técnico de Proyecto')
+    con score 0. Basta con agregar la forma singular.
+    """
+    variantes = [w]
+
+    def _genero(p: str) -> "str | None":
+        if len(p) < 7:
+            return None
+        if p.endswith('a') and not p.endswith('ista') and not p.endswith('enta'):
+            return p[:-1] + 'o'
+        if p.endswith('o'):
+            return p[:-1] + 'a'
+        return None
+
+    g = _genero(w)
+    if g:
+        variantes.append(g)
+
+    # Plural → singular: 'operaciones'→'operacion', 'proyectos'→'proyecto'
+    base = None
+    if w.endswith('es') and len(w) >= 7:
+        base = w[:-2]
+    elif w.endswith('s') and len(w) >= 5:
+        base = w[:-1]
+
+    if base and len(base) >= 4:
+        variantes.append(base)
+        gb = _genero(base)
+        if gb:
+            variantes.append(gb)
+
+    return list(dict.fromkeys(variantes))
 
 _JAU_STOPWORDS = {"de", "del", "la", "el", "los", "las", "para", "con", "por", "y", "o", "en"}
 
