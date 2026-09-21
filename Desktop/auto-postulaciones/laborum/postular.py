@@ -900,8 +900,25 @@ def buscar_y_postular_lab(user_id: str, user: dict, cargos: list, ubicacion: str
                 ok, motivo = _postular_uno(page, emp, salario, user=user, cv_text=cv_text, email=email)
 
                 if motivo == "ya_postulado_previamente":
+                    # Si no se registra, cada corrida revisita el aviso y el usuario
+                    # nunca lo ve en Mis Postulaciones. Marcado para no consumir cupo:
+                    # no la hicimos hoy, la descubrimos hoy.
+                    try:
+                        bq.save_jobs([{
+                            "id_empleo":         url,
+                            "id_usuario":        user_id,
+                            "titulo_empleo":     emp.get("titulo", ""),
+                            "cargo":             emp.get("cargo", ""),
+                            "Fecha_Postulacion": datetime.datetime.utcnow().isoformat(),
+                            "empresa":           emp.get("empresa", ""),
+                            "descripcion":       bq.MARCA_RECONCILIADO + (emp.get("descripcion") or ""),
+                            "link":              url,
+                            "portal":            PORTAL_ID,
+                        }])
+                        print(f"    ~ [lab] ya postulado antes — registrado: {emp.get('titulo','')[:45]}")
+                    except Exception as _re:
+                        print(f"    ~ [lab] ya postulado antes (no se pudo registrar: {_re})")
                     ya_postulados.add(url)
-                    print(f"    ~ [lab] ya postulado antes: {emp.get('titulo','')[:50]}")
                 else:
                     if ok:
                         bq.save_jobs([{
@@ -1001,8 +1018,25 @@ def postular_empleos_lab(user_id: str, user: dict, empleos: list, max_n: int = 1
                 ok, motivo = _postular_uno(page, emp, salario, email=email)
 
                 if motivo == "ya_postulado_previamente":
+                    # Si no se registra, cada corrida revisita el aviso y el usuario
+                    # nunca lo ve en Mis Postulaciones. Marcado para no consumir cupo:
+                    # no la hicimos hoy, la descubrimos hoy.
+                    try:
+                        bq.save_jobs([{
+                            "id_empleo":         url,
+                            "id_usuario":        user_id,
+                            "titulo_empleo":     emp.get("titulo", ""),
+                            "cargo":             emp.get("cargo", ""),
+                            "Fecha_Postulacion": datetime.datetime.utcnow().isoformat(),
+                            "empresa":           emp.get("empresa", ""),
+                            "descripcion":       bq.MARCA_RECONCILIADO + (emp.get("descripcion") or ""),
+                            "link":              url,
+                            "portal":            PORTAL_ID,
+                        }])
+                        print(f"    ~ [lab] ya postulado antes — registrado: {emp.get('titulo','')[:45]}")
+                    except Exception as _re:
+                        print(f"    ~ [lab] ya postulado antes (no se pudo registrar: {_re})")
                     ya_postulados.add(url)
-                    print(f"    ~ [lab] ya postulado antes: {emp.get('titulo','')[:50]}")
                 else:
                     if ok:
                         bq.save_jobs([{

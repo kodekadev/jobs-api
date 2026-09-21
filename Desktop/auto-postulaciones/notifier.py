@@ -82,6 +82,9 @@ def _get_portales_hoy(uid: str) -> list[dict]:
               AND DATE(Fecha_Postulacion, 'America/Santiago') = {_fecha_sql()}
               AND portal NOT IN ('email_directo', 'linkedin')
               AND (Descripcion IS NULL OR NOT STARTS_WITH(COALESCE(Descripcion, ''), '[email_directo]'))
+              -- Las reconciliadas son postulaciones viejas que recien descubrimos:
+              -- no se anuncian como hechas ayer.
+              AND NOT STARTS_WITH(COALESCE(Descripcion, ''), '[reconciliado]')
         """
         cfg  = QueryJobConfig(query_parameters=[ScalarQueryParameter("uid", "STRING", uid)])
         rows = bq.client.query(query, job_config=cfg).result()

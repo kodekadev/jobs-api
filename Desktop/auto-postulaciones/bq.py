@@ -697,6 +697,12 @@ def guardar_optimizacion(user_id: str, tipo: str = "respuesta_formulario",
         print(f"  [bq] CV_OPTIMIZACIONES insert error: {errors}")
 
 
+# Marcador de postulaciones que el portal ya tenía registradas y nosotros no.
+# Se guardan para que el usuario las vea y para no revisitarlas, pero NO
+# consumen cupo: no las hicimos hoy, solo las descubrimos hoy.
+MARCA_RECONCILIADO = "[reconciliado]"
+
+
 def get_postulaciones_hoy(user_id: str) -> int:
     """Cuántas postulaciones hizo este usuario hoy (hora Chile, portales, no email directo)."""
     query = f"""
@@ -705,6 +711,7 @@ def get_postulaciones_hoy(user_id: str) -> int:
         WHERE id_usuario = @uid
           AND DATE(Fecha_Postulacion, 'America/Santiago') = CURRENT_DATE('America/Santiago')
           AND portal NOT IN ('email_directo', '')
+          AND NOT STARTS_WITH(COALESCE(Descripcion, ''), '{MARCA_RECONCILIADO}')
     """
     cfg = bigquery.QueryJobConfig(query_parameters=[
         bigquery.ScalarQueryParameter("uid", "STRING", user_id),

@@ -978,8 +978,26 @@ def postular_empleos_cpt(user_id: str, user: dict, max_n: int = 10) -> int:
                         ya_postulados.add(url)
                         print(f"    ✓ [cpt] postulado: {emp.get('titulo','')[:50]}")
                     elif motivo == "ya_postulado_previamente":
+                        # El portal dice que ya postulamos pero no estaba en BQ. Sin
+                        # guardarlo, cada corrida vuelve a visitar el aviso y el
+                        # usuario nunca lo ve en Mis Postulaciones. Va marcado para
+                        # que no consuma cupo: no la hicimos hoy, la descubrimos hoy.
+                        try:
+                            bq.save_jobs([{
+                                "id_empleo":         url,
+                                "id_usuario":        user_id,
+                                "titulo_empleo":     emp.get("titulo", ""),
+                                "cargo":             emp.get("cargo", cargo),
+                                "Fecha_Postulacion": datetime.datetime.utcnow().isoformat(),
+                                "empresa":           emp.get("empresa", ""),
+                                "descripcion":       bq.MARCA_RECONCILIADO + (emp.get("descripcion") or ""),
+                                "link":              url,
+                                "portal":            PORTAL_ID,
+                            }])
+                            print(f"    ~ [cpt] ya postulado antes — registrado: {emp.get('titulo','')[:45]}")
+                        except Exception as _re:
+                            print(f"    ~ [cpt] ya postulado antes (no se pudo registrar: {_re})")
                         ya_postulados.add(url)  # evitar re-check en esta sesión
-                        print(f"    ~ [cpt] ya postulado antes: {emp.get('titulo','')[:50]}")
                     elif motivo.startswith("llm_descarte"):
                         pass  # ya logueado dentro de _postular_uno
                     else:
