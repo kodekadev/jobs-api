@@ -155,7 +155,7 @@ def get_active_users() -> list[dict]:
                 AND (
                   (pc_fecha_fin IS NOT NULL AND DATE(pc_fecha_fin) >= CURRENT_DATE())
                   OR (pc_fecha_fin IS NULL
-                      AND DATE(pc_fecha_inicio) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
+                      AND DATE(pc_fecha_inicio) >= DATE_SUB(CURRENT_DATE(), INTERVAL 14 DAY))
                 )
                 THEN 'TRIAL'
               WHEN pc_plan NOT IN ('FREE', 'TRIAL') AND pc_estado != 'TRIAL' AND (
@@ -268,7 +268,9 @@ def get_pending_job_urls(user_id: str, portal: str | None = None) -> set:
           {portal_filter}
           AND (
             (estado IN ('pendiente', 'aprobado', 'postulado') AND fecha_expira > CURRENT_TIMESTAMP())
-            OR estado = 'rechazado'
+            OR estado IN ('rechazado', 'expirado')
+            OR (estado = 'pendiente' AND fecha_expira <= CURRENT_TIMESTAMP()
+                AND fecha_encontrado > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY))
           )
     """
     params = [bigquery.ScalarQueryParameter("uid", "STRING", user_id)]
@@ -279,6 +281,28 @@ def get_pending_job_urls(user_id: str, portal: str | None = None) -> set:
         return {r.url for r in _query(query, cfg).result()}
     except Exception:
         return set()
+
+
+def get_pending_job_count(user_id: str, portal: str | None = None) -> int:
+    """Cantidad de empleos activos en estado='pendiente' (aún dentro del plazo de revisión)."""
+    portal_filter = "AND portal = @portal" if portal else ""
+    query = f"""
+        SELECT COUNT(*) AS cnt
+        FROM `{PROJECT}.{DATASET}.EMPLEOS_PENDIENTES`
+        WHERE id_usuario = @uid
+          {portal_filter}
+          AND estado = 'pendiente'
+          AND fecha_expira > CURRENT_TIMESTAMP()
+    """
+    params = [bigquery.ScalarQueryParameter("uid", "STRING", user_id)]
+    if portal:
+        params.append(bigquery.ScalarQueryParameter("portal", "STRING", portal))
+    cfg = bigquery.QueryJobConfig(query_parameters=params)
+    try:
+        rows = list(_query(query, cfg).result())
+        return int(rows[0].cnt) if rows else 0
+    except Exception:
+        return 0
 
 
 def get_expiring_trials(days: int = 4) -> list[dict]:
@@ -867,7 +891,7 @@ def save_pending_jobs(user_id: str, portal: str, jobs: list[dict]) -> int:
     if not jobs:
         return 0
     now    = datetime.now(timezone.utc)
-    expira = now + timedelta(hours=36)
+    expira = now + timedelta(days=7)
 
     # Usar DML INSERT en lugar de streaming para evitar el streaming buffer
     # (el streaming buffer impide hacer UPDATE/DELETE sobre las filas recién insertadas)

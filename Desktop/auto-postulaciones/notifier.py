@@ -308,7 +308,7 @@ def _tabla_planes(plan_actual: str = "TRIAL") -> str:
 
     planes = {
         "FREE":    {"posts": "5/día",  "cargos": "1",  "cv_ia": "No",   "precio": "Gratis",         "color": "#94A3B8"},
-        "TRIAL":   {"posts": "10/día", "cargos": "4",  "cv_ia": "1/mes","precio": "Gratis (7 días)", "color": "#854D0E"},
+        "TRIAL":   {"posts": "10/día", "cargos": "4",  "cv_ia": "1/mes","precio": "Gratis (14 días)", "color": "#854D0E"},
         "PRO":     {"posts": "25/día", "cargos": "4",  "cv_ia": "2/mes","precio": "$9.990/mes",      "color": "#1D4ED8"},
         "PREMIUM": {"posts": "50/día", "cargos": "10", "cv_ia": "5/mes","precio": "$19.990/mes",     "color": "#7C3AED"},
     }
@@ -568,8 +568,8 @@ def send_trial_daily_limit(user: dict, n_hoy: int) -> None:
 
       <div style="background:#f8fafc;padding:28px;border-radius:0 0 12px 12px;border:1px solid #e2e8f0">
         <p style="line-height:1.7">
-          Alcanzaste el límite diario de tu prueba gratuita. Mañana volvemos a postular
-          10 empleos por ti — así hasta que terminen tus 7 días de prueba.
+          Alcanzaste el límite diario de tu prueba gratuita (10). Mañana volvemos a postular
+          10 empleos por ti — así hasta que terminen tus 14 días de prueba.
         </p>
         <p style="line-height:1.7">
           <strong>¿Quieres que sigamos postulando hoy y todos los días sin límite?</strong><br>
