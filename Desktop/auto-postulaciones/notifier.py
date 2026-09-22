@@ -664,7 +664,7 @@ def send_trial_warning(user: dict, days_left: int) -> None:
 
 # ── Runner independiente (Stage 5 Jenkins) ────────────────────────────────────
 
-def _run() -> None:
+def _run(dry_run: bool = False) -> None:
     """Envía resumen diario a todos los usuarios con postulaciones hoy, luego Telegram."""
     import os, sys
     _dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else r"C:\Users\bastian\Desktop\auto-postulaciones"
@@ -721,7 +721,12 @@ def _run() -> None:
             llego_al_limite = total >= limite
 
             # Pasamos portales ya obtenidos para evitar doble consulta a BQ
-            con_upsell = send_summary(user, [], portales, llego_al_limite=llego_al_limite)
+            if dry_run:
+                con_upsell = puede_mostrar_upsell(llego_al_limite, _upsells_ultima_semana(uid))
+                print(f"  [DRY] {uid} - {to} - {total}/{limite}"
+                      + (" - con upsell" if con_upsell else ""))
+            else:
+                con_upsell = send_summary(user, [], portales, llego_al_limite=llego_al_limite)
             total_posts += total
             emails_ok   += 1
             if con_upsell:
@@ -748,4 +753,8 @@ def _run() -> None:
 
 
 if __name__ == "__main__":
-    _run()
+    import sys
+    _dry = "--dry-run" in sys.argv
+    if _dry:
+        print("[dry-run] simulacion: no se envia ningun correo")
+    _run(dry_run=_dry)
