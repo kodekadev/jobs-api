@@ -1,4 +1,4 @@
-import { Controller, Post, Headers, UnauthorizedException, Req } from '@nestjs/common';
+import { Controller, Post, Headers, UnauthorizedException, Req, Query } from '@nestjs/common';
 import { PlanService } from '../../application/plan.service';
 import { AuthService } from '../../application/auth.service';
 import { BigQueryService } from '../../../shared/infrastructure/services/bigquery.service';
@@ -53,11 +53,15 @@ export class CronController {
   }
 
   @Post('empleo-followup')
-  async empleoFollowup(@Headers('authorization') auth: string) {
+  async empleoFollowup(
+    @Headers('authorization') auth: string,
+    @Query('limite') limite?: string,
+  ) {
     if (!env.cronSecret || auth !== `Bearer ${env.cronSecret}`) {
       throw new UnauthorizedException('Forbidden');
     }
-    const result = await this.planService.sendEmpleoFollowup();
+    // ?limite=N acota el envío por corrida; hay ~315 acumulados
+    const result = await this.planService.sendEmpleoFollowup(Number(limite) || 50);
     return { ok: true, ...result };
   }
 

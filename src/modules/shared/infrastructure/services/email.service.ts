@@ -390,7 +390,12 @@ export class EmailService {
     return this.base('linear-gradient(135deg, #1E3A5F 0%, #2A8FA5 100%)', headerContent, body);
   }
 
-  empleoFollowupHtml(nombre: string, linkSi: string, linkNo: string): string {
+  empleoFollowupHtml(
+    nombre: string,
+    linkSi: string,
+    linkProcesos: string,
+    linkNo: string,
+  ): string {
     const headerContent = `
       <h1 style="color:white;margin:16px 0 4px;font-size:22px">¿Conseguiste empleo? 🎉</h1>
       <p style="color:rgba(255,255,255,0.65);margin:0;font-size:14px">Cuéntanos cómo te fue</p>`;
@@ -405,14 +410,18 @@ export class EmailService {
         ¿Conseguiste trabajo usando AplicAI?
       </p>
 
-      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:28px">
+      <div style="margin-bottom:28px">
         <a href="${linkSi}"
-          style="flex:1;min-width:160px;display:inline-block;background:linear-gradient(135deg,#059669,#10B981);color:white;padding:16px 24px;border-radius:12px;text-decoration:none;font-weight:700;font-size:16px;text-align:center">
-          ✅ Sí, conseguí empleo
+          style="display:block;background:linear-gradient(135deg,#059669,#10B981);color:white;padding:16px 24px;border-radius:12px;text-decoration:none;font-weight:700;font-size:16px;text-align:center;margin-bottom:12px">
+          ✅ Sí, conseguí trabajo
+        </a>
+        <a href="${linkProcesos}"
+          style="display:block;background:#FFF8E8;color:#92400E;padding:16px 24px;border-radius:12px;text-decoration:none;font-weight:700;font-size:16px;text-align:center;border:2px solid #FCD34D;margin-bottom:12px">
+          📬 Estoy en procesos
         </a>
         <a href="${linkNo}"
-          style="flex:1;min-width:160px;display:inline-block;background:#F1F5F9;color:#475569;padding:16px 24px;border-radius:12px;text-decoration:none;font-weight:700;font-size:16px;text-align:center;border:2px solid #E2E8F0">
-          🔍 Aún estoy buscando
+          style="display:block;background:#F1F5F9;color:#475569;padding:16px 24px;border-radius:12px;text-decoration:none;font-weight:700;font-size:16px;text-align:center;border:2px solid #E2E8F0">
+          🔍 Todavía no
         </a>
       </div>
 

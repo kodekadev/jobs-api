@@ -427,29 +427,54 @@ export class PlanService {
     }
   }
 
-  // Cron: envía email de seguimiento a usuarios con ≥60 días de suscripción
-  // que aún no hayan respondido.
-  async sendEmpleoFollowup(): Promise<{ enviados: number }> {
-    const rows = await this.bq.query<any>(`
-      SELECT u.ID_USUARIO, u.NOMBRE, u.EMAIL
-      FROM ${this.bq.t('USUARIOS')} u
-      JOIN ${this.bq.t('PLAN_CONTRATADO')} pc ON u.ID_USUARIO = pc.ID_USUARIO
-      WHERE pc.PLAN NOT IN ('FREE', 'TRIAL')
-        AND pc.ESTADO NOT IN ('CANCELADO')
-        AND DATE(pc.FECHA_INICIO) <= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
-        AND u.NOMBRE != 'CUENTA_ELIMINADA'
-        AND NOT STARTS_WITH(u.EMAIL, 'deleted_')
-        AND NOT EXISTS (
-          SELECT 1 FROM ${this.bq.t('EMPLEO_CONSEGUIDO')}
-          WHERE ID_USUARIO = u.ID_USUARIO
-        )
-    `).catch(() => [] as any[]);
+  /**
+   * Cron: pregunta "¿Conseguiste trabajo?" a los 30 días del registro.
+   *
+   * Antes apuntaba a usuarios con plan pagado y 60 días de suscripción, un
+   * segmento que estaba vacío y lo iba a seguir estando: nunca envió un solo
+   * correo. Ahora va por fecha de registro y no discrimina por plan — quien
+   * consiguió trabajo nos sirve igual, pague o no.
+   *
+   * `limite` acota el envío por corrida: el primer disparo tiene ~315
+   * destinatarios acumulados y no conviene soltarlos todos de una.
+   */
+  async sendEmpleoFollowup(limite = 50): Promise<{ enviados: number; pendientes: number }> {
+    const tope = Math.max(1, Math.min(Number(limite) || 50, 500));
+
+    const [rows, pendRows] = await Promise.all([
+      this.bq.query<any>(`
+        SELECT u.ID_USUARIO, u.NOMBRE, u.EMAIL
+        FROM ${this.bq.t('USUARIOS')} u
+        WHERE DATE(u.FECHA_REGISTRO) <= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+          AND u.NOMBRE != 'CUENTA_ELIMINADA'
+          AND NOT STARTS_WITH(u.EMAIL, 'deleted_')
+          AND NOT EXISTS (
+            SELECT 1 FROM ${this.bq.t('EMPLEO_CONSEGUIDO')}
+            WHERE ID_USUARIO = u.ID_USUARIO
+          )
+        ORDER BY u.FECHA_REGISTRO
+        LIMIT ${tope}
+      `).catch(() => [] as any[]),
+
+      this.bq.query<any>(`
+        SELECT COUNT(*) AS n
+        FROM ${this.bq.t('USUARIOS')} u
+        WHERE DATE(u.FECHA_REGISTRO) <= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
+          AND u.NOMBRE != 'CUENTA_ELIMINADA'
+          AND NOT STARTS_WITH(u.EMAIL, 'deleted_')
+          AND NOT EXISTS (
+            SELECT 1 FROM ${this.bq.t('EMPLEO_CONSEGUIDO')}
+            WHERE ID_USUARIO = u.ID_USUARIO
+          )
+      `).catch(() => [] as any[]),
+    ]);
 
     await Promise.all(rows.map(async (r: any) => {
       const token  = this.generateEmpleoToken(r.ID_USUARIO);
       const base   = `${env.frontendUrl}/consegui-empleo?uid=${r.ID_USUARIO}&token=${token}`;
-      const linkSi = `${base}&r=si`;
-      const linkNo = `${base}&r=no`;
+      const linkSi       = `${base}&r=si`;
+      const linkProcesos = `${base}&r=en_procesos`;
+      const linkNo       = `${base}&r=no`;
 
       // Registrar envío antes de mandar (evita reenvíos si el cron corre dos veces)
       await this.bq.query(`
@@ -462,12 +487,13 @@ export class PlanService {
       return this.email.send(
         r.EMAIL,
         '¿Conseguiste empleo? Cuéntanos 🎉',
-        this.email.empleoFollowupHtml(r.NOMBRE, linkSi, linkNo),
+        this.email.empleoFollowupHtml(r.NOMBRE, linkSi, linkProcesos, linkNo),
         'empleo_followup',
       ).catch(() => null);
     }));
 
-    return { enviados: rows.length };
+    const pendientes = Math.max(0, Number(pendRows[0]?.n ?? 0) - rows.length);
+    return { enviados: rows.length, pendientes };
   }
 
   // Registra la respuesta sí/no del usuario (llamado desde la página del frontend)
