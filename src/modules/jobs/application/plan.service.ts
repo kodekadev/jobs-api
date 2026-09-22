@@ -96,7 +96,7 @@ export class PlanService {
         fecha_fin = ff.toISOString().split('T')[0];
       } else if (row.FECHA_INICIO) {
         const fi = row.FECHA_INICIO?.value ? new Date(row.FECHA_INICIO.value) : new Date(row.FECHA_INICIO);
-        const dias = planDisplay === 'TRIAL' ? 7 : 30;
+        const dias = planDisplay === 'TRIAL' ? 14 : 30;
         fi.setDate(fi.getDate() + dias);
         fecha_fin = fi.toISOString().split('T')[0];
       }
@@ -141,7 +141,7 @@ export class PlanService {
   private async activatePlan(userId: string, plan: string) {
     const now = new Date().toISOString();
     const fin = new Date();
-    fin.setDate(fin.getDate() + (plan === 'TRIAL' ? 7 : 30));
+    fin.setDate(fin.getDate() + (plan === 'TRIAL' ? 14 : 30));
     const fechaFin = fin.toISOString();
 
     await this.bq.query(`
@@ -164,13 +164,13 @@ export class PlanService {
       SELECT
         u.NOMBRE, u.EMAIL, pc.PLAN,
         COALESCE(DATE(pc.FECHA_FIN), DATE_ADD(DATE(pc.FECHA_INICIO),
-          INTERVAL IF(pc.PLAN = 'TRIAL', 7, 30) DAY)) AS FECHA_FIN
+          INTERVAL IF(pc.PLAN = 'TRIAL', 14, 30) DAY)) AS FECHA_FIN
       FROM ${this.bq.t('USUARIOS')} u
       JOIN ${this.bq.t('PLAN_CONTRATADO')} pc ON u.ID_USUARIO = pc.ID_USUARIO
       WHERE pc.ESTADO = 'ACTIVO'
         AND pc.PLAN NOT IN ('FREE')
         AND COALESCE(DATE(pc.FECHA_FIN), DATE_ADD(DATE(pc.FECHA_INICIO),
-            INTERVAL IF(pc.PLAN = 'TRIAL', 7, 30) DAY))
+            INTERVAL IF(pc.PLAN = 'TRIAL', 14, 30) DAY))
             = DATE_ADD(CURRENT_DATE(), INTERVAL @dias DAY)
     `, { dias: diasAntes });
 
@@ -517,6 +517,14 @@ export class PlanService {
 
     const { empresa = null, cargo = null, fueCon = null, testimonial = null } = datos ?? {};
 
+    // El primer clic del correo manda solo la respuesta: los demás campos van
+    // nulos y BigQuery no puede inferir su tipo. Sin esto el endpoint devolvía
+    // 500 y el usuario veía "Link inválido".
+    const tipos = {
+      empresa: 'STRING', cargo: 'STRING',
+      testimonial: 'STRING', fueCon: 'BOOL',
+    };
+
     // UPDATE si ya existe fila (del envío del email), INSERT si no
     const existing = await this.bq.query<any>(`
       SELECT ID FROM ${this.bq.t('EMPLEO_CONSEGUIDO')}
@@ -534,14 +542,14 @@ export class PlanService {
             TESTIMONIAL = @testimonial,
             FECHA_RESPUESTA = CURRENT_TIMESTAMP()
         WHERE ID_USUARIO = @uid AND RESPUESTA IS NULL
-      `, { uid: userId, resp: respuesta, empresa, cargo, fueCon, testimonial });
+      `, { uid: userId, resp: respuesta, empresa, cargo, fueCon, testimonial }, tipos);
     } else {
       await this.bq.query(`
         INSERT INTO ${this.bq.t('EMPLEO_CONSEGUIDO')}
           (ID, ID_USUARIO, RESPUESTA, EMPRESA, CARGO, FUE_CON_APLICAI, TESTIMONIAL, FECHA_EMAIL, FECHA_RESPUESTA)
         VALUES
           (GENERATE_UUID(), @uid, @resp, @empresa, @cargo, @fueCon, @testimonial, NULL, CURRENT_TIMESTAMP())
-      `, { uid: userId, resp: respuesta, empresa, cargo, fueCon, testimonial });
+      `, { uid: userId, resp: respuesta, empresa, cargo, fueCon, testimonial }, tipos);
     }
 
     if (respuesta === 'si') {
