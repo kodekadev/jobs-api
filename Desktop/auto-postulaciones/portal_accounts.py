@@ -37,6 +37,7 @@ from selenium.webdriver.common.keys import Keys
 import threading
 
 import bq
+import respuestas_tipo as _rt
 
 
 class EmailTomadoError(Exception):
@@ -166,11 +167,46 @@ def _cache_key(label: str, inp_type: str) -> str:
     return f"{norm}|{inp_type.lower()}"
 
 
+def _responde_la_pregunta(label: str, resp: str) -> bool:
+    """
+    True si la respuesta tiene algo que ver con lo que se pregunta.
+
+    El cache es GLOBAL entre usuarios: se indexa por label+tipo, sin id. Cuando
+    una respuesta mala entraba, se le servía a todos. Así llegó a producción
+    "¿Cuánto pretendes ganar mensualmente?" contestado con "Experiencia
+    reponiendo ropa, trabajo bajo presión..." — el mismo texto en 8 preguntas
+    distintas, incluida "Juegos de mesa que jugaste último año".
+
+    Criterio: o resuelve el sí/no, o comparte vocabulario con la pregunta.
+    Prefijos de 5 letras para que AJUSTE y AJUSTES cuenten igual.
+    """
+    if not resp:
+        return False
+    if _rt.normalizar_si_no(resp) is not None:
+        return True
+    vacias = {"DE", "LA", "EL", "EN", "QUE", "SU", "SUS", "LOS", "LAS", "UN",
+              "UNA", "CON", "POR", "PARA", "DEL", "TIENE", "TIENES", "POSEE",
+              "CUENTA", "EXPERIENCIA", "ANOS", "AÑOS"}
+    def _pref(t):
+        return {w[:5] for w in re.findall(r"[A-ZÁÉÍÓÚÑ]{4,}", _rt.normalizar(t))
+                if w not in vacias}
+    return bool(_pref(label) & _pref(resp))
+
+
 def _get_cached_answer(label: str, inp_type: str) -> "str | None":
-    """Retorna respuesta guardada para este label+tipo, o None si no existe."""
+    """
+    Retorna respuesta guardada para este label+tipo, o None si no existe.
+    Valida antes de devolverla: el cache viene de corridas anteriores y puede
+    traer respuestas que ya no pasan el filtro de tipo.
+    """
     if not label:
         return None
-    return _load_qa_cache().get(_cache_key(label, inp_type))
+    resp = _load_qa_cache().get(_cache_key(label, inp_type))
+    if resp is None:
+        return None
+    if not _responde_la_pregunta(label, resp):
+        return None
+    return _rt.validar_respuesta(resp, label, inp_type)
 
 
 _CV_LABEL_KEYS = {
@@ -201,6 +237,17 @@ def _is_cacheable(q: dict, resp: str) -> bool:
 
     # No cachear si parece un email o nombre propio con apellido
     if re.search(r"@\w+\.\w+", resp):
+        return False
+
+    # No cachear lo que no contesta la pregunta. El límite de 120 caracteres
+    # de arriba no alcanzaba: "Educador, operador e ingeniero con ganas de
+    # seguir sumando campo" tiene 63 y se sirvió como respuesta a
+    # "¿Dispone de calzado de seguridad propio?".
+    if not _responde_la_pregunta(q.get("label", ""), resp):
+        return False
+
+    # No cachear lo que no valida contra el tipo de la pregunta
+    if _rt.validar_respuesta(resp, q.get("label", ""), q.get("type", "text")) is None:
         return False
 
     return True
@@ -5004,8 +5051,19 @@ def _standard_answer(item: dict, user: dict, norm_fn=None) -> "str | None":
     Retorna None solo si la pregunta no se reconoce (va a Claude).
     """
     norm = norm_fn or _norm_label
-    label = norm((item.get("label") or "") + " " + (item.get("placeholder") or ""))
+    label_original = (item.get("label") or "") + " " + (item.get("placeholder") or "")
+    label = norm(label_original)
     inp_type = (item.get("type") or "text").lower()
+
+    # Tipo real de la pregunta, deducido del contenido y del input — no de los
+    # verbos con que está redactada. Los bloques que devuelven el resumen del
+    # candidato solo pueden disparar si el tipo lo justifica.
+    _tipo = _rt.clasificar(label_original, inp_type, item.get("options"))
+    # Solo una presentación personal se contesta con el resumen del candidato.
+    # Texto libre ("Comente su experiencia en el cargo") NO: ahí va Claude, que
+    # escribe algo específico de esa oferta. Pegar el mismo resumen en todas
+    # es precisamente lo que hacía que 1 de cada 4 respuestas fuera genérica.
+    _admite_resumen = _tipo == _rt.PRESENTACION
 
     # ── Datos del perfil ──────────────────────────────────────────────────────
     nombre_completo = str(user.get("NOMBRE") or user.get("nombre") or "")
@@ -5088,8 +5146,10 @@ def _standard_answer(item: dict, user: dict, norm_fn=None) -> "str | None":
     ):
         return exp
 
-    # "Cuál es su experiencia en el área de X?" → respuesta descriptiva (evita LLM)
-    if inp_type in ("textarea", "text") and "EXPERIENCIA" in label and any(k in label for k in [
+    # "Cuál es su experiencia en el área de X?" → respuesta descriptiva (evita LLM).
+    # _admite_resumen excluye los sí/no: "¿Tiene experiencia en el área de
+    # ventas?" se contesta Sí o No, no con el resumen del CV.
+    if _admite_resumen and inp_type in ("textarea", "text") and "EXPERIENCIA" in label and any(k in label for k in [
         "CUAL ES", "EN EL AREA", "EN EL RUBRO", "EN EL CARGO",
         "EN SU AREA", "EN SU RUBRO", "EN EL SECTOR", "EN RR", "EN RRHH",
         "EN RECURSOS", "EN SELEC", "EN GESTION", "SU EXP",
@@ -5241,8 +5301,11 @@ def _standard_answer(item: dict, user: dict, norm_fn=None) -> "str | None":
         return ciudad_val
 
     # ── 18. Experiencia descriptiva (abierta) ─────────────────────────────────
-    # Solo si NO es pregunta larga con verbo descriptivo (esas van a Claude)
-    if not _es_descriptiva and any(k in label for k in [
+    # Solo si NO es pregunta larga con verbo descriptivo (esas van a Claude).
+    # _admite_resumen corta el caso que rompió producción: "Posee experiencia
+    # en implementación ERP BUK" no tiene verbo descriptivo, contiene
+    # "EXPERIENCIA", y terminaba recibiendo el resumen del CV.
+    if _admite_resumen and not _es_descriptiva and any(k in label for k in [
         "EXPERIENCIA", "TRAYECTORIA", "HISTORIAL LABORAL", "HISTORIAL PROFESIONAL",
         "BACKGROUND", "WORK EXPERIENCE", "PROFESSIONAL EXPERIENCE",
         "EXPERIENCE", "CAREER BACKGROUND",
@@ -5272,20 +5335,20 @@ def _standard_answer(item: dict, user: dict, norm_fn=None) -> "str | None":
             return pret_num
         return exp
 
-    # ── 21. Textarea: solo responder sin LLM para preguntas descriptivas genéricas ──
-    # Preguntas específicas (herramientas, software, situaciones concretas) → Claude
+    # ── 21. Textarea ──────────────────────────────────────────────────────────
+    # Antes acá se devolvía resumen_val[:400] para cualquier pregunta que
+    # contuviera INDIQUE / MENCIONE / COMENTE, y resumen_val[:200] para
+    # cualquier label corta. Resultado en producción: el 25,8% de las
+    # respuestas eran el resumen del CV pegado en preguntas de sí/no, de
+    # sueldo y de herramientas. Un usuario mandó el mismo texto en 23
+    # preguntas distintas.
+    #
+    # Ahora el resumen se usa SOLO donde es la respuesta correcta: cuando
+    # piden una presentación personal. Todo lo demás va a Claude, que sí lee
+    # la pregunta. Si Claude tampoco puede, la oferta se salta.
     if inp_type == "textarea":
-        if _es_descriptiva:
-            # "Descríbase", "Cuéntenos", "Explique..." → resumen personal
-            return resumen_val[:400] if resumen_val else f"Profesional con {exp} años de experiencia en el área."
-        _label_corto = len(label) < 25
-        _es_generica = any(k in label for k in [
-            "OTRO", "COMENTARIO", "ADICIONAL", "OBSERVACION", "OBSERVACIÓN",
-            "INFORMACION", "INFORMACIÓN", "ALGO MAS", "ALGO MÁS",
-        ])
-        if _label_corto or _es_generica:
-            return resumen_val[:200] if resumen_val else f"Profesional con {exp} años de experiencia."
-        # Pregunta específica (herramienta, software, certificación, etc.) → Claude
+        if _rt.clasificar(label_original, inp_type, item.get("options")) == _rt.PRESENTACION:
+            return desc_exp
         return None
 
     # ── 22. Cache de respuestas aprendidas ────────────────────────────────────
@@ -5426,19 +5489,23 @@ def _build_user_profile(user: dict) -> str:
 
 
 def _fallback_answers(questions: list[dict], user: dict) -> dict[str, str]:
-    """Respuestas genéricas sin LLM para plan TRIAL. Solo para preguntas de texto/textarea."""
-    profesion = str(user.get("PROFESION") or user.get("profesion") or "profesional")
-    exp       = str(user.get("EXPERIENCIA") or user.get("experiencia") or "5").replace(" años", "").strip()
-    resumen   = str(user.get("RESUMEN") or user.get("resumen") or "")
-    desc = resumen[:300] if resumen else (
-        f"Soy {profesion} con {exp} años de experiencia en el área, "
-        "con sólidas habilidades técnicas y disponibilidad inmediata."
-    )
-    result = {}
+    """
+    Respuestas sin LLM. Solo contesta lo que de verdad sabemos del perfil.
+
+    Antes metía el resumen del candidato recortado a 300 caracteres en TODA
+    pregunta de texto o textarea, sin mirar qué preguntaban. Eso mandaba a
+    producción cosas como "¿Tiene licencia clase B?" contestado con un párrafo
+    sobre Business Intelligence.
+
+    Ahora: presentación personal → el resumen (ahí sí corresponde); lo demás,
+    lo que _standard_answer pueda sacar del perfil. Si no hay nada confiable,
+    la pregunta queda sin responder y el que llama decide si salta la oferta.
+    """
+    result: dict[str, str] = {}
     for i, q in enumerate(questions):
-        qtype = (q.get("type") or "text").lower()
-        if qtype in ("textarea", "text", ""):
-            result[str(i)] = desc
+        resp = _standard_answer(q, user)
+        if resp is not None and str(resp).strip():
+            result[str(i)] = str(resp)
     return result
 
 
@@ -5457,9 +5524,9 @@ def _llm_answer_questions(questions: list[dict], user: dict, cv_text: str = "", 
     # Verificar límite diario de optimizaciones por plan
     uid  = str(user.get("ID_USUARIO") or user.get("id_usuario") or "").strip()
     plan = str(user.get("plan") or user.get("PLAN") or "FREE").upper()
-    if plan == "TRIAL":
-        print(f"    [Claude] Plan TRIAL — usando respuestas estándar sin LLM")
-        return _fallback_answers(questions, user)
+    # TRIAL ya no se salta el LLM: su propio límite en bq._CV_OPT_LIMITS es 25,
+    # así que este early-return lo contradecía y dejaba a los 41 usuarios TRIAL
+    # con respuestas de plantilla en todas sus postulaciones.
 
     if uid and not bq.puede_optimizar(uid, plan):
         limite = bq.limite_optimizaciones(plan)
@@ -5507,8 +5574,9 @@ REGLAS (sigue cada una al pie de la letra):
 - type="select": responde con el value exacto de la opción elegida (ej: "1"). Sin explicación.
 - type="number": solo dígitos sin puntos ni comas (ej: "2000000").
 - type="tel": solo dígitos, 9 caracteres.
-- type="textarea" pregunta de sí/no o disponibilidad: empieza con "Sí" o "No", luego agrega UNA oración específica de tu experiencia real. Máx 2 oraciones.
-- type="textarea" abierta: 2 oraciones concretas usando tu cargo, empresa o habilidades reales. Sin frases genéricas como "soy una persona proactiva".
+- type="textarea" pregunta de sí/no o disponibilidad: la respuesta DEBE empezar con la palabra "Sí" o "No" — es obligatorio, se descarta si no. Después agrega UNA oración específica de tu experiencia real. Máx 2 oraciones.
+- Si el CV no respalda un sí, responde "No". Nunca afirmes experiencia que no está en el CV.
+- type="textarea" abierta: 2 oraciones concretas sobre ESTE cargo, usando tu experiencia real. Nada de resúmenes generales de tu carrera ni frases como "soy una persona proactiva".
 - Disponibilidad → siempre Sí (disponibilidad inmediata).
 - Renta/sueldo/pretensión en textarea → escribe el número en CLP (ej: "2000000 líquidos").
 - NO inventes cargos, empresas ni años que no estén en tu perfil.
@@ -5531,9 +5599,28 @@ Nada más, solo el JSON."""
             print(f"    [Claude] respuesta sin JSON: {raw[:80]}")
             return {}
         data  = json.loads(raw[start:end])
-        result = {str(i): str(data.get(str(i), data.get(i, ""))) for i in range(len(questions))}
+        crudo = {str(i): str(data.get(str(i), data.get(i, ""))) for i in range(len(questions))}
+
+        # Validar cada respuesta contra el tipo de su pregunta. El modelo a
+        # veces contesta "650000 brutos" en un campo numérico, o escribe un
+        # párrafo donde el formulario espera Sí/No. Lo que no valida se
+        # descarta en vez de enviarse: una pregunta sin responder la maneja
+        # el que llama, una respuesta incorrecta descalifica al candidato.
+        result: dict[str, str] = {}
+        descartadas = []
+        for i, q in enumerate(questions):
+            valor = crudo.get(str(i), "")
+            ok = _rt.validar_respuesta(valor, q.get("label", ""),
+                                       q.get("type", "text"), q.get("options"))
+            if ok is not None and str(ok).strip():
+                result[str(i)] = str(ok)
+            elif str(valor).strip():
+                descartadas.append((q.get("label", "")[:40], str(valor)[:40]))
+
         tokens = getattr(response.usage, "input_tokens", 0) + getattr(response.usage, "output_tokens", 0)
         print(f"    [Claude] {result}")
+        for lbl, val in descartadas:
+            print(f"    [Claude] descartada (no valida para el tipo): '{lbl}' -> '{val}'")
         if uid:
             try:
                 bq.guardar_optimizacion(uid, tipo="respuesta_formulario", tokens_usados=tokens)

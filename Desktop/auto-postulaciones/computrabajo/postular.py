@@ -616,6 +616,7 @@ def _responder_killer_questions(page, user: dict, job_title: str, cv_text: str,
                 origenes[orig_i] = "llm"
 
     # Aplicar respuestas al DOM
+    sin_responder: list[str] = []
     for i, q in enumerate(all_questions):
         ans_text = answers.get(i, "")
         if not ans_text:
@@ -627,7 +628,10 @@ def _responder_killer_questions(page, user: dict, job_title: str, cv_text: str,
                     print(f"    [cpt] default 'No' para: '{q['label'][:50]}'")
 
         if not ans_text:
-            print(f"    [cpt] sin respuesta para: '{q['label'][:50]}'")
+            # Un textarea vacío se envía en blanco o con basura. Preferimos
+            # saltar la oferta: es mejor no postular que postular mal.
+            print(f"    [cpt] sin respuesta confiable para: '{q['label'][:50]}'")
+            sin_responder.append(q["label"])
             continue
 
         if q["kind"] == "textarea":
@@ -707,9 +711,16 @@ def _responder_killer_questions(page, user: dict, job_title: str, cv_text: str,
             pending=[{"label": q["label"]} for q in all_questions],
             answers={i: (a, origenes.get(i, "fallback"))
                      for i, a in answers.items()},
+            postulo=not sin_responder,
         )
     except Exception as _qe:
         print(f"    [qa] {_qe}")
+
+    # Si quedó alguna pregunta sin respuesta confiable, no enviamos: el
+    # formulario saldría en blanco o con texto que no contesta lo que piden.
+    if sin_responder:
+        print(f"    [cpt] SALTADA — {len(sin_responder)} pregunta(s) sin respuesta confiable")
+        return False
 
     # Submit
     submitted = page.evaluate("""
@@ -800,9 +811,11 @@ def _postular_uno(page, empleo: dict, user: dict, cv_text: str = "", skip_llm: b
     if any(s in _ya_content for s in _YA_SIGNALS):
         return False, "ya_postulado_previamente"
 
-    # Responder killer questions si aparecen
-    _responder_killer_questions(page, user, job_title=titulo, cv_text=cv_text,
-                                job_link=empleo.get("link") or empleo.get("id") or "")
+    # Responder killer questions si aparecen.
+    # False = quedó alguna pregunta sin respuesta confiable → no enviamos.
+    if not _responder_killer_questions(page, user, job_title=titulo, cv_text=cv_text,
+                                       job_link=empleo.get("link") or empleo.get("id") or ""):
+        return False, "sin_respuesta_confiable"
     page.wait_for_timeout(2000)
 
     # Verificar éxito
