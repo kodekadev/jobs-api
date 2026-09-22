@@ -1,5 +1,5 @@
 import { Controller, Get, Post, Param, Body, HttpCode, Query, Header, Headers, UnauthorizedException, BadRequestException } from '@nestjs/common';
-import { PlanService } from '../../application/plan.service';
+import { PlanService, RESPUESTAS_EMPLEO, RespuestaEmpleo } from '../../application/plan.service';
 import { Public } from '../../../shared/infrastructure/guards/jwt-auth.guard';
 import env from '../../../shared/infrastructure/environment';
 
@@ -75,13 +75,13 @@ export class PlanController {
   async empleoRespuesta(@Body() body: {
     uid: string;
     token: string;
-    respuesta: 'si' | 'no';
+    respuesta: RespuestaEmpleo;
     empresa?: string;
     cargo?: string;
     fueCon?: boolean;
     testimonial?: string;
   }) {
-    if (!body.uid || !body.token || !['si', 'no'].includes(body.respuesta)) {
+    if (!body.uid || !body.token || !RESPUESTAS_EMPLEO.includes(body.respuesta)) {
       throw new BadRequestException('Parámetros inválidos');
     }
     return this.planService.registrarRespuestaEmpleo(body.uid, body.token, body.respuesta, {

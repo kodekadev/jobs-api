@@ -29,6 +29,14 @@ const CV_OPT_LIMITS: Record<string, number> = {
   FREE: 0, PRO: 2, TURBO: 3, PREMIUM: 5, TRIAL: 1,
 };
 
+/**
+ * Respuestas válidas a "¿Conseguiste trabajo?".
+ * Fuente única: el controlador valida contra esta lista, así agregar una
+ * opción al correo no vuelve a quedar rechazada con "Link inválido".
+ */
+export const RESPUESTAS_EMPLEO = ['si', 'en_procesos', 'no'] as const;
+export type RespuestaEmpleo = (typeof RESPUESTAS_EMPLEO)[number];
+
 @Injectable()
 export class PlanService {
   constructor(
@@ -500,7 +508,7 @@ export class PlanService {
   async registrarRespuestaEmpleo(
     userId: string,
     token: string,
-    respuesta: 'si' | 'no',
+    respuesta: RespuestaEmpleo,
     datos?: { empresa?: string; cargo?: string; fueCon?: boolean; testimonial?: string },
   ): Promise<{ ok: boolean }> {
     if (!this.verifyEmpleoToken(userId, token)) {
