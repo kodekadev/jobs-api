@@ -3,7 +3,7 @@ import { BigQueryService } from '../../shared/infrastructure/services/bigquery.s
 import { EmailService } from '../../shared/infrastructure/services/email.service';
 import env from '../../shared/infrastructure/environment';
 import { isValidRating, summarizeRatings } from './rating.utils';
-import { distribucion } from './feedback.utils';
+import { distribucion, comentariosQueFalta } from './feedback.utils';
 import { getDailyLimit } from './plan.limits';
 
 // Los límites viven en plan.limits.ts (espejo de auto-postulaciones/plan_limits.py)
@@ -1114,7 +1114,7 @@ export class AdminService {
   }
 
   async getFeedbackStats() {
-    const [notas, dist, recientes] = await Promise.all([
+    const [notas, dist, recientes, queFalta] = await Promise.all([
       this.bq.query<any>(`
         SELECT RATING_SERVICIO, RATING_POSTULACIONES, RATING_GENERAL,
                OFERTAS_RELEVANTES, LLAMADAS, CONSIGUIO_TRABAJO, QUE_FALTA
@@ -1147,7 +1147,17 @@ export class AdminService {
         ORDER BY af.FECHA DESC
         LIMIT 20
       `),
-    ]).catch(() => [[], [], []]);
+      // LEFT JOIN a propósito: si el usuario fue borrado el comentario sigue
+      // sirviendo, y perderlo por el join sería peor que mostrarlo sin nombre.
+      this.bq.query<any>(`
+        SELECT af.ID_USUARIO, af.QUE_FALTA, af.FECHA, u.NOMBRE, u.EMAIL
+        FROM ${this.bq.t('AUTOPILOT_FEEDBACK')} af
+        LEFT JOIN ${this.bq.t('USUARIOS')} u ON af.ID_USUARIO = u.ID_USUARIO
+        WHERE af.QUE_FALTA IS NOT NULL AND TRIM(af.QUE_FALTA) != ''
+        ORDER BY af.FECHA DESC
+        LIMIT 30
+      `),
+    ]).catch(() => [[], [], [], []]);
 
     const servicio      = summarizeRatings(notas.map((r: any) => r.RATING_SERVICIO));
     const postulaciones = summarizeRatings(notas.map((r: any) => r.RATING_POSTULACIONES));
@@ -1172,10 +1182,7 @@ export class AdminService {
         ofertas_relevantes: distribucion(notas.map((r: any) => r.OFERTAS_RELEVANTES), 'ofertas_relevantes'),
         llamadas:           distribucion(notas.map((r: any) => r.LLAMADAS), 'llamadas'),
         consiguio_trabajo:  distribucion(notas.map((r: any) => r.CONSIGUIO_TRABAJO), 'consiguio_trabajo'),
-        que_falta: notas
-          .map((r: any) => (r.QUE_FALTA || '').trim())
-          .filter((t: string) => t.length > 0)
-          .slice(0, 30),
+        que_falta: comentariosQueFalta(queFalta),
       },
       dist_servicio:      Object.entries(distServicio).map(([score, count]) => ({ score: Number(score), count })),
       dist_postulaciones: Object.entries(distPostulaciones).map(([score, count]) => ({ score: Number(score), count })),

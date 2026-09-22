@@ -5,6 +5,7 @@ import { EmailService } from '../../shared/infrastructure/services/email.service
 import { TelegramService } from '../../shared/infrastructure/services/telegram.service';
 import env from '../../shared/infrastructure/environment';
 import { filtroPlanesSql } from './plan.segmentos';
+import { construirInsertEnvios } from './plan.empleo';
 
 const PLAN_PRICES: Record<string, number> = {
   PRO: 9990,
@@ -478,20 +479,29 @@ export class PlanService {
       `).catch(() => [] as any[]),
     ]);
 
-    await Promise.all(rows.map(async (r: any) => {
+    // Registrar los envíos ANTES de mandar, en un solo INSERT. Un insert por
+    // usuario dentro del Promise.all revienta el límite de DML concurrente de
+    // BigQuery y la mitad falla en silencio; ver plan.empleo.ts.
+    const insert = construirInsertEnvios(this.bq.t('EMPLEO_CONSEGUIDO'), rows);
+    if (!insert) {
+      return { enviados: 0, pendientes: Number(pendRows[0]?.n ?? 0) };
+    }
+
+    try {
+      await this.bq.query(insert.sql, insert.params);
+    } catch (e) {
+      // Sin registro no se manda: un correo repetido molesta más que uno que
+      // llega una semana después.
+      console.error('[cron] empleo-followup: falló el registro, no se envía', e);
+      return { enviados: 0, pendientes: Number(pendRows[0]?.n ?? 0) };
+    }
+
+    await Promise.all(rows.map((r: any) => {
       const token  = this.generateEmpleoToken(r.ID_USUARIO);
       const base   = `${env.frontendUrl}/consegui-empleo?uid=${r.ID_USUARIO}&token=${token}`;
       const linkSi       = `${base}&r=si`;
       const linkProcesos = `${base}&r=en_procesos`;
       const linkNo       = `${base}&r=no`;
-
-      // Registrar envío antes de mandar (evita reenvíos si el cron corre dos veces)
-      await this.bq.query(`
-        INSERT INTO ${this.bq.t('EMPLEO_CONSEGUIDO')}
-          (ID, ID_USUARIO, RESPUESTA, EMPRESA, CARGO, FUE_CON_APLICAI, TESTIMONIAL, FECHA_EMAIL, FECHA_RESPUESTA)
-        VALUES
-          (GENERATE_UUID(), @uid, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP(), NULL)
-      `, { uid: r.ID_USUARIO }).catch(() => null);
 
       return this.email.send(
         r.EMAIL,

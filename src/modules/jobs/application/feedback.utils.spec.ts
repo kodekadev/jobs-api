@@ -1,4 +1,60 @@
-import { normalizarOpcion, distribucion } from './feedback.utils';
+import { normalizarOpcion, distribucion, comentariosQueFalta } from './feedback.utils';
+
+describe('comentariosQueFalta', () => {
+  const fila = (extra: any = {}) => ({
+    ID_USUARIO: 'jobs41',
+    NOMBRE: 'Patricio Vergara',
+    EMAIL: 'patricio@ug.uchile.cl',
+    FECHA: { value: '2026-09-21T12:00:00Z' },
+    QUE_FALTA: 'que se cumplan las postulaciones diarias',
+    ...extra,
+  });
+
+  it('conserva el autor junto al texto', () => {
+    const [c] = comentariosQueFalta([fila()]);
+    expect(c.id_usuario).toBe('jobs41');
+    expect(c.nombre).toBe('Patricio Vergara');
+    expect(c.email).toBe('patricio@ug.uchile.cl');
+    expect(c.texto).toBe('que se cumplan las postulaciones diarias');
+  });
+
+  it('desempaqueta la fecha que envuelve BigQuery', () => {
+    expect(comentariosQueFalta([fila()])[0].fecha).toBe('2026-09-21T12:00:00Z');
+    expect(comentariosQueFalta([fila({ FECHA: '2026-09-21' })])[0].fecha).toBe('2026-09-21');
+  });
+
+  it('descarta comentarios vacios o solo espacios', () => {
+    expect(comentariosQueFalta([
+      fila({ QUE_FALTA: '' }),
+      fila({ QUE_FALTA: '   ' }),
+      fila({ QUE_FALTA: null }),
+    ])).toEqual([]);
+  });
+
+  it('muestra el comentario aunque el usuario ya no exista', () => {
+    const [c] = comentariosQueFalta([fila({ NOMBRE: null, EMAIL: null })]);
+    expect(c.nombre).toBe('(sin nombre)');
+    expect(c.email).toBe('');
+    expect(c.texto).toContain('postulaciones diarias');
+  });
+
+  it('recorta espacios del texto', () => {
+    expect(comentariosQueFalta([fila({ QUE_FALTA: '  hola  ' })])[0].texto).toBe('hola');
+  });
+
+  it('tolera null y arreglo vacio', () => {
+    expect(comentariosQueFalta([])).toEqual([]);
+    expect(comentariosQueFalta(null as any)).toEqual([]);
+  });
+
+  it('respeta el orden que llega de la consulta', () => {
+    const r = comentariosQueFalta([
+      fila({ QUE_FALTA: 'primero' }),
+      fila({ QUE_FALTA: 'segundo' }),
+    ]);
+    expect(r.map((c) => c.texto)).toEqual(['primero', 'segundo']);
+  });
+});
 
 describe('normalizarOpcion', () => {
   it('acepta las opciones validas de cada pregunta', () => {

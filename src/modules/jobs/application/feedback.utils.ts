@@ -53,3 +53,31 @@ export function distribucion(
     };
   });
 }
+
+export type ComentarioQueFalta = {
+  id_usuario: string;
+  nombre: string;
+  email: string;
+  fecha: string;
+  texto: string;
+};
+
+/**
+ * Comentarios de "¿Qué es lo que más te falta?" con su autor.
+ *
+ * Antes el admin mostraba solo el texto y no había forma de saber quién lo
+ * escribió, que es justo lo que uno necesita para responderle. El nombre puede
+ * venir vacío si el usuario fue borrado: el comentario sigue valiendo, así que
+ * se muestra igual con "(sin nombre)".
+ */
+export function comentariosQueFalta(filas: any[]): ComentarioQueFalta[] {
+  return (filas || [])
+    .map((r) => ({
+      id_usuario: r?.ID_USUARIO || '',
+      nombre: (r?.NOMBRE || '').trim() || '(sin nombre)',
+      email: (r?.EMAIL || '').trim(),
+      fecha: r?.FECHA?.value ?? r?.FECHA ?? '',
+      texto: (r?.QUE_FALTA || '').trim(),
+    }))
+    .filter((c) => c.texto.length > 0);
+}
