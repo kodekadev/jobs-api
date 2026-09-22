@@ -18,11 +18,21 @@ PY   = r"C:\Users\bastian\AppData\Local\anaconda3\python.exe"
 DIR  = r"C:\Users\bastian\Desktop\auto-postulaciones"
 CRED = r"C:\Users\bastian\.secrets\google\credenciales.json"
 
+# OJO: no agregar 'plan-expiry' aca. jenkins_plan_expiry.py pega a
+# /api/cron/plan-expiry, que llama notifyExpiringPlans(7, 1) -- exactamente lo
+# mismo que ya hace el Cloud Scheduler 'notificar-planes-vencimiento' a las
+# 09:00, que ademas cubre el dia 3. notifyExpiringPlans no deduplica (no mira
+# CORREOS_ENVIADOS), asi que tener los dos manda el correo dos veces.
+# El job de Jenkins se borro el 2026-09-22 por eso.
+#
+# 'onboarding' va a las 10:15 y no a las 10:00 porque a esa hora corre el
+# Cloud Scheduler 'aplicai-cleanup-unverified', que borra usuarios sin
+# verificar -- parte del mismo segmento al que este job le escribe.
+
 # nombre_job -> (cron sin TZ, script, comentario)
 CONFIG = {
     "NOTIFIER":         ("0 9 * * *",    "notifier.py",                "resumen diario"),
-    "plan-expiry":      ("30 9 * * *",   "jenkins_plan_expiry.py",     "vencimiento de plan"),
-    "onboarding":       ("0 10 * * *",   "notifier_onboarding.py",     "sin perfil / sin autopilot"),
+    "onboarding":       ("15 10 * * *",  "notifier_onboarding.py",     "sin perfil / sin autopilot"),
     "trial-conversion": ("30 10 * * *",  "jenkins_trial_conversion.py","fin de prueba"),
     "retencion":        ("0 11 * * 1,4", "notifier_retention.py",      "sin postulaciones / upsell"),
     "empleo-followup":  ("0 12 * * 1",   "jenkins_empleo_followup.py", "conseguiste trabajo"),
