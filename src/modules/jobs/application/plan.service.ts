@@ -125,16 +125,16 @@ export class PlanService {
     return this.activatePlan(userId, 'FREE');
   }
 
-  async activateTrial(userId: string) {
-    const rows = await this.bq.query<any>(`
-      SELECT PLAN FROM ${this.bq.t('PLAN_CONTRATADO')}
-      WHERE ID_USUARIO = @id AND PLAN != 'FREE' LIMIT 1
-    `, { id: userId }).catch(() => []);
-
-    if (rows.length > 0) {
-      throw new ForbiddenException('Ya usaste tu prueba gratuita');
-    }
-    return this.activatePlan(userId, 'TRIAL');
+  /**
+   * La prueba gratis se discontinuo: de 282 trials, cero convirtieron a pago y
+   * el 61% no hizo ni una postulacion. Los 19 trials vigentes al momento del
+   * cambio siguen corriendo hasta su FECHA_FIN y despues caen a FREE solos.
+   *
+   * Se deja el metodo rechazando en vez de borrarlo para que el frontend viejo
+   * (o una app cacheada) reciba un error claro y no un 404.
+   */
+  async activateTrial(_userId: string): Promise<never> {
+    throw new ForbiddenException('La prueba gratuita ya no está disponible');
   }
 
   // Uso interno — sin restricción de plan (la llama el flujo de pago confirmado).

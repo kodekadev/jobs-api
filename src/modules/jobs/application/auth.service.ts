@@ -141,9 +141,11 @@ export class AuthService {
     ).catch(() => null);
 
     this.telegram.newUser(nombre, emailNorm, 'google');
-    this.assignTrial(id).catch(() => null);
+    // Sin prueba gratis: el usuario arranca en FREE. De 282 trials, cero
+    // convirtieron y el 61% no hizo ni una postulacion. Sin fila en
+    // PLAN_CONTRATADO el sistema ya lo trata como FREE.
 
-    const newUser = { ID_USUARIO: id, NOMBRE: nombre, EMAIL: emailNorm, PLAN: 'TRIAL', AUTO_ACTIVO: false };
+    const newUser = { ID_USUARIO: id, NOMBRE: nombre, EMAIL: emailNorm, PLAN: 'FREE', AUTO_ACTIVO: false };
     return this.buildResponse(newUser);
   }
 
@@ -234,7 +236,7 @@ export class AuthService {
       `, { id: userId }),
     ]);
 
-    await this.assignTrial(userId);
+    // Sin prueba gratis: el usuario verificado arranca en FREE.
 
     this.email.send(
       emailNorm,
@@ -501,22 +503,6 @@ export class AuthService {
 
   // ─── HELPERS ──────────────────────────────────────────────────────────────
 
-  // Asigna TRIAL de 14 días al registrarse. Si ya tiene un plan activo no lo pisa.
-  private async assignTrial(userId: string): Promise<void> {
-    const now = new Date().toISOString();
-    const fin = new Date();
-    fin.setDate(fin.getDate() + 14);
-    const fechaFin = fin.toISOString();
-    await this.bq.query(`
-      MERGE ${this.bq.t('PLAN_CONTRATADO')} T
-      USING (SELECT @id AS ID_USUARIO) S
-      ON T.ID_USUARIO = S.ID_USUARIO
-      WHEN NOT MATCHED THEN
-        INSERT (ID_USUARIO, PLAN, ESTADO, FECHA_INICIO, FECHA_FIN, METODO_PAGO)
-        VALUES (@id, 'TRIAL', 'ACTIVO', @now, @fechaFin, 'REGISTRO')
-    `, { id: userId, now, fechaFin })
-      .catch((e: any) => console.warn('[auth] No se pudo asignar TRIAL:', e.message));
-  }
 
   private buildResponse(u: any) {
     const token = jwt.sign(
