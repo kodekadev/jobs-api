@@ -76,6 +76,15 @@ export class AdminController {
     return this.service.getFeedbackStats();
   }
 
+  // Qué pasó después del click: confirmada / sin_confirmar / reconciliada.
+  // Antes los tres portales asumían éxito ante la ausencia de error, así que
+  // no había forma de saber cuántas postulaciones llegaron de verdad.
+  @Get('postulaciones-estado')
+  postulacionesEstado(@Request() req: any, @Query('dias') dias?: string) {
+    this.service.checkAdmin(req.user.email);
+    return this.service.getPostulacionesPorEstado(Number(dias) || 14);
+  }
+
   @Put('users/:userId/cargos')
   @HttpCode(200)
   setCargos(

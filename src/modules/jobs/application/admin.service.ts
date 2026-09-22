@@ -1113,6 +1113,71 @@ export class AdminService {
     };
   }
 
+  /**
+   * Postulaciones por portal y estado.
+   *
+   * `estado` es NULL en todo lo anterior al 2026-09-22: hasta entonces no se
+   * guardaba ninguna evidencia de lo que pasaba después del click, y los tres
+   * portales daban por exitosa cualquier oferta que no mostrara un error.
+   * Esas filas salen como 'sin_medicion' para no confundirlas con las que hoy
+   * sí quedaron sin confirmar.
+   */
+  async getPostulacionesPorEstado(dias = 14) {
+    const ventana = Math.max(1, Math.min(dias, 90));
+    const filas = await this.bq.query<any>(`
+      SELECT
+        portal,
+        COALESCE(estado, 'sin_medicion') AS estado,
+        DATE(Fecha_Postulacion, 'America/Santiago') AS dia,
+        COUNT(*) AS n
+      FROM ${this.bq.t('EMPLEOS')}
+      WHERE DATE(Fecha_Postulacion, 'America/Santiago')
+            >= DATE_SUB(CURRENT_DATE('America/Santiago'), INTERVAL ${ventana} DAY)
+        AND portal NOT IN ('email_directo', '')
+      GROUP BY portal, estado, dia
+      ORDER BY dia DESC, n DESC
+    `).catch(() => [] as any[]);
+
+    const porPortal: Record<string, Record<string, number>> = {};
+    const porDia: Record<string, Record<string, number>> = {};
+    const totales: Record<string, number> = {};
+
+    for (const r of filas) {
+      const portal = r.portal || '(sin portal)';
+      const estado = r.estado || 'sin_medicion';
+      const dia = r.dia?.value ?? String(r.dia);
+      const n = Number(r.n) || 0;
+
+      porPortal[portal] = porPortal[portal] || {};
+      porPortal[portal][estado] = (porPortal[portal][estado] || 0) + n;
+      porDia[dia] = porDia[dia] || {};
+      porDia[dia][estado] = (porDia[dia][estado] || 0) + n;
+      totales[estado] = (totales[estado] || 0) + n;
+    }
+
+    const total = Object.values(totales).reduce((a, b) => a + b, 0);
+    const medidas = total - (totales['sin_medicion'] || 0);
+
+    return {
+      dias: ventana,
+      total,
+      totales,
+      // Porcentaje de confirmadas sobre lo que sí se midió: incluir las filas
+      // históricas sin estado haría parecer que empeoró.
+      pct_confirmadas: medidas > 0
+        ? Math.round(((totales['confirmada'] || 0) / medidas) * 1000) / 10
+        : null,
+      por_portal: Object.entries(porPortal).map(([portal, estados]) => ({
+        portal,
+        estados,
+        total: Object.values(estados).reduce((a, b) => a + b, 0),
+      })).sort((a, b) => b.total - a.total),
+      por_dia: Object.entries(porDia)
+        .map(([dia, estados]) => ({ dia, estados }))
+        .sort((a, b) => (a.dia < b.dia ? 1 : -1)),
+    };
+  }
+
   async getFeedbackStats() {
     const [notas, dist, recientes, queFalta] = await Promise.all([
       this.bq.query<any>(`
