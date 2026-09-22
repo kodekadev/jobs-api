@@ -4,6 +4,7 @@ import { BigQueryService } from '../../shared/infrastructure/services/bigquery.s
 import { EmailService } from '../../shared/infrastructure/services/email.service';
 import { TelegramService } from '../../shared/infrastructure/services/telegram.service';
 import env from '../../shared/infrastructure/environment';
+import { filtroPlanesSql } from './plan.segmentos';
 
 const PLAN_PRICES: Record<string, number> = {
   PRO: 9990,
@@ -168,7 +169,7 @@ export class PlanService {
       FROM ${this.bq.t('USUARIOS')} u
       JOIN ${this.bq.t('PLAN_CONTRATADO')} pc ON u.ID_USUARIO = pc.ID_USUARIO
       WHERE pc.ESTADO = 'ACTIVO'
-        AND pc.PLAN NOT IN ('FREE')
+        AND ${filtroPlanesSql()}
         AND COALESCE(DATE(pc.FECHA_FIN), DATE_ADD(DATE(pc.FECHA_INICIO),
             INTERVAL IF(pc.PLAN = 'TRIAL', 14, 30) DAY))
             = DATE_ADD(CURRENT_DATE(), INTERVAL @dias DAY)
@@ -229,7 +230,7 @@ export class PlanService {
         GROUP BY id_usuario
       ) ps ON u.ID_USUARIO = ps.id_usuario
       WHERE pc.ESTADO IN ('ACTIVO', 'TRIAL')
-        AND pc.PLAN != 'FREE'
+        AND ${filtroPlanesSql()}
         AND pc.FECHA_FIN IS NOT NULL
         AND DATE(pc.FECHA_FIN) = DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)
         AND u.NOMBRE != 'CUENTA_ELIMINADA'
