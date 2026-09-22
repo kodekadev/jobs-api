@@ -702,6 +702,17 @@ def guardar_optimizacion(user_id: str, tipo: str = "respuesta_formulario",
 # consumen cupo: no las hicimos hoy, solo las descubrimos hoy.
 MARCA_RECONCILIADO = "[reconciliado]"
 
+# Estados de una postulación en EMPLEOS.estado
+#   confirmada    el portal mostró una señal explícita de envío recibido
+#   sin_confirmar se envió y no hubo error, pero nadie confirmó nada
+#   error         el envío falló de forma visible
+#   reconciliada  el portal ya la tenía; no la hicimos hoy, la descubrimos hoy
+ESTADO_CONFIRMADA   = "confirmada"
+ESTADO_SIN_CONFIRMAR = "sin_confirmar"
+ESTADO_ERROR        = "error"
+ESTADO_RECONCILIADA = "reconciliada"
+ESTADO_DESCONOCIDO  = "sin_confirmar"
+
 
 def get_postulaciones_hoy(user_id: str) -> int:
     """Cuántas postulaciones hizo este usuario hoy (hora Chile, portales, no email directo)."""
@@ -755,6 +766,12 @@ def save_jobs(rows: list[dict]) -> None:
             "descripcion":       (r.get("descripcion") or "")[:5000],
             "link":              (r.get("link") or "")[:1024],
             "portal":            (r.get("portal") or "")[:100],
+            # Evidencia de lo que pasó después del click. Hasta ahora se
+            # guardaba que lo intentamos, no que funcionó: los tres portales
+            # asumían éxito si no veían un error, así que un formulario que
+            # fallaba validación quedaba registrado igual que uno confirmado.
+            "estado":            (r.get("estado") or ESTADO_DESCONOCIDO)[:30],
+            "motivo":            (r.get("motivo") or "")[:300],
         })
     if not valid:
         return

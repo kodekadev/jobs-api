@@ -561,11 +561,16 @@ def _postular_empleo_pw(page, job_url: str, user: dict, titulo: str) -> "dict | 
         error = any(s in content for s in [
             "ha ocurrido un error", "error al postular", "no pudimos", "inténtalo de nuevo",
         ])
-        ok = confirmed or (not error)
-        print(f"    [cht] {'OK Postulado' if confirmed else ('Error en envio' if error else 'Enviado sin confirmar')}")
-        if not ok:
+        # "Enviado sin confirmar" contaba como éxito igual que una confirmación
+        # real. Ahora se envía igual pero queda registrado como sin_confirmar,
+        # para poder medir cuántas de verdad llegaron.
+        if error:
+            print(f"    [cht] Error en envio")
             return False
-        return {"ok": True, "descripcion": descripcion, "empresa": empresa}
+        estado = bq.ESTADO_CONFIRMADA if confirmed else bq.ESTADO_SIN_CONFIRMAR
+        print(f"    [cht] {'OK Postulado' if confirmed else 'Enviado sin confirmar'}")
+        return {"ok": True, "descripcion": descripcion, "empresa": empresa,
+                "estado": estado}
 
     except Exception as e:
         print(f"    [cht] Error postular: {e}")
@@ -906,6 +911,10 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
                                     print(f"[cht] Email enviado a {email_rec} ok")
                                     descripcion += f"\n\n[email_directo: {email_rec}]"
 
+                        # 'ok' trae el dict que devolvio _postular_cht; su clave
+                        # 'estado' distingue una confirmacion real del portal de
+                        # un envio que simplemente no dio error.
+                        _estado = (ok.get("estado") if isinstance(ok, dict) else None)
                         bq.save_jobs([{
                             "id_empleo":         job_id,
                             "id_usuario":        user_id,
@@ -916,6 +925,8 @@ def postular_empleos_cht(user_id: str, user: dict, max_count: int = 999) -> int:
                             "descripcion":       descripcion,
                             "link":              job["link"],
                             "portal":            PORTAL_ID,
+                            "estado":            _estado or bq.ESTADO_SIN_CONFIRMAR,
+                            "motivo":            "",
                         }])
                         applied_ids.add(job_id)
                         count += 1

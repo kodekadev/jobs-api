@@ -818,15 +818,21 @@ def _postular_uno(page, empleo: dict, user: dict, cv_text: str = "", skip_llm: b
         return False, "sin_respuesta_confiable"
     page.wait_for_timeout(2000)
 
-    # Verificar éxito
+    # Verificar éxito.
+    # Antes: si no había señal de confirmación se asumía éxito con tal de no
+    # estar en la pantalla de login. Eso contaba como postulada cualquier
+    # oferta cuyo formulario hubiera fallado en silencio.
+    # Ahora se distingue: confirmada solo con señal explícita del portal;
+    # todo lo demás queda sin_confirmar y se registra como tal.
     content = page.content().lower()
-    ok = any(s in content for s in _CONFIRM_SIGNALS)
-    if not ok:
-        # Solo confiar en URL-fallback si tampoco hay señal de "ya postulado"
-        if any(s in content for s in _YA_SIGNALS):
-            return False, "ya_postulado_previamente"
-        ok = "login" not in page.url.lower() and "acceso" not in page.url.lower()
-    return ok, "" if ok else "sin_confirmacion"
+    if any(s in content for s in _CONFIRM_SIGNALS):
+        return True, bq.ESTADO_CONFIRMADA
+    if any(s in content for s in _YA_SIGNALS):
+        return False, "ya_postulado_previamente"
+    if "login" in page.url.lower() or "acceso" in page.url.lower():
+        return False, "sesion_caida"
+    # Se envió y no hubo error visible, pero el portal no confirmó nada.
+    return True, bq.ESTADO_SIN_CONFIRMAR
 
 
 def postular_empleos_cpt(user_id: str, user: dict, max_n: int = 10) -> int:
@@ -986,10 +992,14 @@ def postular_empleos_cpt(user_id: str, user: dict, max_n: int = 10) -> int:
                             "descripcion":       emp.get("descripcion", ""),
                             "link":              url,
                             "portal":            PORTAL_ID,
+                            # motivo trae el estado que devolvió _postular_uno
+                            "estado":            motivo or bq.ESTADO_SIN_CONFIRMAR,
+                            "motivo":            "",
                         }])
                         ok_count += 1
                         ya_postulados.add(url)
-                        print(f"    ✓ [cpt] postulado: {emp.get('titulo','')[:50]}")
+                        _marca = "✓" if motivo == bq.ESTADO_CONFIRMADA else "~"
+                        print(f"    {_marca} [cpt] {motivo}: {emp.get('titulo','')[:50]}")
                     elif motivo == "ya_postulado_previamente":
                         # El portal dice que ya postulamos pero no estaba en BQ. Sin
                         # guardarlo, cada corrida vuelve a visitar el aviso y el
@@ -1003,6 +1013,8 @@ def postular_empleos_cpt(user_id: str, user: dict, max_n: int = 10) -> int:
                                 "cargo":             emp.get("cargo", cargo),
                                 "Fecha_Postulacion": datetime.datetime.utcnow().isoformat(),
                                 "empresa":           emp.get("empresa", ""),
+                                "estado":            bq.ESTADO_RECONCILIADA,
+                                "motivo":            "el portal ya la tenia registrada",
                                 "descripcion":       bq.MARCA_RECONCILIADO + (emp.get("descripcion") or ""),
                                 "link":              url,
                                 "portal":            PORTAL_ID,

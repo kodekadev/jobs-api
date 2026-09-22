@@ -757,10 +757,13 @@ def _postular_uno(page, empleo: dict, salario: int = _SUELDO_DEFAULT,
             _intentar_activar(page, email)
         return False, "cuenta_no_activada"
 
-    ok = any(s in content for s in _CONFIRM_SIGNALS)
-    if not ok:
-        ok = "login" not in page.url.lower() and "signin" not in page.url.lower()
-    return ok, "" if ok else "sin_confirmacion"
+    # Confirmada solo con señal explícita del portal. Antes bastaba con no
+    # estar en la pantalla de login para darla por enviada.
+    if any(s in content for s in _CONFIRM_SIGNALS):
+        return True, bq.ESTADO_CONFIRMADA
+    if "login" in page.url.lower() or "signin" in page.url.lower():
+        return False, "sesion_caida"
+    return True, bq.ESTADO_SIN_CONFIRMAR
 
 
 def buscar_y_postular_lab(user_id: str, user: dict, cargos: list, ubicacion: str, max_n: int = 10) -> int:
@@ -914,6 +917,8 @@ def buscar_y_postular_lab(user_id: str, user: dict, cargos: list, ubicacion: str
                             "descripcion":       bq.MARCA_RECONCILIADO + (emp.get("descripcion") or ""),
                             "link":              url,
                             "portal":            PORTAL_ID,
+                            "estado":            bq.ESTADO_RECONCILIADA,
+                            "motivo":            "el portal ya la tenia registrada",
                         }])
                         print(f"    ~ [lab] ya postulado antes — registrado: {emp.get('titulo','')[:45]}")
                     except Exception as _re:
@@ -931,10 +936,14 @@ def buscar_y_postular_lab(user_id: str, user: dict, cargos: list, ubicacion: str
                             "descripcion":       emp.get("descripcion", ""),
                             "link":              url,
                             "portal":            PORTAL_ID,
+                            # motivo trae el estado que devolvio _postular_uno
+                            "estado":            motivo or bq.ESTADO_SIN_CONFIRMAR,
+                            "motivo":            "",
                         }])
                         ok_count += 1
                         ya_postulados.add(url)
-                        print(f"    [lab] postulado: {emp.get('titulo','')[:50]}")
+                        _marca = "✓" if motivo == bq.ESTADO_CONFIRMADA else "~"
+                        print(f"    {_marca} [lab] {motivo}: {emp.get('titulo','')[:50]}")
                     else:
                         print(f"    [lab] falló ({motivo}): {emp.get('titulo','')[:50]}")
 
@@ -1032,6 +1041,8 @@ def postular_empleos_lab(user_id: str, user: dict, empleos: list, max_n: int = 1
                             "descripcion":       bq.MARCA_RECONCILIADO + (emp.get("descripcion") or ""),
                             "link":              url,
                             "portal":            PORTAL_ID,
+                            "estado":            bq.ESTADO_RECONCILIADA,
+                            "motivo":            "el portal ya la tenia registrada",
                         }])
                         print(f"    ~ [lab] ya postulado antes — registrado: {emp.get('titulo','')[:45]}")
                     except Exception as _re:
@@ -1049,10 +1060,14 @@ def postular_empleos_lab(user_id: str, user: dict, empleos: list, max_n: int = 1
                             "descripcion":       emp.get("descripcion", ""),
                             "link":              url,
                             "portal":            PORTAL_ID,
+                            # motivo trae el estado que devolvio _postular_uno
+                            "estado":            motivo or bq.ESTADO_SIN_CONFIRMAR,
+                            "motivo":            "",
                         }])
                         ok_count += 1
                         ya_postulados.add(url)
-                        print(f"    [lab] postulado: {emp.get('titulo','')[:50]}")
+                        _marca = "✓" if motivo == bq.ESTADO_CONFIRMADA else "~"
+                        print(f"    {_marca} [lab] {motivo}: {emp.get('titulo','')[:50]}")
                     else:
                         print(f"    [lab] falló ({motivo}): {emp.get('titulo','')[:50]}")
 
