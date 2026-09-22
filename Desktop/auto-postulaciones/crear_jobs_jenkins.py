@@ -70,6 +70,26 @@ BAT = [
 ]
 
 dry = "--dry-run" in sys.argv
+
+
+def _es_admin() -> bool:
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+if not dry and not _es_admin():
+    print("  ERROR: hay que correrlo como administrador.")
+    print("  El servicio de Jenkins corre como LocalSystem y solo el grupo")
+    print("  Administradores puede escribir en C:\\ProgramData\\Jenkins.")
+    print()
+    print("  Desde tu PowerShell actual:")
+    print("    Start-Process powershell -Verb RunAs -ArgumentList '-NoExit','-Command',"
+          "'cd C:\\Users\\bastian\\Desktop\\auto-postulaciones; python crear_jobs_jenkins.py'")
+    sys.exit(1)
+
 creados, actualizados = [], []
 
 for job, (cron, script, desc) in CONFIG.items():
