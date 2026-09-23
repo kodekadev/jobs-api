@@ -848,6 +848,11 @@ def buscar_y_postular_lab(user_id: str, user: dict, cargos: list, ubicacion: str
                     break
                 nuevos = _scrape_laborum(page, cargo, ubicacion, max_n * 3)
                 for emp in nuevos:
+                    # De que busqueda salio esta oferta. _scrape_laborum no lo
+                    # propaga, asi que EMPLEOS.cargo quedaba vacio en el 100%
+                    # de las postulaciones de Laborum (0 de 1.062 en 7 dias) y
+                    # no habia forma de saber que cargo genero cada una.
+                    emp["cargo"] = cargo
                     eid = emp.get("id") or emp.get("link", "")
                     if not eid or eid in vistos or eid in ya_postulados:
                         continue
