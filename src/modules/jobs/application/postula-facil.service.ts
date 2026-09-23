@@ -4,7 +4,13 @@ import { EmailService } from '../../shared/infrastructure/services/email.service
 import { CloudRunService } from '../../shared/infrastructure/services/cloud-run.service';
 
 const PLAN_LIMITS: Record<string, { cargos: number; ubicaciones: number }> = {
-  FREE:    { cargos: 1,  ubicaciones: 1  },
+  // FREE pasa de 1 a 2 cargos el 2026-09-23. El limite diario sigue en 5.
+  // Motivo: entre usuarios que nunca pagaron, los que tienen 2+ cargos
+  // postulan 4,1 al dia contra 3,1 de los que tienen uno solo, y tocan el
+  // techo el 49% de los dias contra el 37%. Con un cargo el limite no es lo
+  // que los frena, es la falta de ofertas que calcen — y el usuario concluye
+  // que el producto no funciona en vez de que le queda chico.
+  FREE:    { cargos: 2,  ubicaciones: 1  },
   PRO:     { cargos: 4,  ubicaciones: 4  },
   SPRINT:  { cargos: 4,  ubicaciones: 4  },
   TURBO:   { cargos: 6,  ubicaciones: 6  },
