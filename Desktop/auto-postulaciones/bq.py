@@ -702,6 +702,37 @@ def guardar_optimizacion(user_id: str, tipo: str = "respuesta_formulario",
 # consumen cupo: no las hicimos hoy, solo las descubrimos hoy.
 MARCA_RECONCILIADO = "[reconciliado]"
 
+
+def link_canonico(url: str) -> str:
+    """
+    Normaliza la URL de una oferta para poder compararla entre corridas.
+
+    Computrabajo le agrega un fragmento de tracking que codifica la POSICION
+    de la oferta en la lista de resultados:
+
+        .../oferta-de-trabajo-de-...-4C04A4AA87228CD3#lc=ListOffers-Score6-16
+        .../oferta-de-trabajo-de-...-4C04A4AA87228CD3#lc=ListOffers-Score6-14
+
+    Es el mismo empleo, pero el numero cambia en cada busqueda. Como la
+    deduplicacion comparaba la URL completa, cada noche parecia una oferta
+    nueva: se revisitaba, el portal respondia "ya te postulaste" y se
+    guardaba otra fila. Los duplicados llegaron al 28% del volumen diario.
+
+    Se quita el fragmento y los parametros de tracking; el resto queda igual.
+    """
+    if not url:
+        return ""
+    u = str(url).split("#")[0]
+    if "?" in u:
+        base, _, qs = u.partition("?")
+        _RUIDO = ("utm_", "lc=", "gclid", "fbclid", "_ga", "ref=", "source=")
+        conservar = [
+            p for p in qs.split("&")
+            if p and not any(p.lower().startswith(r) for r in _RUIDO)
+        ]
+        u = base + ("?" + "&".join(conservar) if conservar else "")
+    return u.rstrip("/")
+
 # Estados de una postulación en EMPLEOS.estado
 #   confirmada    el portal mostró una señal explícita de envío recibido
 #   sin_confirmar se envió y no hubo error, pero nadie confirmó nada

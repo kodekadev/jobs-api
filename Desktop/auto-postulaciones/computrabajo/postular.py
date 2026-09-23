@@ -867,16 +867,26 @@ def postular_empleos_cpt(user_id: str, user: dict, max_n: int = 10) -> int:
     _ya_cfg = _bq.QueryJobConfig(query_parameters=[
         _bq.ScalarQueryParameter("uid", "STRING", user_id),
     ])
+    # Ventana de 60 dias, igual que Laborum. Antes miraba SOLO el dia de hoy:
+    # una oferta postulada ayer no estaba en el set, el bot la revisitaba, el
+    # portal respondia "ya te postulaste" y se guardaba otra fila marcada como
+    # reconciliada. Cada noche, para siempre. Los duplicados en Mis
+    # Postulaciones pasaron de ~3% a ~28% del volumen diario.
+    # Las URLs se canonizan antes de comparar: Computrabajo agrega un
+    # fragmento #lc=ListOffers-Score6-NN con la posicion en la lista, que
+    # cambia en cada corrida. Comparando la URL cruda, el mismo empleo
+    # parecia nuevo cada noche. Ver bq.link_canonico.
     ya_postulados = set(
-        dict(r).get("link", "") or ""
+        bq.link_canonico(dict(r).get("link", "") or "")
         for r in bq._query(
             f"""SELECT link FROM `{bq.PROJECT}.{bq.DATASET}.EMPLEOS`
                 WHERE id_usuario = @uid AND portal = 'computrabajo'
-                AND DATE(Fecha_Postulacion, 'America/Santiago')
-                    = CURRENT_DATE('America/Santiago')""",
+                AND Fecha_Postulacion
+                    >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 60 DAY)""",
             _ya_cfg,
         ).result()
     )
+    ya_postulados.discard("")
 
     try:
         from playwright.sync_api import sync_playwright
@@ -947,9 +957,13 @@ def postular_empleos_cpt(user_id: str, user: dict, max_n: int = 10) -> int:
                     if not modo_revision and ok_count >= max_n:
                         break
 
-                    url = emp.get("link", "")
+                    # Se guarda y se compara la URL canonica: sin el fragmento
+                    # de tracking, el mismo empleo deja de parecer uno nuevo
+                    # en cada corrida.
+                    url = bq.link_canonico(emp.get("link", ""))
                     if not url or url in ya_postulados:
                         continue
+                    emp["link"] = url
 
                     # 1. Filtro básico: empresa excluida, práctica vs empleo, part-time
                     aplica, motivo_basico = job_aplica_al_usuario(
