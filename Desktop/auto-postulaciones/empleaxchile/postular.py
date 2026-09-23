@@ -75,7 +75,10 @@ def _get_exc_session(user_id: str, email: str, password: str):
 
     # Verificar sesión navegando a página que requiere login
     try:
-        page.goto(f"{BASE_URL}/account/profile", wait_until="domcontentloaded", timeout=20000)
+        # La zona privada real es /account. La ruta con sufijo /profile
+        # responde 404, y como un 404 no redirige a login, la verificacion
+        # de sesion daba por viva una sesion muerta.
+        page.goto(f"{BASE_URL}/account", wait_until="domcontentloaded", timeout=20000)
         page.wait_for_timeout(2000)
         if "login" not in page.url and "external" not in page.url:
             print(f"[exc] Sesión restaurada desde cookies para {user_id}")
@@ -103,22 +106,23 @@ def _get_exc_session(user_id: str, email: str, password: str):
             except Exception:
                 pass
 
-        # Click continuar (paso 1)
-        for sel in [
-            "button:has-text('Continuar'):visible",
-            "button[type='submit']:visible",
-        ]:
-            try:
-                btn = page.locator(sel).first
-                if btn.count() > 0:
-                    btn.click()
-                    page.wait_for_timeout(2000)
-                    break
-            except Exception:
-                pass
+        # El formulario de EmpleaXChile es de UN paso: _username y _password
+        # conviven en la misma pagina y hay un solo boton "Iniciar sesion".
+        # Antes esto intentaba un flujo de dos pasos y, al no existir el boton
+        # "Continuar", caia al fallback button[type=submit] — que enviaba el
+        # formulario con la password todavia vacia. El login fallaba siempre.
+        # Solo se hace click en "Continuar" si de verdad existe.
+        try:
+            btn = page.locator("button:has-text('Continuar'):visible").first
+            if btn.count() > 0:
+                btn.click()
+                page.wait_for_timeout(2000)
+        except Exception:
+            pass
 
-        # Llenar password (paso 2)
+        # Llenar password ANTES de enviar
         for sel in [
+            "input[name='_password']",
             "input[type='password']:visible",
         ]:
             try:
@@ -486,11 +490,16 @@ def _postular_empleo(page, job_url: str, user: dict, titulo: str) -> "dict | boo
         error = any(s in content for s in [
             "ha ocurrido un error", "error al postular", "inténtalo de nuevo",
         ])
-        ok = confirmed or not error
-        print(f"    [exc] {'OK' if confirmed else ('Error' if error else 'Sin confirmación clara')}")
-        if not ok:
+        # "Sin confirmación clara" contaba como éxito igual que un acuse real.
+        # Se sigue enviando, pero queda registrado como sin_confirmar para
+        # poder medir cuántas llegaron de verdad.
+        if error:
+            print(f"    [exc] Error al postular")
             return False
-        return {"ok": True, "descripcion": descripcion, "empresa": empresa}
+        estado = bq.ESTADO_CONFIRMADA if confirmed else bq.ESTADO_SIN_CONFIRMAR
+        print(f"    [exc] {'OK Postulado' if confirmed else 'Enviado sin confirmar'}")
+        return {"ok": True, "descripcion": descripcion, "empresa": empresa,
+                "estado": estado}
 
     except Exception as e:
         print(f"    [exc] Error postular: {e}")
@@ -558,7 +567,10 @@ def postular_empleos_exc(user_id: str, user: dict, max_count: int = 999) -> int:
     def _ensure_logged_in() -> bool:
         """Verifica sesión y hace login si es necesario."""
         try:
-            page.goto(f"{BASE_URL}/account/profile", wait_until="domcontentloaded", timeout=20000)
+            # La zona privada real es /account. La ruta con sufijo /profile
+            # responde 404, y como un 404 no redirige a login, la verificacion
+            # de sesion daba por viva una sesion muerta.
+            page.goto(f"{BASE_URL}/account", wait_until="domcontentloaded", timeout=20000)
             page.wait_for_timeout(1500)
             if "login" not in page.url and "external" not in page.url:
                 return True
@@ -741,6 +753,28 @@ def postular_empleos_exc(user_id: str, user: dict, max_count: int = 999) -> int:
                             print(f"[exc] Error: {e}")
 
                     if ok and isinstance(ok, dict) and ok.get("ya_postulado"):
+                        # El portal ya la tenia y nosotros no. Se registra para
+                        # que el usuario la vea en Mis Postulaciones y para no
+                        # revisitarla, marcada para que NO consuma cupo: no la
+                        # hicimos hoy, la descubrimos hoy.
+                        try:
+                            bq.save_jobs([{
+                                "id_empleo":         job_id,
+                                "id_usuario":        user_id,
+                                "titulo_empleo":     titulo,
+                                "cargo":             cargo,
+                                "Fecha_Postulacion": datetime.datetime.utcnow().isoformat(),
+                                "empresa":           (isinstance(ok, dict) and ok.get("empresa")) or "",
+                                "descripcion":       bq.MARCA_RECONCILIADO + (
+                                    (isinstance(ok, dict) and ok.get("descripcion")) or ""),
+                                "link":              job["link"],
+                                "portal":            PORTAL_ID,
+                                "estado":            bq.ESTADO_RECONCILIADA,
+                                "motivo":            "el portal ya la tenia registrada",
+                            }])
+                            print(f"[exc] ~ ya postulado antes — registrado: {titulo[:45]}")
+                        except Exception as _re:
+                            print(f"[exc] ~ ya postulado antes (no se registro: {_re})")
                         applied_ids.add(job_id)
                     elif ok:
                         descripcion = (isinstance(ok, dict) and ok.get("descripcion")) or ""
@@ -756,6 +790,12 @@ def postular_empleos_exc(user_id: str, user: dict, max_count: int = 999) -> int:
                             "descripcion":       descripcion,
                             "link":              job["link"],
                             "portal":            PORTAL_ID,
+                            # 'ok' es el dict de _postular_empleo; su clave
+                            # 'estado' distingue un acuse real del portal de un
+                            # envio que simplemente no dio error.
+                            "estado":            (ok.get("estado") if isinstance(ok, dict) else None)
+                                                 or bq.ESTADO_SIN_CONFIRMAR,
+                            "motivo":            "",
                         }])
                         applied_ids.add(job_id)
                         count += 1

@@ -42,7 +42,8 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(_dir, ".env"))
 
 # ── Portal ────────────────────────────────────────────────────────────────────
-PORTALES_VALIDOS = ("trabajando", "chiletrabajos", "computrabajo", "laborum")
+PORTALES_VALIDOS = ("trabajando", "chiletrabajos", "computrabajo", "laborum",
+                    "empleaxchile")
 
 if len(sys.argv) < 2 or sys.argv[1].lower() not in PORTALES_VALIDOS:
     print(f"Uso: python postular_portal.py <portal>")
@@ -126,6 +127,11 @@ def _run():
         importlib.reload(_lab_mod)
         from laborum.postular import buscar_y_postular_lab
 
+    elif PORTAL == "empleaxchile":
+        import empleaxchile.postular as _exc_mod
+        importlib.reload(_exc_mod)
+        from empleaxchile.postular import postular_empleos_exc
+
     all_users = bq.get_active_users()
     if SOLO_USUARIO:
         all_users = [u for u in all_users if u.get("ID_USUARIO") == SOLO_USUARIO]
@@ -163,6 +169,12 @@ def _run():
                     from computrabajo.crear_cuenta import crear_cuenta_computrabajo as _crear
                     if _crear(uid, user):
                         from computrabajo.completar_perfil import completar_perfil_computrabajo as _cv
+                        _cv(uid, user)
+                        cuenta = bq.get_portal_account(uid, PORTAL)
+                elif PORTAL == "empleaxchile":
+                    from empleaxchile.crear_cuenta import crear_cuenta_empleaxchile as _crear
+                    if _crear(uid, user):
+                        from empleaxchile.completar_perfil import completar_perfil_empleaxchile as _cv
                         _cv(uid, user)
                         cuenta = bq.get_portal_account(uid, PORTAL)
                 elif PORTAL == "laborum":
@@ -215,6 +227,9 @@ def _run():
 
             elif PORTAL == "computrabajo":
                 ok = _run_pw(postular_empleos_cpt, uid, user, max_n=restantes)
+
+            elif PORTAL == "empleaxchile":
+                ok = postular_empleos_exc(uid, user, max_count=restantes)
 
             elif PORTAL == "laborum":
                 import json as _json
